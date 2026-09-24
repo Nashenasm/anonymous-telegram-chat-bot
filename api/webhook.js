@@ -28,17 +28,17 @@ function adminIds() {
 }
 function isAdmin(id) { return adminIds().has(String(id)); }
 function button(text, data) { return { text, callback_data: data }; }
-function keyboard(rows) { return { inline_keyboard: rows }; }
-function mainKeyboard(settings) { return keyboard([[button(settings.connect_button, 'connect')]]); }
-function genderKeyboard() { return keyboard([[button(GENDER_LABELS.male, 'gender:male'), button(GENDER_LABELS.female, 'gender:female')]]); }
-function preferenceKeyboard() { return keyboard([[button(PREF_LABELS.female, 'pref:female')], [button(PREF_LABELS.male, 'pref:male')], [button(PREF_LABELS.any, 'pref:any')]]); }
-function waitingKeyboard(settings) { return keyboard([[button(settings.cancel_button, 'cancel_wait')]]); }
-function chatKeyboard(settings) { return keyboard([[button(settings.disconnect_button, 'stop')]]); }
-function confirmStopKeyboard() { return keyboard([[button('اره مطمئنم', 'stop_yes'), button('نه ادامه میدم', 'stop_no')]]); }
-function afterStopKeyboard() { return keyboard([[button('بلاکش کن', 'block')], [button('بعدا وصلش کن', 'later')]]); }
-function blockKeyboard() { return keyboard([[button(BLOCK_REASONS.rude, 'block:rude')], [button(BLOCK_REASONS.abusive, 'block:abusive')], [button(BLOCK_REASONS.wrong_gender, 'block:wrong_gender')], [button(BLOCK_REASONS.advertising, 'block:advertising')], [button('بذار بعدا هم وصل بشم', 'block:later')]]); }
-function adminKeyboard(enabled) { return keyboard([[button('تغییر نام دکمه‌ها', 'admin:rename')], [button(enabled ? 'خاموش کردن ربات' : 'روشن کردن ربات', 'admin:toggle')]]); }
-function renameKeyboard() { return keyboard([[button('دکمه اتصال', 'admin:rename:connect_button')], [button('دکمه انصراف', 'admin:rename:cancel_button')], [button('دکمه قطع مکالمه', 'admin:rename:disconnect_button')]]); }
+function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
+function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button]]); }
+function genderKeyboard() { return replyKeyboard([[GENDER_LABELS.male, GENDER_LABELS.female]], true); }
+function preferenceKeyboard() { return replyKeyboard([[PREF_LABELS.female], [PREF_LABELS.male], [PREF_LABELS.any]], true); }
+function waitingKeyboard(settings) { return replyKeyboard([[settings.cancel_button]]); }
+function chatKeyboard(settings) { return replyKeyboard([[settings.disconnect_button]]); }
+function confirmStopKeyboard() { return replyKeyboard([['اره مطمئنم', 'نه ادامه میدم']], true); }
+function afterStopKeyboard() { return replyKeyboard([['بلاکش کن'], ['بعدا وصلش کن']], true); }
+function blockKeyboard() { return replyKeyboard([[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']], true); }
+function adminKeyboard(enabled) { return replyKeyboard([['تغییر نام دکمه‌ها'], [enabled ? 'خاموش کردن ربات' : 'روشن کردن ربات']]); }
+function renameKeyboard() { return replyKeyboard([['دکمه اتصال'], ['دکمه انصراف'], ['دکمه قطع مکالمه']], true); }
 
 async function telegram(method, body) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -183,10 +183,52 @@ async function handleText(id, text) {
   const client = await pool.connect();
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    const value = text.trim();
     if (isAdmin(id) && me.action_state?.startsWith('rename:')) {
-      const key = me.action_state.slice('rename:'.length); const value = text.trim().slice(0, 64);
-      if (!value) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
-      await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [key, value]); await updateAction(client, id, null); return send(id, 'نام دکمه ذخیره شد.', adminKeyboard(s.bot_enabled));
+      const key = me.action_state.slice('rename:'.length); const renamed = value.slice(0, 64);
+      if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
+      await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [key, renamed]); await updateAction(client, id, null); return send(id, 'نام دکمه ذخیره شد.', adminKeyboard(s.bot_enabled));
+    }
+    if (value === s.connect_button) return handleConnect(id);
+    if (me.action_state === 'choose_gender') {
+      const gender = value === GENDER_LABELS.male || value === 'پسر' ? 'male' : value === GENDER_LABELS.female || value === 'دختر' ? 'female' : null;
+      if (!gender) return send(id, 'یکی از دو گزینه جنسیت را انتخاب کن.', genderKeyboard());
+      await client.query("UPDATE users SET gender=$2, action_state='choose_preference', updated_at=NOW() WHERE telegram_id=$1", [id, gender]);
+      return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
+    }
+    if (me.action_state === 'choose_preference') {
+      const preference = value === PREF_LABELS.female ? 'female' : value === PREF_LABELS.male ? 'male' : value === PREF_LABELS.any ? 'any' : null;
+      if (!preference) return send(id, 'یکی از گزینه‌های جنسیت را انتخاب کن.', preferenceKeyboard());
+      const result = await findPair(id, preference);
+      if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
+      if (result.kind === 'paired') { await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); return; }
+      return send(id, 'در حال پیدا کردن یک ناشناس هستم؛ کمی صبر کن.', waitingKeyboard(s));
+    }
+    if (value === s.cancel_button && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
+    if (value === s.disconnect_button && me.status === 'chatting') {
+      const started = me.conversation_started_at ? new Date(me.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000;
+      if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s));
+      await updateAction(client, id, 'confirm_stop'); return send(id, 'مطمئنی مکالمه قطع بشه؟', confirmStopKeyboard());
+    }
+    if (me.action_state === 'confirm_stop') {
+      if (value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s)); }
+      if (value === 'اره مطمئنم') {
+        const partnerId = await disconnect(id); await updateAction(client, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard());
+      }
+      return send(id, 'یکی از گزینه‌ها را انتخاب کن.', confirmStopKeyboard());
+    }
+    if (me.action_state === 'after_stop') {
+      if (value === 'بعدا وصلش کن') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      if (value === 'بلاکش کن') { await updateAction(client, id, 'choose_block_reason'); return send(id, 'به چه دلیلی بلاک بشه؟', blockKeyboard()); }
+      return send(id, 'یکی از گزینه‌ها را انتخاب کن.', afterStopKeyboard());
+    }
+    if (me.action_state === 'choose_block_reason') {
+      const entries = Object.entries(BLOCK_REASONS); const found = entries.find(([, label]) => label === value);
+      if (value === 'بذار بعدا هم وصل بشم') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      if (!found) return send(id, 'یکی از دلایل را انتخاب کن.', blockKeyboard());
+      const target = me.last_partner_id ? Number(me.last_partner_id) : null;
+      if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
+      await block(id, target, found[1]); await updateAction(client, id, null); await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`); return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id); const blocked = await client.query('SELECT $2 = ANY(blocked_ids) AS blocked FROM users WHERE telegram_id=$1', [target, id]);
