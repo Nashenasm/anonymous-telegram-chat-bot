@@ -22,6 +22,22 @@ const BLOCK_REASONS = {
   advertising: 'تبلیغ فرستاد',
 };
 const STOP_MIN_SECONDS = 15;
+const FA_CHAR_MAP = { 'ي': 'ی', 'ك': 'ک', 'ى': 'ی', 'أ': 'ا', 'إ': 'ا', 'ؤ': 'و', 'ئ': 'ی', 'ة': 'ه' };
+function normalizeFa(value) {
+  return String(value || '')
+    .replace(/[يكىأإؤئة]/g, ch => FA_CHAR_MAP[ch] || ch)
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, '')
+    .replace(/\u200C/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function preferenceFromText(value) {
+  const key = normalizeFa(value).replace(/\s+/g, '');
+  if (key === 'دختر') return 'female';
+  if (key === 'پسر') return 'male';
+  if (key === 'مهمنیست') return 'any';
+  return null;
+}
 
 function adminIds() {
   return new Set((process.env.ADMIN_TELEGRAM_IDS || '').split(',').map(x => x.trim()).filter(Boolean));
@@ -193,6 +209,14 @@ async function handleText(id, text) {
       await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [key, renamed]); await updateAction(client, id, null); return send(id, 'نام دکمه ذخیره شد.', adminKeyboard(s.bot_enabled));
     }
     if (value === s.connect_button) return handleConnect(id);
+    const preferenceText = preferenceFromText(value);
+    if (preferenceText && me.status === 'waiting') return send(id, 'وضعیت فعلی: هنوز در صف انتظار هستی؛ برای لغو دکمه انصراف را بزن.', waitingKeyboard(s));
+    if (preferenceText && me.status === 'idle') {
+      const result = await findPair(id, preferenceText);
+      if (result.kind === 'already_chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی.', chatKeyboard(s));
+      if (result.kind === 'paired') { await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); return; }
+      return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌کنم.', waitingKeyboard(s));
+    }
     if (me.action_state === 'choose_gender') {
       const gender = value === GENDER_LABELS.male || value === 'پسر' ? 'male' : value === GENDER_LABELS.female || value === 'دختر' ? 'female' : null;
       if (!gender) return send(id, 'یکی از دو گزینه جنسیت را انتخاب کن.', genderKeyboard());
@@ -265,4 +289,4 @@ export default async function handler(req, res) {
   catch (error) { console.error('webhook_error', error?.message || error); return res.status(200).json({ ok: false }); }
 }
 
-export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS };
+export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText };
