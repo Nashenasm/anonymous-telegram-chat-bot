@@ -16,21 +16,9 @@
     
     { "src": "/api/admin", "dest": "/api/admin.js" }
     
-  ],
-  
-  "functions": {
-    
-    "api/webhook.js": { "maxDuration": 30 },
-    
-    "api/admin.js": { "maxDuration": 15 }
-    
-  }
+  ]
   
 }
-
-
-
-
 
 
 
