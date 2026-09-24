@@ -93,16 +93,20 @@ async function findPair(id, preference) {
     if (me.status === 'chatting' && me.partner_id) { await client.query('COMMIT'); return { kind: 'already_chatting', partnerId: Number(me.partner_id) }; }
     await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1 FOR UPDATE', [id]);
     const candidate = await client.query(`
-      SELECT telegram_id, gender FROM users
-      WHERE status='waiting' AND telegram_id<>$1
+      SELECT candidate.telegram_id, candidate.gender FROM users AS candidate
+      WHERE candidate.status='waiting' AND candidate.telegram_id<>$1
         AND (
-          ($2='any' AND match_preference='any')
+          ($2='any' AND candidate.match_preference='any')
           OR
-          ($2 IN ('male','female') AND gender=$2 AND (match_preference='any' OR match_preference=$3))
+          ($2 IN ('male','female') AND candidate.gender=$2 AND (candidate.match_preference='any' OR candidate.match_preference=$3))
         )
-        AND NOT ($1 = ANY(blocked_ids))
-        AND NOT (telegram_id = ANY((SELECT blocked_ids FROM users WHERE telegram_id=$1)))
-      ORDER BY updated_at ASC
+        AND NOT ($1 = ANY(candidate.blocked_ids))
+        AND NOT EXISTS (
+          SELECT 1 FROM users AS requester
+          WHERE requester.telegram_id=$1
+            AND candidate.telegram_id = ANY(requester.blocked_ids)
+        )
+      ORDER BY candidate.updated_at ASC
       LIMIT 1 FOR UPDATE SKIP LOCKED`, [id, preference, me.gender]);
     if (!candidate.rows[0]) {
       await client.query("UPDATE users SET status='waiting', match_preference=$2, partner_id=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, preference]);
@@ -286,7 +290,15 @@ export default async function handler(req, res) {
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET; const supplied = req.headers['x-telegram-bot-api-secret-token'];
   if (!expected || supplied !== expected) return res.status(401).json({ ok: false, error: 'unauthorized' });
   try { await processUpdate(req.body || {}); return res.status(200).json({ ok: true }); }
-  catch (error) { console.error('webhook_error', error?.message || error); return res.status(200).json({ ok: false }); }
+  catch (error) {
+    console.error('webhook_error', error?.message || error);
+    const fromId = req.body?.callback_query?.from?.id || req.body?.message?.from?.id;
+    if (fromId) {
+      try { await send(Number(fromId), 'در پردازش درخواست مشکلی پیش آمد؛ لطفاً دوباره تلاش کن.'); }
+      catch (sendError) { console.error('webhook_fallback_send_error', sendError?.message || sendError); }
+    }
+    return res.status(200).json({ ok: false });
+  }
 }
 
 export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText };
