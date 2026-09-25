@@ -1,74 +1,25 @@
 {
-  
   "name": "anonymous-telegram-chat",
-  
   "version": "0.1.0",
-  
   "private": false,
-  
   "type": "module",
-  
   "scripts": {
-    
     "start": "node server.js",
-    
     "dev": "node --watch server.js",
-    
-    "build": "node --check api/webhook.js && node --check api/admin.js",
-    
+    "build": "node --check server.js && node --check api/webhook.js && node --check api/admin.js && node --check src/link-service.js && node --check src/link-handler.js && node --check src/safety-service.js && node --check src/anonymous-link-service.js && node --check src/anonymous-flow.js",
     "test": "vitest run --passWithNoTests",
-    
     "lint": "tsc --noEmit"
-    
   },
-  
   "dependencies": {
-    
     "@types/pg": "^8.11.10",
-    
     "@vercel/node": "^2.15.10",
-    
     "pg": "^8.13.1",
-    
     "zod": "^3.24.1"
-    
   },
-  
   "devDependencies": {
-    
     "@types/node": "^22.10.5",
-    
     "tsx": "^4.19.2",
-    
     "typescript": "^5.7.2",
-    
     "vitest": "^2.1.8"
-    
   }
-  
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
