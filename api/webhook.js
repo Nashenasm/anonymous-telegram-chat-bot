@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { createAnonymousFlow } from '../src/anonymous-flow.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -39,13 +40,23 @@ function preferenceFromText(value) {
   return null;
 }
 
+export function arePreferencesCompatible(requesterGender, requesterPreference, candidateGender, candidatePreference) {
+  const validGenders = ['male', 'female'];
+  const validPreferences = ['male', 'female', 'any'];
+  if (!validGenders.includes(requesterGender) || !validGenders.includes(candidateGender)) return false;
+  if (!validPreferences.includes(requesterPreference) || !validPreferences.includes(candidatePreference)) return false;
+  return (requesterPreference === 'any' || requesterPreference === candidateGender)
+    && (candidatePreference === 'any' || candidatePreference === requesterGender);
+}
+
 function adminIds() {
   return new Set((process.env.ADMIN_TELEGRAM_IDS || '').split(',').map(x => x.trim()).filter(Boolean));
 }
 function isAdmin(id) { return adminIds().has(String(id)); }
 function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
-function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button]]); }
+const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
+function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON]]); }
 function genderKeyboard() { return replyKeyboard([[GENDER_LABELS.male, GENDER_LABELS.female]], true); }
 function preferenceKeyboard() { return replyKeyboard([[PREF_LABELS.female], [PREF_LABELS.male], [PREF_LABELS.any]], true); }
 function waitingKeyboard(settings) { return replyKeyboard([[settings.cancel_button]]); }
@@ -61,13 +72,22 @@ async function telegram(method, body) {
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
   });
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(`Telegram ${method}: ${result.description || response.status}`);
   return result.result;
 }
 async function send(chatId, text, replyMarkup) {
-  return telegram('sendMessage', { chat_id: chatId, text, protect_content: true, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+  const markup = replyMarkup?.reply_markup || replyMarkup;
+  return telegram('sendMessage', { chat_id: chatId, text, protect_content: true, ...(markup ? { reply_markup: markup } : {}) });
+}
+async function sendLink(chatId, text, replyMarkup) {
+  const markup = replyMarkup?.reply_markup || replyMarkup;
+  return telegram('sendMessage', { chat_id: chatId, text, protect_content: false, ...(markup ? { reply_markup: markup } : {}) });
+}
+function flowFor(settings) {
+  return createAnonymousFlow({ pool, send, sendLink, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
@@ -95,11 +115,9 @@ async function findPair(id, preference) {
     const candidate = await client.query(`
       SELECT candidate.telegram_id, candidate.gender FROM users AS candidate
       WHERE candidate.status='waiting' AND candidate.telegram_id<>$1
-        AND (
-          ($2='any' AND candidate.match_preference='any')
-          OR
-          ($2 IN ('male','female') AND candidate.gender=$2 AND (candidate.match_preference='any' OR candidate.match_preference=$3))
-        )
+        AND candidate.gender IN ('male','female')
+        AND ($2='any' OR candidate.gender=$2)
+        AND (candidate.match_preference='any' OR candidate.match_preference=$3)
         AND NOT ($1 = ANY(candidate.blocked_ids))
         AND NOT EXISTS (
           SELECT 1 FROM users AS requester
@@ -141,13 +159,23 @@ async function block(id, targetId, reason) {
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 
-async function handleStart(id) {
-  const client = await pool.connect(); try {
+async function handleStart(id, payload = null) {
+  const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    if (payload !== null) {
+      if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
+        return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s));
+      }
+      client.release();
+      released = true;
+      const started = await flowFor(s).handleStartPayload(id, payload);
+      if (!started) return send(id, 'این لینک ناشناس معتبر نیست یا دیگر در دسترس نیست.', mainKeyboard(s));
+      return;
+    }
     if (me.status === 'waiting') return send(id, 'وضعیت فعلی: در صف انتظار هستی. به‌محض پیدا شدن فرد سازگار خبر می‌دهم.', waitingKeyboard(s));
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
     return send(id, 'به چت ناشناس خوش آمدی.', mainKeyboard(s));
-  } finally { client.release(); }
+  } finally { if (!released) client.release(); }
 }
 
 async function handleConnect(id) {
@@ -204,6 +232,7 @@ async function handleCallback(id, data) {
 
 async function handleText(id, text) {
   const client = await pool.connect();
+  let released = false;
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
@@ -212,7 +241,33 @@ async function handleText(id, text) {
       if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
       await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [key, renamed]); await updateAction(client, id, null); return send(id, 'نام دکمه ذخیره شد.', adminKeyboard(s.bot_enabled));
     }
-    if (value === s.connect_button) return handleConnect(id);
+    if (me.action_state?.startsWith('anon_')) {
+      const flow = flowFor(s);
+      if (me.action_state === 'anon_done' && value === s.connect_button) {
+        await updateAction(client, id, null);
+        client.release();
+        released = true;
+        return handleConnect(id);
+      }
+      if (me.action_state === 'anon_done' && value === ANONYMOUS_LINK_BUTTON) {
+        client.release();
+        released = true;
+        return flow.handleLinkButton(id);
+      }
+      client.release();
+      released = true;
+      return flow.handleText(id, value, me.action_state);
+    }
+    if (value === ANONYMOUS_LINK_BUTTON) {
+      client.release();
+      released = true;
+      return flowFor(s).handleLinkButton(id);
+    }
+    if (value === s.connect_button) {
+      client.release();
+      released = true;
+      return handleConnect(id);
+    }
     const preferenceText = preferenceFromText(value);
     if (preferenceText && me.status === 'waiting') return send(id, 'وضعیت فعلی: هنوز در صف انتظار هستی؛ برای لغو دکمه انصراف را بزن.', waitingKeyboard(s));
     if (preferenceText && me.status === 'idle') {
@@ -265,7 +320,7 @@ async function handleText(id, text) {
     const target = Number(me.partner_id); const blocked = await client.query('SELECT $2 = ANY(blocked_ids) AS blocked FROM users WHERE telegram_id=$1', [target, id]);
     if (blocked.rows[0]?.blocked) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
     await send(target, `پیام ناشناس:\n${text}`); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
-  } finally { client.release(); }
+  } finally { if (!released) client.release(); }
 }
 
 async function processUpdate(update) {
@@ -276,9 +331,11 @@ async function processUpdate(update) {
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
   const id = Number(message.from.id); const text = String(message.text || '').trim(); if (!text) return;
-  if (text.startsWith('/')) {
-    const command = text.split(/\s+/)[0].toLowerCase();
-    if (command === '/start' || command === '/help') return handleStart(id);
+    if (text.startsWith('/')) {
+      const [rawCommand, payload] = text.split(/\s+/, 2);
+      const command = rawCommand.toLowerCase();
+      if (command === '/start') return handleStart(id, payload || null);
+      if (command === '/help') return handleStart(id);
     if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { const s = await settings(c); return send(id, `پنل مدیریت\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminKeyboard(s.bot_enabled)); } finally { c.release(); } }
     return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
   }
