@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
 import fs from 'node:fs';
 
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
@@ -37,6 +37,16 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('function replyKeyboard');
     expect(source).not.toContain('function keyboard(rows) { return { inline_keyboard: rows }; }');
     expect(source).toContain("me.action_state === 'choose_preference'");
+  });
+
+  it('shows all three partner-gender choices together as ordinary bot buttons', () => {
+    expect(preferenceKeyboard()).toEqual({
+      keyboard: [['پسر', 'دختر', 'مهم نیست']],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+      selective: true,
+    });
+    expect(source).toContain('OWN_GENDER_PROMPT');
   });
 
   it('matches users only when both sides accept the other', () => {

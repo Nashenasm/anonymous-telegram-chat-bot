@@ -16,6 +16,7 @@ const DEFAULTS = {
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
+const OWN_GENDER_PROMPT = 'برای اینکه جست‌وجو سازگار و دوطرفه باشد، اول جنسیت خودت را ثبت کن؛ بعد سه گزینهٔ «پسر»، «دختر» و «مهم نیست» برای انتخاب طرف مقابل نمایش داده می‌شود.';
 const BLOCK_REASONS = {
   rude: 'باهاش حال نکردم',
   abusive: 'بی ادب بود',
@@ -58,7 +59,7 @@ function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON]]); }
 function genderKeyboard() { return replyKeyboard([[GENDER_LABELS.male, GENDER_LABELS.female]], true); }
-function preferenceKeyboard() { return replyKeyboard([[PREF_LABELS.female], [PREF_LABELS.male], [PREF_LABELS.any]], true); }
+export function preferenceKeyboard() { return replyKeyboard([[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]], true); }
 function waitingKeyboard(settings) { return replyKeyboard([[settings.cancel_button]]); }
 function chatKeyboard(settings) { return replyKeyboard([[settings.disconnect_button]]); }
 function confirmStopKeyboard() { return replyKeyboard([['اره مطمئنم', 'نه ادامه میدم']], true); }
@@ -187,7 +188,7 @@ async function handleConnect(id) {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (!s.bot_enabled && !isAdmin(id)) return send(id, 'ربات موقتاً خاموش است.');
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
-    if (!me.gender) { await updateAction(client, id, 'choose_gender'); return send(id, 'جنسیتت را انتخاب کن؛ فقط یک‌بار از تو پرسیده می‌شود.', genderKeyboard()); }
+    if (!me.gender) { await updateAction(client, id, 'choose_gender'); return send(id, OWN_GENDER_PROMPT, genderKeyboard()); }
     await updateAction(client, id, 'choose_preference'); return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
   } finally { client.release(); }
 }
