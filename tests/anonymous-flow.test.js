@@ -129,10 +129,17 @@ describe('anonymous deep-link flow', () => {
     const { flow, states, send } = harness({ '100': 'anon_compose:200' });
     await expect(flow.handleText(100, 'سلام', 'anon_compose:200')).resolves.toBe(true);
     expect(queueAnonymousMessage).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledWith('200', 'پیام ناشناس:\nسلام', expect.any(Object));
+    expect(send).toHaveBeenCalledWith('200', 'پیام ناشناس:\nسلام', {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'پاسخ دادن', callback_data: 'anon:reply:100' },
+          { text: 'بلاک کردن', callback_data: 'anon:block:100' },
+        ]],
+      },
+    });
     expect(states.get('200')).toBe('anon_last:100');
     expect(states.get('100')).toBe('anon_wait:200');
-    expect(send).toHaveBeenCalledWith('100', expect.stringContaining('پیامتون ارسال شد'), expect.any(Object));
+    expect(send).toHaveBeenCalledWith('100', 'پیامتون ارسال شد منتظر پاسخ بمونید');
   });
 
   it('asks for consent once and finishes the sender turn after queueing', async () => {
@@ -141,15 +148,22 @@ describe('anonymous deep-link flow', () => {
     expect(queueAnonymousMessage).toHaveBeenCalledWith(expect.any(Object), '100', '200', 'سلام');
     expect(states.get('200')).toBe('anon_consent:100');
     expect(states.get('100')).toBe('anon_wait:200');
-    expect(send).toHaveBeenCalledWith('200', 'شما یک پیام ناشناس دارید، آیا قبول میکنید؟', expect.any(Object));
-    expect(send).toHaveBeenCalledWith('100', expect.stringContaining('پیامتون ارسال شد'), expect.any(Object));
+    expect(send).toHaveBeenCalledWith('200', 'شما یک پیام ناشناس دارید، آیا قبول میکنید؟', {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'بله', callback_data: 'anon:consent_yes:100' },
+          { text: 'خیر', callback_data: 'anon:consent_no:100' },
+        ]],
+      },
+    });
+    expect(send).toHaveBeenCalledWith('100', 'پیامتون ارسال شد منتظر پاسخ بمونید');
   });
 
   it('does not forward a second message while waiting and keeps reply/block controls', async () => {
     const { flow, send } = harness({ '100': 'anon_wait:200' });
     await expect(flow.handleText(100, 'متن دوم', 'anon_wait:200')).resolves.toBe(true);
     expect(queueAnonymousMessage).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledWith('100', 'برای پاسخ دادن یا بلاک کردن از دکمه‌های زیر استفاده کنید.', expect.any(Object));
+    expect(send).toHaveBeenCalledWith('100', 'پیامتون ارسال شد منتظر پاسخ بمونید');
     expect(send).not.toHaveBeenCalledWith('200', expect.stringContaining('متن دوم'), expect.anything());
   });
 
@@ -159,6 +173,56 @@ describe('anonymous deep-link flow', () => {
     expect(send).toHaveBeenCalledWith('100', 'پیام ناشناس:\nپاسخ', expect.any(Object));
     expect(states.get('100')).toBe('anon_last:200');
     expect(states.get('200')).toBe('anon_wait:100');
+  });
+
+  it('routes inline reply and block actions only for the current anonymous conversation', async () => {
+    const { flow, states, send } = harness({ '200': 'anon_last:100' });
+    await expect(flow.handleCallback('200', 'anon:reply:100')).resolves.toBe(true);
+    expect(states.get('200')).toBe('anon_reply:100');
+    expect(send).toHaveBeenCalledWith('200', 'جواب خود را بنویسید:');
+
+    states.set('200', 'anon_last:100');
+    await expect(flow.handleCallback('200', 'anon:block:100')).resolves.toBe(true);
+    expect(states.get('200')).toBe('anon_block_confirm:100');
+    expect(send).toHaveBeenLastCalledWith('200', 'آیا از بلاک کردن این کاربر مطمئن هستید؟', {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'بله مطمئنم', callback_data: 'anon:block_confirm:100' },
+          { text: 'خیر ادامه میدم', callback_data: 'anon:block_cancel:100' },
+        ]],
+      },
+    });
+  });
+
+  it('does not allow stale inline controls to act on a different recipient', async () => {
+    const { flow, states, send } = harness({ '200': 'anon_last:100' });
+    await expect(flow.handleCallback('200', 'anon:block:999')).resolves.toBe(true);
+    expect(states.get('200')).toBe('anon_last:100');
+    expect(createAnonymousBlock).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith('200', 'این دکمه دیگر معتبر نیست.');
+  });
+
+  it('uses the inline consent choice to approve only its matching pending sender', async () => {
+    decideAnonymousMessage.mockResolvedValue({ accepted: true, senderId: 100, body: 'سلام' });
+    const { flow, states, send } = harness({ '200': 'anon_consent:100' });
+    await expect(flow.handleCallback('200', 'anon:consent_yes:100')).resolves.toBe(true);
+    expect(decideAnonymousMessage).toHaveBeenCalledWith(expect.any(Object), '200', true);
+    expect(states.get('200')).toBe('anon_last:100');
+    expect(send).toHaveBeenCalledWith('200', 'پیام ناشناس:\nسلام', expect.objectContaining({
+      reply_markup: expect.objectContaining({ inline_keyboard: expect.any(Array) }),
+    }));
+  });
+
+  it('blocks only when the inline confirmation is approved and resumes safely when canceled', async () => {
+    const { flow, states } = harness({ '200': 'anon_block_confirm:100' });
+    await expect(flow.handleCallback('200', 'anon:block_cancel:100')).resolves.toBe(true);
+    expect(createAnonymousBlock).not.toHaveBeenCalled();
+    expect(states.get('200')).toBe('anon_last:100');
+
+    states.set('200', 'anon_block_confirm:100');
+    await expect(flow.handleCallback('200', 'anon:block_confirm:100')).resolves.toBe(true);
+    expect(createAnonymousBlock).toHaveBeenCalledWith(expect.any(Object), '200', '100');
+    expect(states.get('200')).toBe(null);
   });
 
   it('declines without granting continuing permission or delivering the message', async () => {
