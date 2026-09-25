@@ -13,15 +13,11 @@ const MAX_LEN = 4096;
 const HEX64 = /^[0-9a-fA-F]{64}$/;
 const LINK_LABEL = 'لینک ناشناس من';
 
-const REPLY_BLOCK = [['پاسخ دادن', 'بلاک کردن']];
-const CONSENT_KB = [['بله', 'خیر']];
-const BLOCK_KB = [['بله مطمئنم', 'خیر ادامه میدم']];
-
 const MSG_HEADER = 'پیام ناشناس:\n';
 const CONSENT_PROMPT = 'شما یک پیام ناشناس دارید، آیا قبول میکنید؟';
 const BLOCK_CONFIRM_MSG = 'آیا از بلاک کردن این کاربر مطمئن هستید؟';
 const SENT_MSG = 'پیامتون ارسال شد';
-const WAIT_MSG = 'پیامتون ارسال شد؛ تا وقتی طرف مقابل پاسخ بده، پیام دیگری نمی‌تونی بفرستی.';
+const WAIT_MSG = 'پیامتون ارسال شد منتظر پاسخ بمونید';
 const BLOCKED_MSG = 'کاربر بلاک شد';
 const COMPOSE_PROMPT = 'پیام ناشناس خود را بنویسید:';
 const REPLY_PROMPT = 'جواب خود را بنویسید:';
@@ -57,6 +53,30 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
   const uid = (id) => Number(id);
 
   const kb = (rows) => ({ reply_markup: { keyboard: rows, resize_keyboard: true } });
+  const inlineActions = (otherId) => ({
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'پاسخ دادن', callback_data: `anon:reply:${otherId}` },
+        { text: 'بلاک کردن', callback_data: `anon:block:${otherId}` },
+      ]],
+    },
+  });
+  const inlineBlockConfirm = (otherId) => ({
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'بله مطمئنم', callback_data: `anon:block_confirm:${otherId}` },
+        { text: 'خیر ادامه میدم', callback_data: `anon:block_cancel:${otherId}` },
+      ]],
+    },
+  });
+  const inlineConsent = (senderId) => ({
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'بله', callback_data: `anon:consent_yes:${senderId}` },
+        { text: 'خیر', callback_data: `anon:consent_no:${senderId}` },
+      ]],
+    },
+  });
   const mainKb = (chatting = false) =>
     kb([[connectButton, LINK_LABEL], ...(chatting ? [[disconnectButton]] : [])]);
   const composeKb = () => kb([[connectButton, LINK_LABEL], ['انصراف']]);
@@ -118,7 +138,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
 
   const deliver = async (senderId, recipientId, body) => {
     await setState(recipientId, `anon_last:${senderId}`);
-    await send(recipientId, MSG_HEADER + body, kb(REPLY_BLOCK));
+    await send(recipientId, MSG_HEADER + body, inlineActions(senderId));
   };
 
   const finishSender = async (senderId) => {
@@ -130,7 +150,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
       return;
     }
     await setState(senderId, `anon_wait:${targetId}`);
-    await send(senderId, WAIT_MSG, kb(REPLY_BLOCK));
+    await send(senderId, WAIT_MSG);
   };
 
   const compose = async (senderId, targetId, body) => {
@@ -165,14 +185,14 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
       return true;
     }
     await setState(targetId, `anon_consent:${senderId}`);
-    await send(targetId, CONSENT_PROMPT, kb(CONSENT_KB));
+    await send(targetId, CONSENT_PROMPT, inlineConsent(senderId));
     await finishSender(senderId);
     return true;
   };
 
   const consent = async (recipientId, senderId, body) => {
     if (body !== 'بله' && body !== 'خیر') {
-      await send(recipientId, CONSENT_PROMPT, kb(CONSENT_KB));
+      await send(recipientId, CONSENT_PROMPT, inlineConsent(senderId));
       return true;
     }
     const blocked = await pairIsBlocked(pool, recipientId, senderId);
@@ -181,7 +201,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
     if (accept && delivered && typeof delivered.body === 'string' && delivered.body.length > 0) {
       const realSenderId = delivered.senderId != null ? delivered.senderId : senderId;
       await setState(recipientId, `anon_last:${realSenderId}`);
-      await send(recipientId, MSG_HEADER + delivered.body, kb(REPLY_BLOCK));
+      await send(recipientId, MSG_HEADER + delivered.body, inlineActions(realSenderId));
     } else {
       await setState(recipientId, null);
       await send(recipientId, DISCARDED_MSG, await mainKbFor(recipientId));
@@ -197,12 +217,12 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
   const lastMenu = async (recipientId, senderId, body) => {
     if (body === 'پاسخ دادن') {
       await setState(recipientId, `anon_reply:${senderId}`);
-      await send(recipientId, REPLY_PROMPT, kb(REPLY_BLOCK));
+      await send(recipientId, REPLY_PROMPT);
     } else if (body === 'بلاک کردن') {
       await setState(recipientId, `anon_block_confirm:${senderId}`);
-      await send(recipientId, BLOCK_CONFIRM_MSG, kb(BLOCK_KB));
+      await send(recipientId, BLOCK_CONFIRM_MSG, inlineBlockConfirm(senderId));
     } else {
-      await send(recipientId, CHOOSE_MSG, kb(REPLY_BLOCK));
+      await send(recipientId, CHOOSE_MSG, inlineActions(senderId));
     }
     return true;
   };
@@ -210,25 +230,25 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
   const reply = async (replierId, targetId, body) => {
     if (CANCEL_WORDS.includes(body)) {
       await setState(replierId, `anon_last:${targetId}`);
-      await send(replierId, BACK_MSG, kb(REPLY_BLOCK));
+      await send(replierId, BACK_MSG);
       return true;
     }
     if (body === connectButton || body === LINK_LABEL) {
       await setState(replierId, `anon_last:${targetId}`);
-      await send(replierId, BACK_MSG, kb(REPLY_BLOCK));
+      await send(replierId, BACK_MSG);
       return true;
     }
     if (body === 'بلاک کردن') {
       await setState(replierId, `anon_block_confirm:${targetId}`);
-      await send(replierId, BLOCK_CONFIRM_MSG, kb(BLOCK_KB));
+      await send(replierId, BLOCK_CONFIRM_MSG, inlineBlockConfirm(targetId));
       return true;
     }
     if (body === 'پاسخ دادن') {
-      await send(replierId, REPLY_PROMPT, kb(REPLY_BLOCK));
+      await send(replierId, REPLY_PROMPT);
       return true;
     }
     if (body.length === 0 || body.length > MAX_LEN) {
-      await send(replierId, LEN_MSG, kb(REPLY_BLOCK));
+      await send(replierId, LEN_MSG);
       return true;
     }
     if (await pairIsBlocked(pool, replierId, targetId)) {
@@ -250,10 +270,53 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
     }
     if (body === 'خیر ادامه میدم' || CANCEL_WORDS.includes(body)) {
       await setState(blockerId, `anon_last:${otherId}`);
-      await send(blockerId, BACK_MSG, kb(REPLY_BLOCK));
+      await send(blockerId, BACK_MSG, inlineActions(otherId));
       return true;
     }
-    await send(blockerId, BLOCK_CONFIRM_MSG, kb(BLOCK_KB));
+    await send(blockerId, BLOCK_CONFIRM_MSG, inlineBlockConfirm(otherId));
+    return true;
+  };
+
+  const handleCallback = async (id, callbackData) => {
+    const match = /^anon:(reply|block|block_confirm|block_cancel|consent_yes|consent_no):(\d{1,20})$/.exec(callbackData);
+    if (!match) return false;
+    const [, action, rawOtherId] = match;
+    const otherId = String(rawOtherId);
+    const current = parseState(await getState(id));
+    if (action === 'consent_yes' || action === 'consent_no') {
+      if (!current || current.name !== 'anon_consent' || String(current.id) !== otherId) {
+        await send(id, 'این دکمه دیگر معتبر نیست.');
+        return true;
+      }
+      return consent(String(id), otherId, action === 'consent_yes' ? 'بله' : 'خیر');
+    }
+    const expectedState = action === 'block_confirm' || action === 'block_cancel'
+      ? 'anon_block_confirm'
+      : 'anon_last';
+    if (!current || current.name !== expectedState || String(current.id) !== otherId) {
+      await send(id, 'این دکمه دیگر معتبر نیست.');
+      return true;
+    }
+
+    if (action === 'reply') {
+      await setState(id, `anon_reply:${otherId}`);
+      await send(id, REPLY_PROMPT);
+      return true;
+    }
+
+    if (action === 'block') {
+      await setState(id, `anon_block_confirm:${otherId}`);
+      await send(id, BLOCK_CONFIRM_MSG, inlineBlockConfirm(otherId));
+      return true;
+    }
+    if (action === 'block_confirm') {
+      await createAnonymousBlock(pool, id, otherId);
+      await clearAnonStates(id, otherId);
+      await send(id, BLOCKED_MSG, await mainKbFor(id));
+      return true;
+    }
+    await setState(id, `anon_last:${otherId}`);
+    await send(id, BACK_MSG, inlineActions(otherId));
     return true;
   };
 
@@ -275,7 +338,8 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
       case 'anon_last':
         return lastMenu(sid, parsed.id, body);
       case 'anon_wait':
-        return lastMenu(sid, parsed.id, body);
+        await send(sid, WAIT_MSG);
+        return true;
       case 'anon_reply':
         return reply(sid, parsed.id, body);
       case 'anon_block_confirm':
@@ -348,5 +412,5 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
     }
   };
 
-  return { handleLinkButton, handleStartPayload, handleText, isActiveState };
+  return { handleLinkButton, handleStartPayload, handleText, handleCallback, isActiveState };
 }
