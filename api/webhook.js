@@ -16,7 +16,7 @@ const DEFAULTS = {
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
-const OWN_GENDER_PROMPT = 'برای اینکه جست‌وجو سازگار و دوطرفه باشد، اول جنسیت خودت را ثبت کن؛ بعد سه گزینهٔ «پسر»، «دختر» و «مهم نیست» برای انتخاب طرف مقابل نمایش داده می‌شود.';
+const OWN_GENDER_PROMPT = 'انتخابت ثبت شد. برای اتصال سازگار و دوطرفه، جنسیت خودت را هم انتخاب کن:';
 const BLOCK_REASONS = {
   rude: 'باهاش حال نکردم',
   abusive: 'بی ادب بود',
@@ -143,6 +143,21 @@ async function findPair(id, preference) {
     return { kind: 'paired', partnerId: other };
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
+async function searchByPreference(id, preference, s) {
+  if (!['male', 'female', 'any'].includes(preference)) return send(id, 'یکی از سه گزینهٔ پسر، دختر یا مهم نیست را انتخاب کن.', preferenceKeyboard());
+  const result = await findPair(id, preference);
+  if (result.kind === 'missing_gender') {
+    await pool.query('UPDATE users SET action_state=$2, updated_at=NOW() WHERE telegram_id=$1', [id, `choose_gender_for:${preference}`]);
+    return send(id, OWN_GENDER_PROMPT, genderKeyboard());
+  }
+  if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
+  if (result.kind === 'paired') {
+    await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s));
+    await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s));
+    return;
+  }
+  return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.', waitingKeyboard(s));
+}
 async function leaveWaiting(id) { await pool.query("UPDATE users SET status='idle', partner_id=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1 AND status='waiting'", [id]); }
 async function disconnect(id) {
   const client = await pool.connect();
@@ -188,7 +203,6 @@ async function handleConnect(id) {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (!s.bot_enabled && !isAdmin(id)) return send(id, 'ربات موقتاً خاموش است.');
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
-    if (!me.gender) { await updateAction(client, id, 'choose_gender'); return send(id, OWN_GENDER_PROMPT, genderKeyboard()); }
     await updateAction(client, id, 'choose_preference'); return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
   } finally { client.release(); }
 }
@@ -205,18 +219,19 @@ async function handleCallback(id, data) {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
     if (data === 'connect') return handleConnect(id);
     if (data === 'gender:male' || data === 'gender:female') {
-      await sClient.query('UPDATE users SET gender=$2, action_state=\'choose_preference\', updated_at=NOW() WHERE telegram_id=$1', [id, data.split(':')[1]]);
+      const pendingMatch = me.action_state?.match(/^choose_gender_for:(male|female|any)$/)?.[1];
+      await sClient.query('UPDATE users SET gender=$2, action_state=$3, updated_at=NOW() WHERE telegram_id=$1', [id, data.split(':')[1], pendingMatch ? null : 'choose_preference']);
+      if (pendingMatch) return searchByPreference(id, pendingMatch, s);
       return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
     }
     if (data.startsWith('pref:')) {
       const preference = data.slice('pref:'.length);
       if (!['male', 'female', 'any'].includes(preference)) return send(id, 'گزینهٔ جستجو معتبر نیست.', mainKeyboard(s));
-      if (!['male', 'female'].includes(me.gender)) { await updateAction(sClient, id, 'choose_gender'); return send(id, 'اول جنسیتت را انتخاب کن.', genderKeyboard()); }
-      const result = await findPair(id, preference);
-      if (result.kind === 'missing_gender') { await updateAction(sClient, id, 'choose_gender'); return send(id, 'اول جنسیتت را انتخاب کن.', genderKeyboard()); }
-      if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
-      if (result.kind === 'paired') { await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); return; }
-      return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌کنم.', waitingKeyboard(s));
+      if (!['male', 'female'].includes(me.gender)) {
+        await updateAction(sClient, id, `choose_gender_for:${preference}`);
+        return send(id, OWN_GENDER_PROMPT, genderKeyboard());
+      }
+      return searchByPreference(id, preference, s);
     }
     if (data === 'cancel_wait') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
     if (data === 'stop') {
@@ -283,30 +298,32 @@ async function handleText(id, text) {
       released = true;
       return handleConnect(id);
     }
-    if (me.action_state === 'choose_gender') {
+    if (me.action_state === 'choose_gender' || me.action_state?.startsWith('choose_gender_for:')) {
+      const pendingMatch = me.action_state.match(/^choose_gender_for:(male|female|any)$/)?.[1];
       const normalized = normalizeFa(value);
       const gender = [normalizeFa(GENDER_LABELS.male), 'پسر'].includes(normalized) ? 'male' : [normalizeFa(GENDER_LABELS.female), 'دختر'].includes(normalized) ? 'female' : null;
-      if (!gender) return send(id, 'یکی از دو گزینه جنسیت را انتخاب کن.', genderKeyboard());
-      await client.query("UPDATE users SET gender=$2, action_state='choose_preference', updated_at=NOW() WHERE telegram_id=$1", [id, gender]);
+      if (!gender) return send(id, 'یکی از دو گزینهٔ جنسیت خودت را انتخاب کن.', genderKeyboard());
+      await client.query('UPDATE users SET gender=$2, action_state=$3, updated_at=NOW() WHERE telegram_id=$1', [id, gender, pendingMatch ? null : 'choose_preference']);
+      if (pendingMatch) return searchByPreference(id, pendingMatch, s);
       return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
     }
     if (me.action_state === 'choose_preference') {
-      if (!['male', 'female'].includes(me.gender)) { await updateAction(client, id, 'choose_gender'); return send(id, 'اول جنسیتت را انتخاب کن.', genderKeyboard()); }
       const preference = preferenceFromText(value);
       if (!preference) return send(id, 'یکی از گزینه‌های جنسیت را انتخاب کن.', preferenceKeyboard());
-      const result = await findPair(id, preference);
-      if (result.kind === 'missing_gender') { await updateAction(client, id, 'choose_gender'); return send(id, 'اول جنسیتت را انتخاب کن.', genderKeyboard()); }
-      if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
-      if (result.kind === 'paired') { await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); return; }
-      return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.', waitingKeyboard(s));
+      if (!['male', 'female'].includes(me.gender)) {
+        await updateAction(client, id, `choose_gender_for:${preference}`);
+        return send(id, OWN_GENDER_PROMPT, genderKeyboard());
+      }
+      return searchByPreference(id, preference, s);
     }
     const preferenceText = preferenceFromText(value);
     if (preferenceText && me.status === 'waiting') return send(id, 'وضعیت فعلی: هنوز در صف انتظار هستی؛ برای لغو دکمه انصراف را بزن.', waitingKeyboard(s));
-    if (preferenceText && me.status === 'idle' && ['male', 'female'].includes(me.gender)) {
-      const result = await findPair(id, preferenceText);
-      if (result.kind === 'already_chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی.', chatKeyboard(s));
-      if (result.kind === 'paired') { await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s)); return; }
-      return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.', waitingKeyboard(s));
+    if (preferenceText && me.status === 'idle') {
+      if (!['male', 'female'].includes(me.gender)) {
+        await updateAction(client, id, `choose_gender_for:${preferenceText}`);
+        return send(id, OWN_GENDER_PROMPT, genderKeyboard());
+      }
+      return searchByPreference(id, preferenceText, s);
     }
     if (value === s.cancel_button && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
     if (value === s.disconnect_button && me.status === 'chatting') {
