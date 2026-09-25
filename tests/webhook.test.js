@@ -47,6 +47,10 @@ describe('anonymous chat public contract', () => {
       selective: true,
     });
     expect(source).toContain('OWN_GENDER_PROMPT');
+    const connectHandler = source.slice(source.indexOf('async function handleConnect'), source.indexOf('async function handleCallback'));
+    expect(connectHandler).toContain("await updateAction(client, id, 'choose_preference')");
+    expect(connectHandler).not.toContain('!me.gender');
+    expect(source).toContain('choose_gender_for:${preference}');
   });
 
   it('matches users only when both sides accept the other', () => {
@@ -83,7 +87,7 @@ describe('anonymous chat public contract', () => {
   });
 
   it('processes gender selection before a same-word search preference', () => {
-    const chooseGender = source.indexOf("if (me.action_state === 'choose_gender')");
+    const chooseGender = source.indexOf("if (me.action_state === 'choose_gender' || me.action_state?.startsWith('choose_gender_for:'))");
     const fallbackPreference = source.indexOf('const preferenceText = preferenceFromText(value)');
     expect(chooseGender).toBeGreaterThan(-1);
     expect(fallbackPreference).toBeGreaterThan(chooseGender);
