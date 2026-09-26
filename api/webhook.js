@@ -27,6 +27,13 @@ async function ensureRuntimeSchema() {
         await client.query("UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL");
         await client.query("ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days')");
         await client.query('ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL');
+        await client.query("INSERT INTO bot_settings(key, value) VALUES ('unblock_all_v1', 'pending') ON CONFLICT (key) DO NOTHING");
+        const unblock = await client.query("SELECT value FROM bot_settings WHERE key='unblock_all_v1'");
+        if (unblock.rows[0]?.value === 'pending') {
+          await client.query('DELETE FROM anonymous_blocks');
+          await client.query("UPDATE users SET blocked_ids='{}'::bigint[] WHERE blocked_ids <> '{}'::bigint[]");
+          await client.query("UPDATE bot_settings SET value='applied', updated_at=NOW() WHERE key='unblock_all_v1'");
+        }
         await client.query(`INSERT INTO bot_settings(key, value) VALUES
           ('profile_button', 'پروفایل من'), ('back_button', 'بازگشت'),
           ('welcome_message', 'به چت ناشناس خوش آمدی.'),
@@ -195,7 +202,7 @@ async function findPair(id, preference) {
         AND NOT EXISTS (
           SELECT 1 FROM anonymous_blocks AS ab
           WHERE ab.expires_at > NOW()
-            AND ((ab.user_low = LEAST($1, candidate.telegram_id) AND ab.user_high = GREATEST($1, candidate.telegram_id)))
+            AND ((ab.user_low = LEAST($1::bigint, candidate.telegram_id) AND ab.user_high = GREATEST($1::bigint, candidate.telegram_id)))
         )
       ORDER BY
         CASE WHEN $2='any' AND COALESCE(candidate.match_preference, 'any')=$3 THEN 0 ELSE 1 END ASC,
@@ -246,7 +253,7 @@ async function block(id, targetId, reason) {
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO anonymous_blocks (user_low, user_high, expires_at)
-       VALUES (LEAST($1,$2), GREATEST($1,$2), NOW() + INTERVAL '7 days')
+       VALUES (LEAST($1::bigint,$2::bigint), GREATEST($1::bigint,$2::bigint), NOW() + INTERVAL '7 days')
        ON CONFLICT (user_low, user_high) DO UPDATE SET created_at=NOW(), expires_at=NOW() + INTERVAL '7 days'`,
       [id, targetId]
     );
@@ -473,7 +480,7 @@ async function handleText(id, text) {
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id);
     const blocked = await client.query(
-      'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1,$2) AND user_high=GREATEST($1,$2) AND expires_at > NOW()',
+      'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1::bigint,$2::bigint) AND user_high=GREATEST($1::bigint,$2::bigint) AND expires_at > NOW()',
       [target, id]
     );
     if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
