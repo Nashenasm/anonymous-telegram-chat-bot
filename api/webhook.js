@@ -484,7 +484,7 @@ async function handleText(id, text) {
       [target, id]
     );
     if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
-    await send(target, `پیام ناشناس:\n${text}`); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    await send(target, text); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
   } finally { if (!released) client.release(); }
 }
 
