@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS users (
   telegram_id BIGINT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','waiting','chatting')),
   gender TEXT NULL CHECK (gender IN ('male','female')),
+  coins INTEGER NOT NULL DEFAULT 0 CHECK (coins >= 0),
   match_preference TEXT NULL CHECK (match_preference IN ('male','female','any')),
   partner_id BIGINT NULL,
   last_partner_id BIGINT NULL,
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS match_preference TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_partner_id BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS action_state TEXT;
@@ -35,6 +37,12 @@ INSERT INTO bot_settings(key, value) VALUES
   ('connect_button', 'وصل کن به ناشناس'),
   ('cancel_button', 'انصراف'),
   ('disconnect_button', 'قطع مکالمه'),
+  ('profile_button', 'پروفایل من'),
+  ('back_button', 'بازگشت'),
+  ('welcome_message', 'به چت ناشناس خوش آمدی.'),
+  ('connected_message', 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.'),
+  ('mid_chat_ad_enabled', 'false'),
+  ('mid_chat_ad_minutes', '15'),
   ('bot_enabled', 'true')
 ON CONFLICT (key) DO NOTHING;
 
@@ -84,8 +92,13 @@ CREATE TABLE IF NOT EXISTS anonymous_blocks (
   user_low BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
   PRIMARY KEY (user_low, user_high),
   CHECK (user_low < user_high)
 );
+ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL;
+ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days');
+ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL;
 
 -- Optional cleanup job: DELETE FROM processed_updates WHERE processed_at < NOW() - INTERVAL '14 days';

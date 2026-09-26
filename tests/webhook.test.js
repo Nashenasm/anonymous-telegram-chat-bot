@@ -11,6 +11,10 @@ describe('anonymous chat public contract', () => {
       connect_button: 'وصل کن به ناشناس',
       cancel_button: 'انصراف',
       disconnect_button: 'قطع مکالمه',
+      profile_button: 'پروفایل من',
+      back_button: 'بازگشت',
+      welcome_message: 'به چت ناشناس خوش آمدی.',
+      connected_message: 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.',
     });
     expect(Object.values(BLOCK_REASONS)).toHaveLength(4);
   });
@@ -28,6 +32,8 @@ describe('anonymous chat public contract', () => {
     expect(schema).toContain('CREATE TABLE IF NOT EXISTS anonymous_blocks');
     expect(schema).toContain('gender TEXT');
     expect(schema).toContain('conversation_started_at');
+    expect(schema).toContain('coins INTEGER NOT NULL DEFAULT 0');
+    expect(schema).toContain("expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days')");
   });
 
   it('enforces two-way preference matching and reply keyboards', () => {

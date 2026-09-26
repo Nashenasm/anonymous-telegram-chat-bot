@@ -13,6 +13,10 @@ const DEFAULTS = {
   connect_button: 'وصل کن به ناشناس',
   cancel_button: 'انصراف',
   disconnect_button: 'قطع مکالمه',
+  profile_button: 'پروفایل من',
+  back_button: 'بازگشت',
+  welcome_message: 'به چت ناشناس خوش آمدی.',
+  connected_message: 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.',
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
@@ -57,7 +61,11 @@ function isAdmin(id) { return adminIds().has(String(id)); }
 function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
-function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON]]); }
+function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON], [settings.profile_button]]); }
+function profileKeyboard(settings) { return replyKeyboard([[settings.back_button]], true); }
+function adminMainKeyboard() { return replyKeyboard([['تبلیغات', 'کنترل ربات'], ['کنترل کاربران', 'وضعیت ربات'], ['گزارش‌ها', 'مدیران'], ['خروج از پنل']]); }
+function adsKeyboard() { return replyKeyboard([['جویین اجباری', 'پیام همگانی'], ['پیام خوش‌آمد', 'تبلیغ اتصال'], ['تبلیغ میان مکالمه'], ['بازگشت پنل']], true); }
+function controlKeyboard() { return replyKeyboard([['بخش ظاهری پابلیک'], ['بخش ظاهری پرایویسی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
 function genderKeyboard() { return replyKeyboard([[GENDER_LABELS.male, GENDER_LABELS.female]], true); }
 export function preferenceKeyboard() { return replyKeyboard([[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]], true); }
 function waitingKeyboard(settings) { return replyKeyboard([[settings.cancel_button]]); }
@@ -65,7 +73,7 @@ function chatKeyboard(settings) { return replyKeyboard([[settings.disconnect_but
 function confirmStopKeyboard() { return replyKeyboard([['اره مطمئنم', 'نه ادامه میدم']], true); }
 function afterStopKeyboard() { return replyKeyboard([['بلاکش کن'], ['بعدا وصلش کن']], true); }
 function blockKeyboard() { return replyKeyboard([[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']], true); }
-function adminKeyboard(enabled) { return replyKeyboard([['تغییر نام دکمه‌ها'], [enabled ? 'خاموش کردن ربات' : 'روشن کردن ربات']]); }
+function adminKeyboard(enabled) { return adminMainKeyboard(); }
 function renameKeyboard() { return replyKeyboard([['دکمه اتصال'], ['دکمه انصراف'], ['دکمه قطع مکالمه']], true); }
 
 async function telegram(method, body) {
@@ -104,6 +112,32 @@ async function ensureUser(client, id) {
   return result.rows[0];
 }
 async function user(client, id) { const r = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]); return r.rows[0] || null; }
+function iranDate(value) {
+  return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+}
+async function sendProfile(id, settings) {
+  const client = await pool.connect();
+  try {
+    const me = await ensureUser(client, id);
+    const gender = me.gender === 'male' ? 'پسر' : me.gender === 'female' ? 'دختر' : 'ثبت نشده';
+    const text = `پروفایل شما\n\n🪙 سکه: ${Number(me.coins || 0)}\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${gender}`;
+    return send(id, text, profileKeyboard(settings));
+  } finally { client.release(); }
+}
+async function adminStats(client) {
+  const r = await client.query(`SELECT COUNT(*) FILTER (WHERE TRUE) AS users, COUNT(*) FILTER (WHERE status='waiting') AS waiting, COUNT(*) FILTER (WHERE status='chatting') AS chatting, (SELECT COUNT(*) FROM reports WHERE status='open') AS reports FROM users`);
+  const x = r.rows[0];
+  return `وضعیت ربات\n\nکاربران: ${x.users}\nدر صف انتظار: ${x.waiting}\nمکالمه‌های فعال: ${x.chatting}\nگزارش‌های باز: ${x.reports}`;
+}
+async function broadcastText(client, text, senderId) {
+  const users = await client.query('SELECT telegram_id FROM users');
+  let sent = 0;
+  for (const row of users.rows) {
+    try { await send(row.telegram_id, text); sent += 1; } catch { /* حساب‌های مسدودشده رد می‌شوند */ }
+  }
+  await send(senderId, `ارسال همگانی تمام شد.\nموفق: ${sent}\nکل هدف‌ها: ${users.rowCount}`, adminMainKeyboard());
+}
+
 async function updateAction(client, id, action) { await client.query('UPDATE users SET action_state=$2, updated_at=NOW() WHERE telegram_id=$1', [id, action]); }
 
 async function findPair(id, preference) {
@@ -123,11 +157,10 @@ async function findPair(id, preference) {
         AND candidate.gender IN ('male','female')
         AND ($2='any' OR candidate.gender=$2)
         AND (candidate.match_preference='any' OR candidate.match_preference=$3)
-        AND NOT ($1 = ANY(candidate.blocked_ids))
         AND NOT EXISTS (
-          SELECT 1 FROM users AS requester
-          WHERE requester.telegram_id=$1
-            AND candidate.telegram_id = ANY(requester.blocked_ids)
+          SELECT 1 FROM anonymous_blocks AS ab
+          WHERE ab.expires_at > NOW()
+            AND ((ab.user_low = LEAST($1, candidate.telegram_id) AND ab.user_high = GREATEST($1, candidate.telegram_id)))
         )
       ORDER BY candidate.updated_at ASC
       LIMIT 1 FOR UPDATE SKIP LOCKED`, [id, preference, me.gender]);
@@ -152,8 +185,8 @@ async function searchByPreference(id, preference, s) {
   }
   if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
   if (result.kind === 'paired') {
-    await send(id, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s));
-    await send(result.partnerId, 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.', chatKeyboard(s));
+    await send(id, s.connected_message || DEFAULTS.connected_message, chatKeyboard(s));
+    await send(result.partnerId, s.connected_message || DEFAULTS.connected_message, chatKeyboard(s));
     return;
   }
   return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.', waitingKeyboard(s));
@@ -173,7 +206,12 @@ async function block(id, targetId, reason) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('UPDATE users SET blocked_ids=ARRAY(SELECT DISTINCT unnest(blocked_ids || $2::bigint[])), updated_at=NOW() WHERE telegram_id=$1', [id, [targetId]]);
+    await client.query(
+      `INSERT INTO anonymous_blocks (user_low, user_high, expires_at)
+       VALUES (LEAST($1,$2), GREATEST($1,$2), NOW() + INTERVAL '7 days')
+       ON CONFLICT (user_low, user_high) DO UPDATE SET created_at=NOW(), expires_at=NOW() + INTERVAL '7 days'`,
+      [id, targetId]
+    );
     await client.query('INSERT INTO reports (reporter_id, target_id, reason) VALUES ($1,$2,$3)', [id, targetId, reason]);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -194,7 +232,7 @@ async function handleStart(id, payload = null) {
     }
     if (me.status === 'waiting') return send(id, 'وضعیت فعلی: در صف انتظار هستی. به‌محض پیدا شدن فرد سازگار خبر می‌دهم.', waitingKeyboard(s));
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
-    return send(id, 'به چت ناشناس خوش آمدی.', mainKeyboard(s));
+    return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
   } finally { if (!released) client.release(); }
 }
 
@@ -266,6 +304,47 @@ async function handleText(id, text) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    if (isAdmin(id) && me.action_state?.startsWith('admin:set:')) {
+      const key = me.action_state.slice('admin:set:'.length);
+      if (!['welcome_message', 'connected_message'].includes(key)) return send(id, 'تنظیم نامعتبر است.', adminMainKeyboard());
+      if (!value) return send(id, 'پیام نمی‌تواند خالی باشد. دوباره بفرست.');
+      await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [key, value.slice(0, 4000)]);
+      await updateAction(client, id, null);
+      return send(id, 'پیام با موفقیت ذخیره شد.', adminMainKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'admin:broadcast') {
+      if (!value) return send(id, 'متن پیام همگانی نمی‌تواند خالی باشد.');
+      await updateAction(client, id, null);
+      return broadcastText(client, value, id);
+    }
+    if (isAdmin(id) && me.action_state === 'admin:user_search') {
+      if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.');
+      const found = await client.query('SELECT telegram_id,status,gender,coins,created_at FROM users WHERE telegram_id=$1', [value]);
+      await updateAction(client, id, null);
+      if (!found.rows[0]) return send(id, 'کاربری با این آیدی پیدا نشد.', adminMainKeyboard());
+      const u = found.rows[0];
+      return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nسکه: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard());
+    }
+    if (isAdmin(id) && value === s.profile_button) return sendProfile(id, s);
+    if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
+    if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
+    if (isAdmin(id) && value === 'کنترل ربات') return send(id, 'کنترل ربات', controlKeyboard());
+    if (isAdmin(id) && value === 'کنترل کاربران') { await updateAction(client, id, 'admin:user_search'); return send(id, 'آیدی عددی کاربر را بفرست.'); }
+    if (isAdmin(id) && value === 'وضعیت ربات') { const stats = await adminStats(client); return send(id, stats, adminMainKeyboard()); }
+    if (isAdmin(id) && value === 'گزارش‌ها') { const r = await client.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS open FROM reports"); return send(id, `گزارش‌ها\n\nکل: ${r.rows[0].total}\nباز: ${r.rows[0].open}`, adminMainKeyboard()); }
+    if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard());
+    if (isAdmin(id) && value === 'جویین اجباری') return send(id, 'این بخش آمادهٔ اتصال کانال است و در نسخهٔ بعدی فعال می‌شود.', adsKeyboard());
+    if (isAdmin(id) && value === 'پیام همگانی') { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
+    if (isAdmin(id) && value === 'پیام خوش‌آمد') { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
+    if (isAdmin(id) && value === 'تبلیغ اتصال') { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
+    if (isAdmin(id) && value === 'تبلیغ میان مکالمه') return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard());
+    if (isAdmin(id) && value === 'بخش ظاهری پابلیک') return send(id, 'ظاهر عمومی فعلاً از تنظیمات دکمه‌های اتصال، انصراف، قطع مکالمه و پروفایل استفاده می‌کند.', controlKeyboard());
+    if (isAdmin(id) && value === 'بخش ظاهری پرایویسی') return send(id, 'ظاهر پنل مدیریت در این نسخه با منوی قابل توسعه فعال است.', controlKeyboard());
+    if (isAdmin(id) && value === 'روشن/خاموش کردن ربات') { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard()); }
+    if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) return send(id, 'پنل مدیریت', adminMainKeyboard());
+    if (isAdmin(id) && value === 'خروج از پنل') { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
+    if (value === s.profile_button || value === 'پروفایل من') return sendProfile(id, s);
+    if (value === s.back_button || value === 'بازگشت') return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
     if (isAdmin(id) && me.action_state?.startsWith('rename:')) {
       const key = me.action_state.slice('rename:'.length); const renamed = value.slice(0, 64);
       if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
@@ -352,8 +431,12 @@ async function handleText(id, text) {
       await block(id, target, found[1]); await updateAction(client, id, null); await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`); return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
-    const target = Number(me.partner_id); const blocked = await client.query('SELECT $2 = ANY(blocked_ids) AS blocked FROM users WHERE telegram_id=$1', [target, id]);
-    if (blocked.rows[0]?.blocked) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
+    const target = Number(me.partner_id);
+    const blocked = await client.query(
+      'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1,$2) AND user_high=GREATEST($1,$2) AND expires_at > NOW()',
+      [target, id]
+    );
+    if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
     await send(target, `پیام ناشناس:\n${text}`); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
   } finally { if (!released) client.release(); }
 }
@@ -371,7 +454,7 @@ async function processUpdate(update) {
       const command = rawCommand.toLowerCase();
       if (command === '/start') return handleStart(id, payload || null);
       if (command === '/help') return handleStart(id);
-    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { const s = await settings(c); return send(id, `پنل مدیریت\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminKeyboard(s.bot_enabled)); } finally { c.release(); } }
+    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { const s = await settings(c); return send(id, `پنل مدیریت\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard()); } finally { c.release(); } }
     return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
   }
   return handleText(id, text);

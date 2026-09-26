@@ -120,7 +120,7 @@ export async function pairIsBlocked(pool, a, b) {
   if (!pool) throw new Error('Database pool is required');
   const [lo, hi] = canonicalPair(a, b);
   const result = await pool.query(
-    'SELECT 1 FROM anonymous_blocks WHERE user_low = $1 AND user_high = $2',
+    'SELECT 1 FROM anonymous_blocks WHERE user_low = $1 AND user_high = $2 AND expires_at > now()',
     [lo, hi]
   );
   return result.rows.length > 0;
@@ -166,7 +166,7 @@ export async function queueAnonymousMessage(pool, sender, recipient, body) {
 
     const [lo, hi] = canonicalPair(senderId, recipientId);
     const blocked = await client.query(
-      'SELECT 1 FROM anonymous_blocks WHERE user_low = $1 AND user_high = $2',
+      'SELECT 1 FROM anonymous_blocks WHERE user_low = $1 AND user_high = $2 AND expires_at > now()',
       [lo, hi]
     );
     if (blocked.rows.length > 0) return { status: 'blocked' };
@@ -235,7 +235,10 @@ export async function createAnonymousBlock(pool, a, b) {
 
   await withTransaction(pool, async (client) => {
     await client.query(
-      'INSERT INTO anonymous_blocks (user_low, user_high) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      `INSERT INTO anonymous_blocks (user_low, user_high, expires_at)
+       VALUES ($1, $2, now() + INTERVAL '7 days')
+       ON CONFLICT (user_low, user_high) DO UPDATE
+       SET created_at = now(), expires_at = now() + INTERVAL '7 days'`,
       [lo, hi]
     );
 
