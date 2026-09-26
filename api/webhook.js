@@ -8,6 +8,41 @@ const pool = new Pool({
   connectionTimeoutMillis: 5_000,
   ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
 });
+let runtimeSchemaPromise;
+async function ensureRuntimeSchema() {
+  if (!runtimeSchemaPromise) {
+    runtimeSchemaPromise = (async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0');
+        await client.query(`CREATE TABLE IF NOT EXISTS anonymous_blocks (
+          user_low BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+          user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+          PRIMARY KEY (user_low, user_high), CHECK (user_low < user_high)
+        )`);
+        await client.query('ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
+        await client.query("UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL");
+        await client.query("ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days')");
+        await client.query('ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL');
+        await client.query(`INSERT INTO bot_settings(key, value) VALUES
+          ('profile_button', 'پروفایل من'), ('back_button', 'بازگشت'),
+          ('welcome_message', 'به چت ناشناس خوش آمدی.'),
+          ('connected_message', 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.'),
+          ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15')
+          ON CONFLICT (key) DO NOTHING`);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        runtimeSchemaPromise = undefined;
+        throw error;
+      } finally { client.release(); }
+    })();
+  }
+  return runtimeSchemaPromise;
+}
 
 const DEFAULTS = {
   connect_button: 'وصل کن به ناشناس',
@@ -464,7 +499,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET; const supplied = req.headers['x-telegram-bot-api-secret-token'];
   if (!expected || supplied !== expected) return res.status(401).json({ ok: false, error: 'unauthorized' });
-  try { await processUpdate(req.body || {}); return res.status(200).json({ ok: true }); }
+  try { await ensureRuntimeSchema(); await processUpdate(req.body || {}); return res.status(200).json({ ok: true }); }
   catch (error) {
     console.error('webhook_error', error?.message || error);
     const fromId = req.body?.callback_query?.from?.id || req.body?.message?.from?.id;
