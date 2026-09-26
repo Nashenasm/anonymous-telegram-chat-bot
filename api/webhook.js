@@ -380,6 +380,13 @@ async function handleText(id, text) {
     if (isAdmin(id) && value === 'خروج از پنل') { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
     if (value === s.profile_button || value === 'پروفایل من') return sendProfile(id, s);
     if (value === s.back_button || value === 'بازگشت') return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
+    // A stale anonymous-link state must never swallow the normal connect button.
+    if (value === s.connect_button) {
+      await updateAction(client, id, null);
+      client.release();
+      released = true;
+      return handleConnect(id);
+    }
     if (isAdmin(id) && me.action_state?.startsWith('rename:')) {
       const key = me.action_state.slice('rename:'.length); const renamed = value.slice(0, 64);
       if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
@@ -406,11 +413,6 @@ async function handleText(id, text) {
       client.release();
       released = true;
       return flowFor(s).handleLinkButton(id);
-    }
-    if (value === s.connect_button) {
-      client.release();
-      released = true;
-      return handleConnect(id);
     }
     if (me.action_state === 'choose_gender' || me.action_state?.startsWith('choose_gender_for:')) {
       const pendingMatch = me.action_state.match(/^choose_gender_for:(male|female|any)$/)?.[1];
