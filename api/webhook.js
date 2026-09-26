@@ -191,14 +191,14 @@ async function findPair(id, preference) {
       WHERE candidate.status='waiting' AND candidate.telegram_id<>$1
         AND candidate.gender IN ('male','female')
         AND ($2='any' OR candidate.gender=$2)
-        AND (candidate.match_preference='any' OR candidate.match_preference=$3)
+        AND (COALESCE(candidate.match_preference, 'any')='any' OR candidate.match_preference=$3)
         AND NOT EXISTS (
           SELECT 1 FROM anonymous_blocks AS ab
           WHERE ab.expires_at > NOW()
             AND ((ab.user_low = LEAST($1, candidate.telegram_id) AND ab.user_high = GREATEST($1, candidate.telegram_id)))
         )
       ORDER BY
-        CASE WHEN $2='any' AND candidate.match_preference=$3 THEN 0 ELSE 1 END ASC,
+        CASE WHEN $2='any' AND COALESCE(candidate.match_preference, 'any')=$3 THEN 0 ELSE 1 END ASC,
         CASE WHEN $2='any' THEN random() ELSE 0 END,
         candidate.updated_at ASC
       LIMIT 1 FOR UPDATE SKIP LOCKED`, [id, preference, me.gender]);
