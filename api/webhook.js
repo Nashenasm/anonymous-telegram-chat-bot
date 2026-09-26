@@ -197,7 +197,10 @@ async function findPair(id, preference) {
           WHERE ab.expires_at > NOW()
             AND ((ab.user_low = LEAST($1, candidate.telegram_id) AND ab.user_high = GREATEST($1, candidate.telegram_id)))
         )
-      ORDER BY candidate.updated_at ASC
+      ORDER BY
+        CASE WHEN $2='any' AND candidate.match_preference=$3 THEN 0 ELSE 1 END ASC,
+        CASE WHEN $2='any' THEN random() ELSE 0 END,
+        candidate.updated_at ASC
       LIMIT 1 FOR UPDATE SKIP LOCKED`, [id, preference, me.gender]);
     if (!candidate.rows[0]) {
       await client.query("UPDATE users SET status='waiting', match_preference=$2, partner_id=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, preference]);

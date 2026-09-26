@@ -107,5 +107,7 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('pg_advisory_xact_lock');
     expect(source).toContain("AND ($2='any' OR candidate.gender=$2)");
     expect(source).toContain("AND (candidate.match_preference='any' OR candidate.match_preference=$3)");
+    expect(source).toContain("CASE WHEN $2='any' AND candidate.match_preference=$3 THEN 0 ELSE 1 END ASC");
+    expect(source).toContain("CASE WHEN $2='any' THEN random() ELSE 0 END");
   });
 });
