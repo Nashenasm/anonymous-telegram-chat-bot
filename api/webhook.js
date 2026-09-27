@@ -423,6 +423,21 @@ async function handlePremiumVerification(viewerId, data, client) {
   const label = expectedRole === 'owner' ? 'مالک ربات' : expectedRole === 'admin' ? 'ادمین ربات' : 'کاربر Plus';
   return send(viewerId, `✅ تأیید ربات\nاین حساب، ${label} است و نشان آن معتبر است.`);
 }
+async function handlePremiumRoleCommand(viewerId, command) {
+  const expectedRole = command.slice(1);
+  if (!['plus', 'admin', 'owner'].includes(expectedRole)) return false;
+  const client = await pool.connect();
+  try {
+    const viewer = await user(client, viewerId);
+    const targetId = viewer?.status === 'chatting' && viewer.partner_id ? Number(viewer.partner_id) : null;
+    if (!targetId) return send(viewerId, 'این کد فقط داخل یک مکالمهٔ فعال قابل بررسی است.');
+    const target = await user(client, targetId);
+    const actualRole = target ? premiumRole(target, targetId) : null;
+    if (!actualRole || actualRole !== expectedRole) return send(viewerId, `❌ تأیید نشد\nاین حساب ${expectedRole === 'plus' ? 'Plus' : expectedRole === 'admin' ? 'ادمین' : 'مالک'} نیست.`);
+    const label = expectedRole === 'owner' ? 'مالک ربات' : expectedRole === 'admin' ? 'ادمین ربات' : 'کاربر Plus';
+    return send(viewerId, `✅ تأیید ربات\nاین حساب، ${label} است و نشان آن معتبر است.`);
+  } finally { client.release(); }
+}
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
@@ -689,6 +704,7 @@ async function processUpdate(update) {
     if (text.startsWith('/')) {
       const [rawCommand, payload] = text.split(/\s+/, 2);
       const command = rawCommand.toLowerCase();
+      if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);
       if (command === '/start') return handleStart(id, payload || null);
       if (command === '/help') return handleStart(id);
     if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { const s = await settings(c); return send(id, `پنل مدیریت\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard()); } finally { c.release(); } }

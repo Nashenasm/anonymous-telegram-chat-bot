@@ -46,6 +46,8 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("telegram('editMessageReplyMarkup'");
     expect(source).toContain('await removeInlineButtons(callbackMessage)');
     expect(source).toContain('handleCallback(Number(callback.from.id), String(callback.data || \'\'), callback.message)');
+    expect(source).toContain("if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);");
+    expect(source).toContain("viewer?.status === 'chatting' && viewer.partner_id");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {
