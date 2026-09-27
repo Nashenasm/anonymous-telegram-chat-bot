@@ -44,6 +44,7 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (command === '/start')");
     expect(source).toContain("if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);");
     expect(source).toContain("viewer?.status === 'chatting' && viewer.partner_id");
+    expect(source).toContain('formatPremiumMessage(sender, senderId, text), replyMarkup');
     expect(source).not.toContain('premiumMessageMarkup');
     expect(source).not.toContain('inline_keyboard: [[verify]]');
   });

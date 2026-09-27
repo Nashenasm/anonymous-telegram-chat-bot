@@ -160,7 +160,7 @@ async function sendLink(chatId, text, replyMarkup) {
 function flowFor(settings) {
   const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
     const c = await pool.connect();
-    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text)); }
+    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text), replyMarkup); }
     finally { c.release(); }
   };
   return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
