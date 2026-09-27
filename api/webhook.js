@@ -23,6 +23,9 @@ async function ensureRuntimeSchema() {
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS start_completed BOOLEAN NOT NULL DEFAULT TRUE");
+        await client.query(`CREATE TABLE IF NOT EXISTS mandatory_sources (id BIGSERIAL PRIMARY KEY, tracking_code TEXT NOT NULL UNIQUE, source_type TEXT NOT NULL CHECK (source_type IN ('channel','group','bot','web_app','website')), visibility TEXT CHECK (visibility IN ('private','public')), title TEXT NOT NULL, target TEXT NOT NULL, join_url TEXT, mode TEXT NOT NULL CHECK (mode IN ('time','count','start','click')), quota INTEGER, duration_seconds INTEGER, starts_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('scheduled','active','paused','completed','failed','cancelled')), created_by BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE RESTRICT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await client.query(`CREATE TABLE IF NOT EXISTS mandatory_source_events (source_id BIGINT NOT NULL REFERENCES mandatory_sources(id) ON DELETE CASCADE, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, event_type TEXT NOT NULL, confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (source_id, telegram_id))`);
+        await client.query(`CREATE TABLE IF NOT EXISTS mandatory_source_queue (id BIGSERIAL PRIMARY KEY, source_id BIGINT NOT NULL REFERENCES mandatory_sources(id) ON DELETE CASCADE, position INTEGER NOT NULL, queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(source_id), UNIQUE(position))`);
         await client.query('CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique ON users(referral_code) WHERE referral_code IS NOT NULL');
         await client.query("CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
         await client.query(`CREATE TABLE IF NOT EXISTS anonymous_blocks (
@@ -137,6 +140,13 @@ function afterStopKeyboard() { return replyKeyboard([['بلاکش کن'], ['بع
 function blockKeyboard() { return replyKeyboard([[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']], true); }
 function adminKeyboard(enabled) { return adminMainKeyboard(); }
 function renameKeyboard() { return replyKeyboard([['دکمه اتصال'], ['دکمه انصراف'], ['دکمه قطع مکالمه']], true); }
+function mandatoryJoinKeyboard() { return replyKeyboard([['حذف', 'افزودن'], ['وضعیت', 'خاموش/روشن'], ['کنترل ظاهری'], ['بازگشت پنل']], true); }
+function mandatoryTypeKeyboard() { return replyKeyboard([['کانال', 'گروه'], ['ربات', 'وب اپ'], ['وب سایت'], ['بازگشت']], true); }
+function mandatoryVisibilityKeyboard() { return replyKeyboard([['خصوصی', 'عمومی'], ['بازگشت']], true); }
+function mandatoryModeKeyboard(type) { return replyKeyboard(type === 'bot' ? [['براساس زمان', 'براساس استارت'], ['بازگشت']] : [['براساس زمان', 'براساس میزان'], ['بازگشت']], true); }
+function mandatoryActivationKeyboard() { return replyKeyboard([['زمان بندی کردن', 'شروع از الان'], ['ارسال به صف'], ['بازگشت']], true); }
+function mandatoryConfirmKeyboard() { return replyKeyboard([['تایید نهایی'], ['بازگشت']], true); }
+function mandatoryStatusKeyboard() { return replyKeyboard([['لیست زمان بندی', 'صف انتظار'], ['درحال انجام', 'امور پیگیری'], ['بازگشت']], true); }
 
 async function telegram(method, body) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -167,6 +177,32 @@ function flowFor(settings) {
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
+async function activeMandatorySources(client) {
+  return client.query("SELECT * FROM mandatory_sources WHERE status='active' AND (starts_at IS NULL OR starts_at <= NOW()) ORDER BY id");
+}
+async function telegramChatMember(target, userId) {
+  try { const member = await telegram('getChatMember', { chat_id: target, user_id: userId }); return ['creator','administrator','member','restricted'].includes(member?.status); }
+  catch (error) { console.error('mandatory_membership_check_error', error.message); return false; }
+}
+async function mandatoryRequirements(id, client) {
+  const sources = await activeMandatorySources(client);
+  const missing = [];
+  for (const source of sources.rows) {
+    if (!['channel','group'].includes(source.source_type)) continue;
+    const joined = await telegramChatMember(source.target, id);
+    if (!joined) missing.push(source);
+    else await client.query("INSERT INTO mandatory_source_events(source_id, telegram_id, event_type) VALUES ($1,$2,'join') ON CONFLICT DO NOTHING", [source.id, id]);
+  }
+  return missing;
+}
+function mandatoryJoinMessage(missing) {
+  return `برای استفاده از ربات، ابتدا در منابع زیر عضو شو:\n\n${missing.map((x,i)=>`${i+1}) ${x.title}${x.join_url ? `\n${x.join_url}` : ''}`).join('\n\n')}\n\nبعد از عضویت دوباره /start را بفرست.`;
+}
+function mandatoryJoinMarkup(missing) {
+  const rows = missing.filter(x => /^https?:\/\//i.test(String(x.join_url || ''))).map(x => [{ text: `عضویت: ${x.title}`, url: x.join_url }]);
+  rows.push([{ text: 'تایید عضویت', callback_data: 'mandatory:verify' }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
 async function settings(client) {
   const result = await client.query('SELECT key, value FROM bot_settings');
   const out = { ...DEFAULTS, bot_enabled: 'true' };
@@ -427,6 +463,10 @@ async function handlePremiumRoleCommand(viewerId, command) {
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    if (!isAdmin(id)) {
+      const missing = await mandatoryRequirements(id, client);
+      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
+    }
     if (payload !== null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
         return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s));
@@ -453,6 +493,10 @@ async function handleStart(id, payload = null) {
 async function handleConnect(id) {
   const client = await pool.connect(); try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    if (!isAdmin(id)) {
+      const missing = await mandatoryRequirements(id, client);
+      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
+    }
     if (!s.bot_enabled && !isAdmin(id)) return send(id, 'ربات موقتاً خاموش است.');
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
     await updateAction(client, id, 'choose_preference'); return send(id, 'دوست داری به چه کسی وصل شوی؟', preferenceKeyboard());
@@ -460,6 +504,14 @@ async function handleConnect(id) {
 }
 
 async function handleCallback(id, data) {
+  if (data === 'mandatory:verify') {
+    const c = await pool.connect();
+    try {
+      const missing = await mandatoryRequirements(id, c);
+      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
+      return send(id, '✅ عضویت شما در همهٔ منابع فعال تایید شد. حالا می‌توانی از ربات استفاده کنی.', mainKeyboard(await settings(c)));
+    } finally { c.release(); }
+  }
   if (data.startsWith('anon:')) {
     const c = await pool.connect();
     let s;
@@ -514,6 +566,16 @@ async function handleCallback(id, data) {
   } finally { sClient.release(); }
 }
 
+function mandatoryTypeKey(value) { return ({'کانال':'channel','گروه':'group','ربات':'bot','وب اپ':'web_app','وب سایت':'website'})[value] || null; }
+function mandatoryTypeLabel(type) { return ({channel:'کانال',group:'گروه',bot:'ربات',web_app:'وب اپ',website:'وب سایت'})[type] || type; }
+function encodeState(value) { return Buffer.from(String(value), 'utf8').toString('base64url'); }
+function decodeState(value) { return Buffer.from(String(value), 'base64url').toString('utf8'); }
+function sourceTrackingCode() { return `MJ-${crypto.randomBytes(4).toString('hex').toUpperCase()}`; }
+async function mandatoryStatusText(client) {
+  const r = await client.query('SELECT id,tracking_code,source_type,title,mode,status,quota,duration_seconds,starts_at FROM mandatory_sources ORDER BY id DESC');
+  if (!r.rows.length) return 'هیچ جویین اجباری ثبت نشده است.';
+  return `منابع جویین اجباری\n\n${r.rows.map(x => `${x.tracking_code} | ${x.title} | ${mandatoryTypeLabel(x.source_type)} | ${x.mode} | ${x.status}`).join('\n')}`;
+}
 async function handleText(id, text) {
   const client = await pool.connect();
   let released = false;
@@ -549,7 +611,46 @@ async function handleText(id, text) {
     if (isAdmin(id) && value === 'وضعیت ربات') { const stats = await adminStats(client); return send(id, stats, adminMainKeyboard()); }
     if (isAdmin(id) && value === 'گزارش‌ها') { const r = await client.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS open FROM reports"); return send(id, `گزارش‌ها\n\nکل: ${r.rows[0].total}\nباز: ${r.rows[0].open}`, adminMainKeyboard()); }
     if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard());
-    if (isAdmin(id) && value === 'جویین اجباری') return send(id, 'این بخش آمادهٔ اتصال کانال است و در نسخهٔ بعدی فعال می‌شود.', adsKeyboard());
+    if (isAdmin(id) && value === 'جویین اجباری') return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard());
+    if (isAdmin(id) && value === 'افزودن') { await updateAction(client, id, 'mandatory:type'); return send(id, 'نوع جویین اجباری را انتخاب کن.', mandatoryTypeKeyboard()); }
+    if (isAdmin(id) && value === 'حذف') { await updateAction(client, id, 'mandatory:delete'); return send(id, 'کد پیگیری یا آدرس منبع را بفرست.', mandatoryJoinKeyboard()); }
+    if (isAdmin(id) && value === 'وضعیت') { return send(id, await mandatoryStatusText(client), mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && value === 'خاموش/روشن') { await client.query("UPDATE mandatory_sources SET status=CASE WHEN status='active' THEN 'paused' ELSE 'active' END, updated_at=NOW() WHERE status IN ('active','paused')"); return send(id, 'وضعیت منابع فعال تغییر کرد.', mandatoryJoinKeyboard()); }
+    if (isAdmin(id) && value === 'بازگشت پنل') return send(id, 'پنل مدیریت', adminMainKeyboard());
+    if (isAdmin(id) && me.action_state === 'mandatory:type') {
+      const type = mandatoryTypeKey(value); if (!type) return send(id, 'یک نوع معتبر انتخاب کن.', mandatoryTypeKeyboard());
+      if (type === 'channel' || type === 'group') { await updateAction(client, id, `mandatory:visibility:${type}`); return send(id, `نوع ${mandatoryTypeLabel(type)} را انتخاب کن.`, mandatoryVisibilityKeyboard()); }
+      await updateAction(client, id, `mandatory:target:${type}:public`); return send(id, `آیدی یا لینک ${mandatoryTypeLabel(type)} را بفرست.`);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:visibility:')) {
+      const type = me.action_state.split(':')[2]; if (!['خصوصی','عمومی'].includes(value)) return send(id, 'خصوصی یا عمومی را انتخاب کن.', mandatoryVisibilityKeyboard());
+      await updateAction(client, id, `mandatory:target:${type}:${value === 'خصوصی' ? 'private' : 'public'}`); return send(id, `لینک یا آیدی ${mandatoryTypeLabel(type)} را بفرست.`);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:target:')) {
+      const [, , type, visibility] = me.action_state.split(':'); if (!value) return send(id, 'آدرس یا آیدی معتبر بفرست.');
+      await updateAction(client, id, `mandatory:mode:${type}:${visibility}:${encodeState(value)}`); return send(id, 'روش محاسبه را انتخاب کن.', mandatoryModeKeyboard(type));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:mode:')) {
+      const [, , type, visibility, encodedTarget] = me.action_state.split(':');
+      const mode = value === 'براساس زمان' ? 'time' : value === 'براساس میزان' ? 'count' : value === 'براساس استارت' ? 'start' : value === 'براساس کلیک' ? 'click' : null;
+      if (!mode) return send(id, 'روش محاسبه را انتخاب کن.', mandatoryModeKeyboard(type));
+      await updateAction(client, id, `mandatory:value:${type}:${visibility}:${mode}:${encodedTarget}`);
+      return send(id, mode === 'time' ? 'زمان را با قالب 1D2h30m بفرست.' : 'مقدار را فقط با عدد لاتین بفرست.');
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:value:')) {
+      const [, , type, visibility, mode, encodedTarget] = me.action_state.split(':');
+      const raw = value.toLowerCase(); const target = decodeState(encodedTarget); let quota = null; let duration = null;
+      if (mode === 'time') { const m = raw.match(/^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/); if (!m || !m[0] || (!m[1] && !m[2] && !m[3])) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1D2h30m.'); duration = ((Number(m[1]||0)*86400)+(Number(m[2]||0)*3600)+(Number(m[3]||0)*60)); }
+      else { if (!/^\d+$/.test(raw) || Number(raw) < 1) return send(id, 'فقط عدد لاتین بزرگ‌تر از صفر بفرست.'); quota = Number(raw); }
+      const title = target.replace(/^https?:\/\//, '').slice(0, 120); const tracking = sourceTrackingCode();
+      await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10)", [tracking,type,visibility,title,target,target,mode,quota,duration,id]);
+      await updateAction(client, id, null); return send(id, `منبع ثبت شد.\nکد پیگیری: ${tracking}\nبرای تنظیم زمان شروع، در نسخه بعدی از بخش وضعیت استفاده کن.`, mandatoryJoinKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'mandatory:delete') {
+      const result = await client.query('DELETE FROM mandatory_sources WHERE tracking_code=$1 OR target=$1 RETURNING tracking_code', [value]); await updateAction(client, id, null);
+      return send(id, result.rowCount ? `منبع ${result.rows[0].tracking_code} حذف شد.` : 'منبعی با این کد یا آدرس پیدا نشد.', mandatoryJoinKeyboard());
+    }
+
     if (isAdmin(id) && value === 'پیام همگانی') { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
     if (isAdmin(id) && value === 'پیام خوش‌آمد') { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
     if (isAdmin(id) && value === 'تبلیغ اتصال') { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }

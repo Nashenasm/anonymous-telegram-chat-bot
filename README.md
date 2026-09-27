@@ -57,3 +57,7 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 ## مجوز
 
 MIT
+
+## جویین اجباری
+
+مدیران از `/manpin` → «تبلیغات» → «جویین اجباری» می‌توانند منابع کانال، گروه، ربات، وب‌اپ و وب‌سایت را ثبت و مدیریت کنند. برای کانال و گروه، ربات باید ادمین کامل باشد تا بررسی عضویت با Telegram `getChatMember` معتبر باشد. جدول‌های این قابلیت در `db/schema-v5-mandatory-join.sql` قرار دارند.

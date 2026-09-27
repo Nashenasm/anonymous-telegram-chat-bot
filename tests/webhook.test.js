@@ -66,6 +66,16 @@ describe('anonymous chat public contract', () => {
     expect(schema).toContain("expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days')");
   });
 
+  it('includes mandatory-join sources, unique events, queues, and membership confirmation', () => {
+    expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_sources');
+    expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_events');
+    expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_queue');
+    expect(source).toContain("telegram('getChatMember'");
+    expect(source).toContain("data === 'mandatory:verify'");
+    expect(source).toContain('mandatoryJoinMarkup(missing)');
+    expect(source).toContain("value === 'جویین اجباری'");
+  });
+
   it('enforces two-way preference matching and reply keyboards', () => {
     expect(source).toContain("($2='any' OR candidate.gender=$2)");
     expect(source).toContain("COALESCE(candidate.match_preference, 'any')='any' OR candidate.match_preference=$3");
