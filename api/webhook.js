@@ -178,6 +178,9 @@ function flowFor(settings) {
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
 async function activeMandatorySources(client) {
+  await client.query("UPDATE mandatory_sources SET status='active', updated_at=NOW() WHERE status='scheduled' AND starts_at IS NOT NULL AND starts_at <= NOW()");
+  await client.query("UPDATE mandatory_sources SET status='completed', updated_at=NOW() WHERE status='active' AND mode='time' AND duration_seconds IS NOT NULL AND created_at + (duration_seconds * INTERVAL '1 second') <= NOW()");
+  await client.query("UPDATE mandatory_sources ms SET status='completed', updated_at=NOW() WHERE ms.status='active' AND ms.mode IN ('count','start','click') AND ms.quota IS NOT NULL AND (SELECT COUNT(*) FROM mandatory_source_events e WHERE e.source_id=ms.id) >= ms.quota");
   return client.query("SELECT * FROM mandatory_sources WHERE status='active' AND (starts_at IS NULL OR starts_at <= NOW()) ORDER BY id");
 }
 async function telegramChatMember(target, userId) {
@@ -571,6 +574,22 @@ function mandatoryTypeLabel(type) { return ({channel:'کانال',group:'گرو�
 function encodeState(value) { return Buffer.from(String(value), 'utf8').toString('base64url'); }
 function decodeState(value) { return Buffer.from(String(value), 'base64url').toString('utf8'); }
 function sourceTrackingCode() { return `MJ-${crypto.randomBytes(4).toString('hex').toUpperCase()}`; }
+function jalaliToGregorian(jy, jm, jd) {
+  let gy = jy <= 979 ? 621 : 1600; let jy2 = jy <= 979 ? jy : jy - 979;
+  let days = 365 * jy2 + Math.floor(jy2 / 33) * 8 + Math.floor((jy2 % 33 + 3) / 4) + 78 + jd + (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+  gy += 400 * Math.floor(days / 146097); days %= 146097;
+  if (days > 36524) { gy += 100 * Math.floor(--days / 36524); days %= 36524; if (days >= 365) days++; }
+  gy += 4 * Math.floor(days / 1461); days %= 1461;
+  if (days > 365) { gy += Math.floor((days - 1) / 365); days = (days - 1) % 365; }
+  let gd = days + 1; const leap = (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0; const monthDays = [0,31,leap?29:28,31,30,31,30,31,31,30,31,30,31]; let gm = 1;
+  while (gd > monthDays[gm]) gd -= monthDays[gm++];
+  return new Date(Date.UTC(gy, gm - 1, gd));
+}
+function parseJalaliDateTime(value) {
+  const m = String(value).trim().match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})-(\d{1,2}):(\d{2})$/);
+  if (!m) return null; const d = jalaliToGregorian(Number(m[1]), Number(m[2]), Number(m[3]));
+  if (!d || Number(m[4]) > 23 || Number(m[5]) > 59) return null; d.setUTCHours(Number(m[4]) - 3, Number(m[5]) - 30); return d;
+}
 async function mandatoryStatusText(client) {
   const r = await client.query('SELECT id,tracking_code,source_type,title,mode,status,quota,duration_seconds,starts_at FROM mandatory_sources ORDER BY id DESC');
   if (!r.rows.length) return 'هیچ جویین اجباری ثبت نشده است.';
@@ -642,9 +661,22 @@ async function handleText(id, text) {
       const raw = value.toLowerCase(); const target = decodeState(encodedTarget); let quota = null; let duration = null;
       if (mode === 'time') { const m = raw.match(/^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/); if (!m || !m[0] || (!m[1] && !m[2] && !m[3])) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1D2h30m.'); duration = ((Number(m[1]||0)*86400)+(Number(m[2]||0)*3600)+(Number(m[3]||0)*60)); }
       else { if (!/^\d+$/.test(raw) || Number(raw) < 1) return send(id, 'فقط عدد لاتین بزرگ‌تر از صفر بفرست.'); quota = Number(raw); }
-      const title = target.replace(/^https?:\/\//, '').slice(0, 120); const tracking = sourceTrackingCode();
-      await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10)", [tracking,type,visibility,title,target,target,mode,quota,duration,id]);
-      await updateAction(client, id, null); return send(id, `منبع ثبت شد.\nکد پیگیری: ${tracking}\nبرای تنظیم زمان شروع، در نسخه بعدی از بخش وضعیت استفاده کن.`, mandatoryJoinKeyboard());
+      return (await updateAction(client, id, `mandatory:activate:${type}:${visibility}:${mode}:${encodedTarget}:${quota || 0}:${duration || 0}`), send(id, `جمع‌بندی منبع\nنوع: ${mandatoryTypeLabel(type)}\nآدرس: ${target}\nمقدار: ${mode === 'time' ? `${duration} ثانیه` : quota}\nروش فعال‌سازی را انتخاب کن.`, mandatoryActivationKeyboard()));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:activate:')) {
+      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const target = decodeState(encodedTarget); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
+      if (!['شروع از الان','ارسال به صف','زمان بندی کردن'].includes(value)) return send(id, 'یکی از روش‌های فعال‌سازی را انتخاب کن.', mandatoryActivationKeyboard());
+      if (value === 'زمان بندی کردن') { await updateAction(client, id, `mandatory:schedule:${type}:${visibility}:${mode}:${encodedTarget}:${quotaRaw}:${durationRaw}`); return send(id, 'تاریخ و ساعت شمسی را با قالب 1405/6/10-17:10 بفرست.'); }
+      const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const status = value === 'ارسال به صف' ? 'scheduled' : 'active';
+      const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id", [tracking,type,visibility,title,target,target,mode,quota,duration,status,id]);
+      if (value === 'ارسال به صف') { const pos = await client.query('SELECT COALESCE(MAX(position),0)+1 AS next FROM mandatory_source_queue'); await client.query('INSERT INTO mandatory_source_queue(source_id,position) VALUES ($1,$2)', [created.rows[0].id, pos.rows[0].next]); }
+      await updateAction(client, id, null); return send(id, `منبع ثبت شد.\nکد پیگیری: ${tracking}\nوضعیت: ${value}`, mandatoryJoinKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:')) {
+      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const startsAt = parseJalaliDateTime(value); if (!startsAt) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/6/10-17:10.');
+      const target = decodeState(encodedTarget); const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
+      await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'scheduled',$10,$11)", [tracking,type,visibility,title,target,target,mode,quota,duration,startsAt,id]); await updateAction(client, id, null);
+      return send(id, `منبع زمان‌بندی شد.\nکد پیگیری: ${tracking}\nشروع: ${value}`, mandatoryJoinKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'mandatory:delete') {
       const result = await client.query('DELETE FROM mandatory_sources WHERE tracking_code=$1 OR target=$1 RETURNING tracking_code', [value]); await updateAction(client, id, null);

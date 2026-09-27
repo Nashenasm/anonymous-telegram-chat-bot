@@ -74,6 +74,10 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("data === 'mandatory:verify'");
     expect(source).toContain('mandatoryJoinMarkup(missing)');
     expect(source).toContain("value === 'جویین اجباری'");
+    expect(source).toContain("value === 'زمان بندی کردن'");
+    expect(source).toContain("value === 'ارسال به صف'");
+    expect(source).toContain("1405/6/10-17:10");
+    expect(source).toContain("status='completed'");
   });
 
   it('enforces two-way preference matching and reply keyboards', () => {
