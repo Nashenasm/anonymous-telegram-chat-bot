@@ -32,9 +32,17 @@ describe('anonymous chat public contract', () => {
   });
 
   it('renders plus badges in parentheses and uses a 24-hour profile clock', () => {
-    expect(source).toContain('`(${prefix}) ${text}`');
+    expect(source).toContain("return role ? `${premiumMarker(role)} - ${badgeFor(me, id)}\\n${text}` : text;");
     expect(source).toContain("hourCycle: 'h23'");
     expect(source).toContain("hour12: false");
+  });
+
+  it('uses role-specific verification markers and does not treat slash text as a command', () => {
+    expect(source).toContain("premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }");
+    expect(source).toContain('premium:verify:${role}:${id}');
+    expect(source).toContain("data.match(/^premium:verify:(plus|admin|owner):(\\d+)$/)");
+    expect(source).toContain('requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1');
+    expect(source).toContain("if (command === '/start')");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {

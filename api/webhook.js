@@ -111,7 +111,9 @@ export function arePreferencesCompatible(requesterGender, requesterPreference, c
 function adminIds() {
   return new Set((process.env.ADMIN_TELEGRAM_IDS || '').split(',').map(x => x.trim()).filter(Boolean));
 }
-function isAdmin(id) { return adminIds().has(String(id)); }
+function isAdmin(id) { return adminIds().has(String(id)) || (process.env.OWNER_TELEGRAM_ID && String(id) === String(process.env.OWNER_TELEGRAM_ID)); }
+function ownerId() { return String(process.env.OWNER_TELEGRAM_ID || [...adminIds()][0] || ''); }
+function isOwner(id) { return String(id) === ownerId(); }
 function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
@@ -158,7 +160,7 @@ async function sendLink(chatId, text, replyMarkup) {
 function flowFor(settings) {
   const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
     const c = await pool.connect();
-    try { const sender = await user(c, senderId); const prefix = badgeFor(sender, senderId); return send(recipientId, prefix ? `(${prefix}) ${text}` : text, replyMarkup); }
+    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text), mergePremiumMarkup(replyMarkup, sender, senderId)); }
     finally { c.release(); }
   };
   return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
@@ -181,14 +183,40 @@ function iranDate(value) {
   return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hourCycle: 'h23', hour12: false }).format(new Date(value));
 }
 function isPlus(me, id) { return isAdmin(id) || (me?.plus_expires_at && new Date(me.plus_expires_at).getTime() > Date.now()); }
+function premiumRole(me, id) {
+  if (isOwner(id)) return 'owner';
+  if (isAdmin(id)) return 'admin';
+  if (isPlus(me, id)) return 'plus';
+  return null;
+}
 function badgeFor(me, id) {
-  if (!isPlus(me, id)) return '';
-  if (isAdmin(id)) return me?.plus_emoji && me.plus_emoji !== '✨' ? String(me.plus_emoji) : '✨✨✨';
-  return String(me?.plus_emoji || '✨');
+  const role = premiumRole(me, id);
+  if (!role) return '';
+  const fallback = role === 'owner' ? '✨✨✨' : role === 'admin' ? '✨✨' : '✨';
+  return String(me?.plus_emoji || fallback);
+}
+function premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }
+function premiumMessageMarkup(replyMarkup, me, id) {
+  const role = premiumRole(me, id);
+  if (!role) return replyMarkup;
+  const base = replyMarkup?.reply_markup || replyMarkup || {};
+  const verify = { text: premiumMarker(role), callback_data: `premium:verify:${role}:${id}` };
+  if (Array.isArray(base.inline_keyboard)) return { reply_markup: { ...base, inline_keyboard: [...base.inline_keyboard, [verify]] } };
+  return { reply_markup: { inline_keyboard: [[verify]] } };
+}
+function mergePremiumMarkup(replyMarkup, me, id) { return premiumMessageMarkup(replyMarkup, me, id); }
+function formatPremiumMessage(me, id, text) {
+  const role = premiumRole(me, id);
+  return role ? `${premiumMarker(role)} - ${badgeFor(me, id)}\n${text}` : text;
 }
 function oneEmoji(value) {
-  const parts = [...String(value || '').trim()];
-  return parts.length === 1 && /\p{Extended_Pictographic}/u.test(parts[0]);
+  return emojiSequence(value, 1);
+}
+function emojiSequence(value, count) {
+  const input = String(value || '').trim();
+  if (!input || !Intl.Segmenter) return false;
+  const parts = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(input)].map(x => x.segment);
+  return parts.length === count && parts.every(part => /\p{Extended_Pictographic}/u.test(part));
 }
 async function sendProfile(id, settings) {
   const client = await pool.connect();
@@ -378,6 +406,17 @@ async function handlePlusCallback(id, data, client, s) {
   }
   return false;
 }
+async function handlePremiumVerification(viewerId, data, client) {
+  const match = data.match(/^premium:verify:(plus|admin|owner):(\d+)$/);
+  if (!match) return false;
+  const expectedRole = match[1];
+  const targetId = Number(match[2]);
+  const target = await user(client, targetId);
+  const actualRole = target ? premiumRole(target, targetId) : null;
+  if (!actualRole || actualRole !== expectedRole) return send(viewerId, 'این نشان پلاس دیگر معتبر نیست یا وضعیت کاربر تغییر کرده است.');
+  const label = expectedRole === 'owner' ? 'مالک ربات' : expectedRole === 'admin' ? 'ادمین ربات' : 'کاربر Plus';
+  return send(viewerId, `✅ تأیید ربات\nاین حساب، ${label} است و نشان آن معتبر است.`);
+}
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
@@ -459,6 +498,7 @@ async function handleCallback(id, data) {
       await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`);
       return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
+    if (data.startsWith('premium:verify:')) return handlePremiumVerification(id, data, sClient);
     if (data.startsWith('plus:')) return handlePlusCallback(id, data, sClient, s);
     if (data === 'admin:toggle' && isAdmin(id)) { const enabled = !s.bot_enabled; await sClient.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', adminKeyboard(enabled)); }
     if (data === 'admin:rename' && isAdmin(id)) return send(id, 'کدام دکمه را تغییر می‌دهی؟', renameKeyboard());
@@ -516,7 +556,7 @@ async function handleText(id, text) {
     if (value === 'ظاهر ایموجی پلاس') {
       if (!isPlus(me, id)) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', profileKeyboard(s));
       await updateAction(client, id, 'plus_emoji');
-      return send(id, isAdmin(id) ? 'سه نشان مدیر را در یک پیام ارسال کن؛ مدیر می‌تواند متن دلخواه هم بفرستد.' : 'یک ایموجی دلخواه ارسال کن. فقط یک ایموجی مجاز است و متن یا شکل دیگری پذیرفته نمی‌شود.', emojiKeyboard(s));
+      return send(id, isOwner(id) ? 'سه ایموجی ارسال کن؛ نشان مالک فقط با سه ایموجی معتبر ذخیره می‌شود.' : isAdmin(id) ? 'دو ایموجی ارسال کن؛ نشان ادمین فقط با دو ایموجی معتبر ذخیره می‌شود.' : 'یک ایموجی دلخواه ارسال کن. فقط یک ایموجی مجاز است و متن یا شکل دیگری پذیرفته نمی‌شود.', emojiKeyboard(s));
     }
     if (value === 'ریست ایموجی') { await client.query("UPDATE users SET plus_emoji='✨', updated_at=NOW() WHERE telegram_id=$1", [id]); await updateAction(client, id, null); return send(id, 'ایموجی پلاس به ✨ برگردانده شد.', profileKeyboard(s)); }
     if (value === s.increase_coins_button) return sendIncreaseCoins(id, s);
@@ -524,9 +564,8 @@ async function handleText(id, text) {
     if (value === s.plus_button) return sendPlus(id, s);
     if (value === s.back_button || value === 'بازگشت') return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
     if (me.action_state === 'plus_emoji') {
-      if (isAdmin(id)) {
-        if (!value || value.length > 100) return send(id, 'نشان مدیر نمی‌تواند خالی یا خیلی طولانی باشد.', emojiKeyboard(s));
-      } else if (!oneEmoji(value)) return send(id, 'فقط یک ایموجی ارسال کن.', emojiKeyboard(s));
+      const requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1;
+      if (!emojiSequence(value, requiredCount)) return send(id, `دقیقاً ${requiredCount} ایموجی ارسال کن.`, emojiKeyboard(s));
       await client.query('UPDATE users SET plus_emoji=$2, updated_at=NOW() WHERE telegram_id=$1', [id, value]);
       await updateAction(client, id, null);
       return send(id, `نشان پلاس شما روی ${value} تنظیم شد.`, profileKeyboard(s));
@@ -626,8 +665,7 @@ async function handleText(id, text) {
     );
     if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
     const targetUser = await user(client, target);
-    const prefix = badgeFor(me, id);
-    await send(target, prefix ? `${prefix} ${text}` : text); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    await send(target, formatPremiumMessage(me, id, text), premiumMessageMarkup(null, me, id)); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
   } finally { if (!released) client.release(); }
 }
 
