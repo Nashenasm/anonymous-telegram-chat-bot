@@ -39,15 +39,13 @@ describe('anonymous chat public contract', () => {
 
   it('uses role-specific verification markers and does not treat slash text as a command', () => {
     expect(source).toContain("premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }");
-    expect(source).toContain('premium:verify:${role}:${id}');
     expect(source).toContain("data.match(/^premium:verify:(plus|admin|owner):(\\d+)$/)");
     expect(source).toContain('requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1');
     expect(source).toContain("if (command === '/start')");
-    expect(source).toContain("telegram('editMessageReplyMarkup'");
-    expect(source).toContain('await removeInlineButtons(callbackMessage)');
-    expect(source).toContain('handleCallback(Number(callback.from.id), String(callback.data || \'\'), callback.message)');
     expect(source).toContain("if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);");
     expect(source).toContain("viewer?.status === 'chatting' && viewer.partner_id");
+    expect(source).not.toContain('premiumMessageMarkup');
+    expect(source).not.toContain('inline_keyboard: [[verify]]');
   });
 
   it('enforces the 15-second minimum conversation duration', () => {

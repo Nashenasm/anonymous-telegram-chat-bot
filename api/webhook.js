@@ -160,17 +160,12 @@ async function sendLink(chatId, text, replyMarkup) {
 function flowFor(settings) {
   const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
     const c = await pool.connect();
-    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text), mergePremiumMarkup(replyMarkup, sender, senderId)); }
+    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text)); }
     finally { c.release(); }
   };
   return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
-async function removeInlineButtons(message) {
-  if (!message?.chat?.id || !message?.message_id) return;
-  try { await telegram('editMessageReplyMarkup', { chat_id: message.chat.id, message_id: message.message_id, reply_markup: { inline_keyboard: [] } }); }
-  catch (e) { console.error('remove_verification_button_error', e.message); }
-}
 
 async function settings(client) {
   const result = await client.query('SELECT key, value FROM bot_settings');
@@ -202,15 +197,6 @@ function badgeFor(me, id) {
   return emojiSequence(me?.plus_emoji, requiredCount) ? String(me.plus_emoji).trim() : fallback;
 }
 function premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }
-function premiumMessageMarkup(replyMarkup, me, id) {
-  const role = premiumRole(me, id);
-  if (!role) return replyMarkup;
-  const base = replyMarkup?.reply_markup || replyMarkup || {};
-  const verify = { text: premiumMarker(role), callback_data: `premium:verify:${role}:${id}` };
-  if (Array.isArray(base.inline_keyboard)) return { reply_markup: { ...base, inline_keyboard: [...base.inline_keyboard, [verify]] } };
-  return { reply_markup: { inline_keyboard: [[verify]] } };
-}
-function mergePremiumMarkup(replyMarkup, me, id) { return premiumMessageMarkup(replyMarkup, me, id); }
 function formatPremiumMessage(me, id, text) {
   const role = premiumRole(me, id);
   return role ? `${premiumMarker(role)} ${badgeFor(me, id)}\n${text}` : text;
@@ -473,7 +459,7 @@ async function handleConnect(id) {
   } finally { client.release(); }
 }
 
-async function handleCallback(id, data, callbackMessage = null) {
+async function handleCallback(id, data) {
   if (data.startsWith('anon:')) {
     const c = await pool.connect();
     let s;
@@ -519,10 +505,7 @@ async function handleCallback(id, data, callbackMessage = null) {
       await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`);
       return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
-    if (data.startsWith('premium:verify:')) {
-      await removeInlineButtons(callbackMessage);
-      return handlePremiumVerification(id, data, sClient);
-    }
+    if (data.startsWith('premium:verify:')) return handlePremiumVerification(id, data, sClient);
     if (data.startsWith('plus:')) return handlePlusCallback(id, data, sClient, s);
     if (data === 'admin:toggle' && isAdmin(id)) { const enabled = !s.bot_enabled; await sClient.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', adminKeyboard(enabled)); }
     if (data === 'admin:rename' && isAdmin(id)) return send(id, 'کدام دکمه را تغییر می‌دهی؟', renameKeyboard());
@@ -689,7 +672,7 @@ async function handleText(id, text) {
     );
     if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
     const targetUser = await user(client, target);
-    await send(target, formatPremiumMessage(me, id, text), premiumMessageMarkup(null, me, id)); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    await send(target, formatPremiumMessage(me, id, text)); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
   } finally { if (!released) client.release(); }
 }
 
@@ -697,7 +680,7 @@ async function processUpdate(update) {
   const inserted = await pool.query('INSERT INTO processed_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING update_id', [update.update_id]);
   if (!inserted.rowCount) return;
   const callback = update.callback_query;
-  if (callback?.from && callback.message?.chat?.type === 'private') { await answerCallback(callback.id); await handleCallback(Number(callback.from.id), String(callback.data || ''), callback.message); return; }
+  if (callback?.from && callback.message?.chat?.type === 'private') { await answerCallback(callback.id); await handleCallback(Number(callback.from.id), String(callback.data || '')); return; }
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
   const id = Number(message.from.id); const text = String(message.text || '').trim(); if (!text) return;
