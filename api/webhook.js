@@ -348,11 +348,18 @@ async function searchByPreference(id, preference, s) {
   }
   if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
   if (result.kind === 'paired') {
-    await send(id, s.connected_message || DEFAULTS.connected_message, chatKeyboard(s));
-    await send(result.partnerId, s.connected_message || DEFAULTS.connected_message, chatKeyboard(s));
+    await sendConnectionNotice(id, s, chatKeyboard(s));
+    await sendConnectionNotice(result.partnerId, s, chatKeyboard(s));
     return;
   }
   return send(id, 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.', waitingKeyboard(s));
+}
+async function sendConnectionNotice(id, s, keyboard) {
+  const c = await pool.connect();
+  try {
+    const me = await user(c, id); const exempt = isPlus(me, id) || isAdmin(id) || isOwner(id);
+    return send(id, exempt ? 'اتصال برقرار شد؛ گفت‌وگو را شروع کن.' : (s.connected_message || DEFAULTS.connected_message), keyboard);
+  } finally { c.release(); }
 }
 async function leaveWaiting(id) { await pool.query("UPDATE users SET status='idle', partner_id=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1 AND status='waiting'", [id]); }
 async function disconnect(id) {
