@@ -200,8 +200,10 @@ function normalizeTelegramTarget(value) {
 }
 async function validateMandatoryTarget(type, target) {
   if (!['channel', 'group'].includes(type)) return true;
-  const me = await telegram('getMe', {}); const member = await telegram('getChatMember', { chat_id: normalizeTelegramTarget(target), user_id: me.id });
-  return ['creator', 'administrator'].includes(member?.status);
+  try {
+    const me = await telegram('getMe', {}); const member = await telegram('getChatMember', { chat_id: normalizeTelegramTarget(target), user_id: me.id });
+    return ['creator', 'administrator'].includes(member?.status);
+  } catch (error) { console.error('mandatory_target_validation_error', error.message); return false; }
 }
 async function mandatoryRequirements(id, client) {
   const sources = await activeMandatorySources(client);
@@ -687,7 +689,13 @@ async function handleText(id, text) {
     if (isAdmin(id) && value === 'امور پیگیری') { const r = await client.query("SELECT tracking_code,title,status,updated_at FROM mandatory_sources WHERE status IN ('failed','completed','cancelled') ORDER BY updated_at DESC LIMIT 50"); return send(id, r.rows.length ? `امور پیگیری:\n\n${r.rows.map(x => `${x.tracking_code} | ${x.title} | ${x.status}`).join('\n')}` : 'موردی برای پیگیری وجود ندارد.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && ['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)) { await updateAction(client, id, `mandatory:${value === 'کنسل کردن' ? 'cancel' : value === 'الان ست کن' ? 'activate' : 'reschedule'}`); return send(id, 'کد پیگیری منبع را بفرست.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && me.action_state === 'mandatory:cancel') { const r = await client.query("UPDATE mandatory_sources SET status='cancelled',updated_at=NOW() WHERE tracking_code=$1 AND status IN ('scheduled','active','paused') RETURNING tracking_code", [value]); await updateAction(client, id, null); return send(id, r.rowCount ? `منبع ${value} کنسل شد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
-    if (isAdmin(id) && me.action_state === 'mandatory:activate') { const r = await client.query("UPDATE mandatory_sources SET status='active',starts_at=NULL,updated_at=NOW() WHERE tracking_code=$1 AND status='scheduled' RETURNING tracking_code", [value]); await updateAction(client, id, null); return send(id, r.rowCount ? `منبع ${value} همین حالا فعال شد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && me.action_state === 'mandatory:activate') {
+      try {
+        const r = await client.query("UPDATE mandatory_sources SET status='active',starts_at=NULL,updated_at=NOW() WHERE (tracking_code=$1 OR target=$1 OR join_url=$1) AND status='scheduled' RETURNING id,tracking_code", [value]);
+        if (r.rowCount) await client.query('DELETE FROM mandatory_source_queue WHERE source_id=$1', [r.rows[0].id]);
+        await updateAction(client, id, null); return send(id, r.rowCount ? `منبع ${r.rows[0].tracking_code} همین حالا فعال شد.` : 'منبع زمان‌بندی‌شده‌ای با این کد یا آدرس پیدا نشد.', mandatoryStatusKeyboard());
+      } catch (error) { console.error('mandatory_activate_error', error.message); return send(id, 'فعال‌سازی انجام نشد؛ کد پیگیری یا آدرس منبع را دوباره بفرست.', mandatoryStatusKeyboard()); }
+    }
     if (isAdmin(id) && me.action_state === 'mandatory:reschedule') { if (!parseJalaliDateTime(value)) { await updateAction(client, id, `mandatory:reschedule_at:${encodeState(value)}`); return send(id, 'زمان جدید را با قالب 1405/6/10-17:10 بفرست.', mandatoryStatusKeyboard()); } return send(id, 'ابتدا کد پیگیری را بفرست.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && me.action_state?.startsWith('mandatory:reschedule_at:')) { const code = decodeState(me.action_state.split(':')[2]); const date = parseJalaliDateTime(value); if (!date) return send(id, 'قالب زمان نامعتبر است.', mandatoryStatusKeyboard()); const r = await client.query("UPDATE mandatory_sources SET starts_at=$2,status='scheduled',updated_at=NOW() WHERE tracking_code=$1 RETURNING tracking_code", [code,date]); await updateAction(client, id, null); return send(id, r.rowCount ? `زمان منبع ${code} تغییر کرد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && value === 'خاموش/روشن') { await client.query("UPDATE mandatory_sources SET status=CASE WHEN status='active' THEN 'paused' ELSE 'active' END, updated_at=NOW() WHERE status IN ('active','paused')"); return send(id, 'وضعیت منابع فعال تغییر کرد.', mandatoryJoinKeyboard()); }
