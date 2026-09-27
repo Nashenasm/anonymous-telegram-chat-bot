@@ -75,6 +75,8 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('mandatoryJoinMarkup(missing)');
     expect(source).toContain("value === 'جویین اجباری'");
     expect(source).toContain("value === 'کنسل کردن'");
+    expect(source).toContain("privateMatch = raw.match");
+    expect(source).toContain("telegram('getChat'");
     expect(source).toContain("value === 'ارسال به صف'");
     expect(source).toContain("1405/6/10-17:10");
     expect(source).toContain("status='completed'");

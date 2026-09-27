@@ -194,6 +194,8 @@ function normalizeTelegramTarget(value) {
   if (/^-?\d+$/.test(raw) || raw.startsWith('@')) return raw;
   const match = raw.match(/^https?:\/\/(?:t\.me|telegram\.me)\/([^/?#]+)/i);
   if (!match) return raw;
+  const privateMatch = raw.match(/^https?:\/\/(?:t\.me|telegram\.me)\/c\/(\d+)/i);
+  if (privateMatch) return `-100${privateMatch[1]}`;
   if (match[1] === 'c') return raw;
   if (match[1].startsWith('+') || match[1] === 'joinchat') return raw;
   return `@${match[1]}`;
@@ -201,7 +203,7 @@ function normalizeTelegramTarget(value) {
 async function validateMandatoryTarget(type, target) {
   if (!['channel', 'group'].includes(type)) return true;
   try {
-    const me = await telegram('getMe', {}); const member = await telegram('getChatMember', { chat_id: normalizeTelegramTarget(target), user_id: me.id });
+    const me = await telegram('getMe', {}); const normalized = normalizeTelegramTarget(target); const chat = await telegram('getChat', { chat_id: normalized }); const member = await telegram('getChatMember', { chat_id: chat.id || normalized, user_id: me.id });
     return ['creator', 'administrator'].includes(member?.status);
   } catch (error) { console.error('mandatory_target_validation_error', error.message); return false; }
 }
