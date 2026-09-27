@@ -146,7 +146,7 @@ function mandatoryVisibilityKeyboard() { return replyKeyboard([['خصوصی', '�
 function mandatoryModeKeyboard(type) { return replyKeyboard(type === 'bot' ? [['براساس زمان', 'براساس استارت'], ['بازگشت']] : [['براساس زمان', 'براساس میزان'], ['بازگشت']], true); }
 function mandatoryActivationKeyboard() { return replyKeyboard([['زمان بندی کردن', 'شروع از الان'], ['ارسال به صف'], ['بازگشت']], true); }
 function mandatoryConfirmKeyboard() { return replyKeyboard([['تایید نهایی'], ['بازگشت']], true); }
-function mandatoryStatusKeyboard() { return replyKeyboard([['لیست زمان بندی', 'صف انتظار'], ['درحال انجام', 'امور پیگیری'], ['بازگشت']], true); }
+function mandatoryStatusKeyboard() { return replyKeyboard([['لیست زمان بندی', 'صف انتظار'], ['درحال انجام', 'امور پیگیری'], ['کنسل کردن', 'الان ست کن'], ['تغییر تایم'], ['بازگشت']], true); }
 
 async function telegram(method, body) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -188,6 +188,11 @@ async function activeMandatorySources(client) {
 async function telegramChatMember(target, userId) {
   try { const member = await telegram('getChatMember', { chat_id: target, user_id: userId }); return ['creator','administrator','member','restricted'].includes(member?.status); }
   catch (error) { console.error('mandatory_membership_check_error', error.message); return false; }
+}
+async function validateMandatoryTarget(type, target) {
+  if (!['channel', 'group'].includes(type)) return true;
+  const me = await telegram('getMe', {}); const member = await telegram('getChatMember', { chat_id: target, user_id: me.id });
+  return ['creator', 'administrator'].includes(member?.status);
 }
 async function mandatoryRequirements(id, client) {
   const sources = await activeMandatorySources(client);
@@ -655,6 +660,11 @@ async function handleText(id, text) {
     if (isAdmin(id) && value === 'صف انتظار') { const r = await client.query("SELECT q.position,s.tracking_code,s.title FROM mandatory_source_queue q JOIN mandatory_sources s ON s.id=q.source_id ORDER BY q.position"); return send(id, r.rows.length ? `صف انتظار:\n\n${r.rows.map(x => `${x.position}) ${x.tracking_code} | ${x.title}`).join('\n')}` : 'صف انتظار خالی است.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && value === 'درحال انجام') { const r = await client.query("SELECT tracking_code,title,source_type,mode FROM mandatory_sources WHERE status='active' ORDER BY id"); return send(id, r.rows.length ? `درحال انجام:\n\n${r.rows.map(x => `${x.tracking_code} | ${x.title} | ${mandatoryTypeLabel(x.source_type)} | ${x.mode}`).join('\n')}` : 'منبع فعالی وجود ندارد.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && value === 'امور پیگیری') { const r = await client.query("SELECT tracking_code,title,status,updated_at FROM mandatory_sources WHERE status IN ('failed','completed','cancelled') ORDER BY updated_at DESC LIMIT 50"); return send(id, r.rows.length ? `امور پیگیری:\n\n${r.rows.map(x => `${x.tracking_code} | ${x.title} | ${x.status}`).join('\n')}` : 'موردی برای پیگیری وجود ندارد.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && ['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)) { await updateAction(client, id, `mandatory:${value === 'کنسل کردن' ? 'cancel' : value === 'الان ست کن' ? 'activate' : 'reschedule'}`); return send(id, 'کد پیگیری منبع را بفرست.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && me.action_state === 'mandatory:cancel') { const r = await client.query("UPDATE mandatory_sources SET status='cancelled',updated_at=NOW() WHERE tracking_code=$1 AND status IN ('scheduled','active','paused') RETURNING tracking_code", [value]); await updateAction(client, id, null); return send(id, r.rowCount ? `منبع ${value} کنسل شد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && me.action_state === 'mandatory:activate') { const r = await client.query("UPDATE mandatory_sources SET status='active',starts_at=NULL,updated_at=NOW() WHERE tracking_code=$1 AND status='scheduled' RETURNING tracking_code", [value]); await updateAction(client, id, null); return send(id, r.rowCount ? `منبع ${value} همین حالا فعال شد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && me.action_state === 'mandatory:reschedule') { if (!parseJalaliDateTime(value)) { await updateAction(client, id, `mandatory:reschedule_at:${encodeState(value)}`); return send(id, 'زمان جدید را با قالب 1405/6/10-17:10 بفرست.', mandatoryStatusKeyboard()); } return send(id, 'ابتدا کد پیگیری را بفرست.', mandatoryStatusKeyboard()); }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:reschedule_at:')) { const code = decodeState(me.action_state.split(':')[2]); const date = parseJalaliDateTime(value); if (!date) return send(id, 'قالب زمان نامعتبر است.', mandatoryStatusKeyboard()); const r = await client.query("UPDATE mandatory_sources SET starts_at=$2,status='scheduled',updated_at=NOW() WHERE tracking_code=$1 RETURNING tracking_code", [code,date]); await updateAction(client, id, null); return send(id, r.rowCount ? `زمان منبع ${code} تغییر کرد.` : 'کد پیگیری معتبر نیست.', mandatoryStatusKeyboard()); }
     if (isAdmin(id) && value === 'خاموش/روشن') { await client.query("UPDATE mandatory_sources SET status=CASE WHEN status='active' THEN 'paused' ELSE 'active' END, updated_at=NOW() WHERE status IN ('active','paused')"); return send(id, 'وضعیت منابع فعال تغییر کرد.', mandatoryJoinKeyboard()); }
     if (isAdmin(id) && value === 'بازگشت پنل') return send(id, 'پنل مدیریت', adminMainKeyboard());
     if (isAdmin(id) && me.action_state === 'mandatory:type') {
@@ -688,6 +698,7 @@ async function handleText(id, text) {
       const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const target = decodeState(encodedTarget); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
       if (!['شروع از الان','ارسال به صف','زمان بندی کردن'].includes(value)) return send(id, 'یکی از روش‌های فعال‌سازی را انتخاب کن.', mandatoryActivationKeyboard());
       if (value === 'زمان بندی کردن') { await updateAction(client, id, `mandatory:schedule:${type}:${visibility}:${mode}:${encodedTarget}:${quotaRaw}:${durationRaw}`); return send(id, 'تاریخ و ساعت شمسی را با قالب 1405/6/10-17:10 بفرست.'); }
+      if (!(await validateMandatoryTarget(type, target))) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
       const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const status = value === 'ارسال به صف' ? 'scheduled' : 'active';
       const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id", [tracking,type,visibility,title,target,target,mode,quota,duration,status,id]);
       await client.query('UPDATE mandatory_sources SET join_url=$2 WHERE id=$1', [created.rows[0].id, trackedJoinUrl(type, target, tracking)]);
@@ -696,7 +707,7 @@ async function handleText(id, text) {
     }
     if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:')) {
       const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const startsAt = parseJalaliDateTime(value); if (!startsAt) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/6/10-17:10.');
-      const target = decodeState(encodedTarget); const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
+      const target = decodeState(encodedTarget); if (!(await validateMandatoryTarget(type, target))) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.'); const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
       const scheduled = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'scheduled',$10,$11) RETURNING id", [tracking,type,visibility,title,target,target,mode,quota,duration,startsAt,id]); await client.query('UPDATE mandatory_sources SET join_url=$2 WHERE id=$1', [scheduled.rows[0].id, trackedJoinUrl(type, target, tracking)]); await updateAction(client, id, null);
       return send(id, `منبع زمان‌بندی شد.\nکد پیگیری: ${tracking}\nشروع: ${value}`, mandatoryJoinKeyboard());
     }
