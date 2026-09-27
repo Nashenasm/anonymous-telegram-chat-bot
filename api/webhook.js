@@ -193,7 +193,8 @@ function badgeFor(me, id) {
   const role = premiumRole(me, id);
   if (!role) return '';
   const fallback = role === 'owner' ? '✨✨✨' : role === 'admin' ? '✨✨' : '✨';
-  return String(me?.plus_emoji || fallback);
+  const requiredCount = role === 'owner' ? 3 : role === 'admin' ? 2 : 1;
+  return emojiSequence(me?.plus_emoji, requiredCount) ? String(me.plus_emoji).trim() : fallback;
 }
 function premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }
 function premiumMessageMarkup(replyMarkup, me, id) {
