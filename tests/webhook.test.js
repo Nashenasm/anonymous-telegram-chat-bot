@@ -31,6 +31,12 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('plus:confirm');
   });
 
+  it('renders plus badges in parentheses and uses a 24-hour profile clock', () => {
+    expect(source).toContain('`(${prefix}) ${text}`');
+    expect(source).toContain("hourCycle: 'h23'");
+    expect(source).toContain("hour12: false");
+  });
+
   it('enforces the 15-second minimum conversation duration', () => {
     expect(STOP_MIN_SECONDS).toBe(15);
   });

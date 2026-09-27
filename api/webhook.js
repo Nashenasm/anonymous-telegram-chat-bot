@@ -158,7 +158,7 @@ async function sendLink(chatId, text, replyMarkup) {
 function flowFor(settings) {
   const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
     const c = await pool.connect();
-    try { const sender = await user(c, senderId); const prefix = badgeFor(sender, senderId); return send(recipientId, prefix ? `${prefix} ${text}` : text, replyMarkup); }
+    try { const sender = await user(c, senderId); const prefix = badgeFor(sender, senderId); return send(recipientId, prefix ? `(${prefix}) ${text}` : text, replyMarkup); }
     finally { c.release(); }
   };
   return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
@@ -178,7 +178,7 @@ async function ensureUser(client, id) {
 }
 async function user(client, id) { const r = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]); return r.rows[0] || null; }
 function iranDate(value) {
-  return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hour12: false }).format(new Date(value));
+  return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hourCycle: 'h23', hour12: false }).format(new Date(value));
 }
 function isPlus(me, id) { return isAdmin(id) || (me?.plus_expires_at && new Date(me.plus_expires_at).getTime() > Date.now()); }
 function badgeFor(me, id) {
