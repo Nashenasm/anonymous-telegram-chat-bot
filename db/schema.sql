@@ -2,7 +2,13 @@ CREATE TABLE IF NOT EXISTS users (
   telegram_id BIGINT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','waiting','chatting')),
   gender TEXT NULL CHECK (gender IN ('male','female')),
-  coins INTEGER NOT NULL DEFAULT 0 CHECK (coins >= 0),
+  coins INTEGER NOT NULL DEFAULT 20 CHECK (coins >= 0),
+  plus_expires_at TIMESTAMPTZ NULL,
+  plus_emoji TEXT NOT NULL DEFAULT '✨',
+  role TEXT NOT NULL DEFAULT 'user',
+  referral_code TEXT UNIQUE,
+  referred_by BIGINT NULL REFERENCES users(telegram_id) ON DELETE SET NULL,
+  start_completed BOOLEAN NOT NULL DEFAULT FALSE,
   match_preference TEXT NULL CHECK (match_preference IN ('male','female','any')),
   partner_id BIGINT NULL,
   last_partner_id BIGINT NULL,
@@ -102,3 +108,6 @@ ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERV
 ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL;
 
 -- Optional cleanup job: DELETE FROM processed_updates WHERE processed_at < NOW() - INTERVAL '14 days';
+
+CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS users_plus_expiry_idx ON users(plus_expires_at);

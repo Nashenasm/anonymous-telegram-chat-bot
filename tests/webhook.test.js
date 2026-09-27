@@ -15,8 +15,20 @@ describe('anonymous chat public contract', () => {
       back_button: 'بازگشت',
       welcome_message: 'به چت ناشناس خوش آمدی.',
       connected_message: 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.',
+      increase_coins_button: 'افزایش مانو کوین',
+      free_coins_button: 'افزایش مانو کوین رایگان',
+      plus_button: 'اکانت پلاس',
     });
     expect(Object.values(BLOCK_REASONS)).toHaveLength(4);
+  });
+
+  it('includes plus, referral, and role persistence in the schema', () => {
+    expect(schema).toContain('plus_expires_at');
+    expect(schema).toContain('plus_emoji');
+    expect(schema).toContain('referral_code');
+    expect(schema).toContain('plus_purchases');
+    expect(source).toContain('ظاهر ایموجی پلاس');
+    expect(source).toContain('plus:confirm');
   });
 
   it('enforces the 15-second minimum conversation duration', () => {

@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import crypto from 'node:crypto';
 import { createAnonymousFlow } from '../src/anonymous-flow.js';
 
 const pool = new Pool({
@@ -15,7 +16,15 @@ async function ensureRuntimeSchema() {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0');
+        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 20');
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_expires_at TIMESTAMPTZ");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji TEXT NOT NULL DEFAULT '✨'");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS start_completed BOOLEAN NOT NULL DEFAULT TRUE");
+        await client.query('CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique ON users(referral_code) WHERE referral_code IS NOT NULL');
+        await client.query("CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
         await client.query(`CREATE TABLE IF NOT EXISTS anonymous_blocks (
           user_low BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
           user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -59,6 +68,9 @@ const DEFAULTS = {
   back_button: 'بازگشت',
   welcome_message: 'به چت ناشناس خوش آمدی.',
   connected_message: 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.',
+  increase_coins_button: 'افزایش مانو کوین',
+  free_coins_button: 'افزایش مانو کوین رایگان',
+  plus_button: 'اکانت پلاس',
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
@@ -103,8 +115,14 @@ function isAdmin(id) { return adminIds().has(String(id)); }
 function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
-function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON], [settings.profile_button]]); }
-function profileKeyboard(settings) { return replyKeyboard([[settings.back_button]], true); }
+const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
+function mainKeyboard(settings) { return replyKeyboard([[settings.connect_button, ANONYMOUS_LINK_BUTTON], [settings.profile_button], [settings.increase_coins_button, settings.plus_button]]); }
+function profileKeyboard(settings) { return replyKeyboard([['ظاهر ایموجی پلاس'], [settings.back_button]], true); }
+function increaseCoinsKeyboard(settings) { return replyKeyboard([[settings.free_coins_button], [settings.back_button]], true); }
+function emojiKeyboard(settings) { return replyKeyboard([['ریست ایموجی'], [settings.back_button]], true); }
+function plusKeyboard(settings) { return replyKeyboard([[settings.back_button]], true); }
+function plusPurchaseKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پلاس 1 ماهه⭐', callback_data: 'plus:buy:1' }], [{ text: 'پلاس 3 ماهه🌟', callback_data: 'plus:buy:3' }], [{ text: 'پلاس 6 ماهه✨', callback_data: 'plus:buy:6' }], [{ text: 'پلاس 12 ماهه💎', callback_data: 'plus:buy:12' }]] } }; }
+function plusConfirmKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'بله تایید میکنم', callback_data: 'plus:confirm' }, { text: 'خیر بعدا میخرم', callback_data: 'plus:cancel' }]] } }; }
 function adminMainKeyboard() { return replyKeyboard([['تبلیغات', 'کنترل ربات'], ['کنترل کاربران', 'وضعیت ربات'], ['گزارش‌ها', 'مدیران'], ['خروج از پنل']]); }
 function adsKeyboard() { return replyKeyboard([['جویین اجباری', 'پیام همگانی'], ['پیام خوش‌آمد', 'تبلیغ اتصال'], ['تبلیغ میان مکالمه'], ['بازگشت پنل']], true); }
 function controlKeyboard() { return replyKeyboard([['بخش ظاهری پابلیک'], ['بخش ظاهری پرایویسی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
@@ -138,7 +156,12 @@ async function sendLink(chatId, text, replyMarkup) {
   return telegram('sendMessage', { chat_id: chatId, text, protect_content: false, ...(markup ? { reply_markup: markup } : {}) });
 }
 function flowFor(settings) {
-  return createAnonymousFlow({ pool, send, sendLink, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
+  const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
+    const c = await pool.connect();
+    try { const sender = await user(c, senderId); const prefix = badgeFor(sender, senderId); return send(recipientId, prefix ? `${prefix} ${text}` : text, replyMarkup); }
+    finally { c.release(); }
+  };
+  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
@@ -149,20 +172,31 @@ async function settings(client) {
   return { ...out, bot_enabled: out.bot_enabled !== 'false' };
 }
 async function ensureUser(client, id) {
-  await client.query('INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT (telegram_id) DO UPDATE SET updated_at=NOW()', [id]);
+  await client.query("INSERT INTO users (telegram_id, coins, start_completed) VALUES ($1, 20, FALSE) ON CONFLICT (telegram_id) DO UPDATE SET updated_at=NOW()", [id]);
   const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]);
   return result.rows[0];
 }
 async function user(client, id) { const r = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]); return r.rows[0] || null; }
 function iranDate(value) {
-  return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hour12: false }).format(new Date(value));
+}
+function isPlus(me, id) { return isAdmin(id) || (me?.plus_expires_at && new Date(me.plus_expires_at).getTime() > Date.now()); }
+function badgeFor(me, id) {
+  if (!isPlus(me, id)) return '';
+  if (isAdmin(id)) return me?.plus_emoji && me.plus_emoji !== '✨' ? String(me.plus_emoji) : '✨✨✨';
+  return String(me?.plus_emoji || '✨');
+}
+function oneEmoji(value) {
+  const parts = [...String(value || '').trim()];
+  return parts.length === 1 && /\p{Extended_Pictographic}/u.test(parts[0]);
 }
 async function sendProfile(id, settings) {
   const client = await pool.connect();
   try {
     const me = await ensureUser(client, id);
     const gender = me.gender === 'male' ? 'پسر' : me.gender === 'female' ? 'دختر' : 'ثبت نشده';
-    const text = `پروفایل شما\n\n🪙 سکه: ${Number(me.coins || 0)}\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${gender}`;
+    const plusText = isAdmin(id) ? 'نامحدود' : (isPlus(me, id) ? `${Math.max(0, Math.ceil((new Date(me.plus_expires_at).getTime() - Date.now()) / 86400000))} روز` : 'ندارد');
+    const text = `پروفایل شما\n\n🪙 مانو کوین: ${Number(me.coins || 0)}\n✨ باقی مانده مانو پلاس: ${plusText} ${badgeFor(me, id)}\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${gender}`;
     return send(id, text, profileKeyboard(settings));
   } finally { client.release(); }
 }
@@ -262,12 +296,100 @@ async function block(id, targetId, reason) {
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 
+async function botUsername() {
+  if (process.env.BOT_USERNAME) return process.env.BOT_USERNAME.replace(/^@/, '');
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+  const result = await telegram('getMe', {});
+  return result?.username || null;
+}
+async function referralCode(client, id) {
+  const existing = await client.query('SELECT referral_code FROM users WHERE telegram_id=$1', [id]);
+  if (existing.rows[0]?.referral_code) return existing.rows[0].referral_code;
+  for (let i = 0; i < 3; i += 1) {
+    const code = crypto.randomBytes(8).toString('base64url');
+    try {
+      const r = await client.query('UPDATE users SET referral_code=$2 WHERE telegram_id=$1 AND referral_code IS NULL RETURNING referral_code', [id, code]);
+      if (r.rows[0]) return code;
+    } catch (error) { if (i === 2) throw error; }
+  }
+  return null;
+}
+async function rewardFirstEntry(id, ownerId, reward, s) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const first = await client.query('UPDATE users SET start_completed=TRUE WHERE telegram_id=$1 AND start_completed=FALSE RETURNING telegram_id', [id]);
+    if (!first.rowCount) { await client.query('COMMIT'); return false; }
+    await client.query('UPDATE users SET coins=coins+20 WHERE telegram_id=$1', [id]);
+    if (ownerId && Number(ownerId) !== Number(id)) {
+      const owner = await client.query('UPDATE users SET coins=coins+$2 WHERE telegram_id=$1 RETURNING telegram_id', [ownerId, reward]);
+      await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [id, ownerId]);
+      await client.query('COMMIT');
+      if (owner.rowCount) await send(Number(ownerId), `🎁 یک عضو جدید با لینک شما وارد شد و ${reward} مانو کوین هدیه گرفتی.`, mainKeyboard(s));
+      return true;
+    }
+    await client.query('COMMIT');
+    return true;
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
+async function sendIncreaseCoins(id, settings) {
+  return send(id, 'افزایش مانو کوین\n\nخرید مانو کوین در حال حاضر غیرفعال است. برای دریافت رایگان مانو کوین، گزینهٔ زیر را انتخاب کن.', increaseCoinsKeyboard(settings));
+}
+async function sendFreeCoins(id, settings) {
+  const client = await pool.connect();
+  try {
+    const code = await referralCode(client, id); const username = await botUsername();
+    if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings));
+    const url = `https://t.me/${username}?start=ref_${code}`;
+    const text = `🔗 لینک اختصاصی شما:\n${url}\n\n🎁 متن پیشنهادی جذب کاربر:\nبا لینک اختصاصی من وارد ربات چت ناشناس شو و دوست‌های جدید پیدا کن!\n\nاگر کاربر جدیدی که قبلاً از ربات استفاده نکرده از این لینک وارد شود، ۵ مانو کوین رایگان می‌گیری. ورود از لینک ناشناس هم برای صاحب لینک ۳ مانو کوین هدیه دارد.\n\nهر کاربر جدید فقط یک‌بار برای ورود اول، ۲۰ مانو کوین هدیه می‌گیرد.`;
+    return sendLink(id, text, increaseCoinsKeyboard(settings));
+  } finally { client.release(); }
+}
+async function sendPlus(id, settings) {
+  const text = `✨ اکانت پلاس\n\nبا اکانت پلاس:\n۱) تبلیغات مزاحم برایت نمایش داده نمی‌شود.\n۲) سریع‌تر به چت وصل می‌شوی.\n۳) نشان مخصوص پلاس در چت نمایش داده می‌شود.\n۴) می‌توانی نشان پلاس را تغییر بدهی.\n۵) از مزایای آیندهٔ کاربران پلاس بهره‌مند می‌شوی.\n\n💰 قیمت‌ها:\nپلاس ۱ ماهه ۱۰۰ مانو کوین\nپلاس ۳ ماهه ۲۵۰ مانو کوین\nپلاس ۶ ماهه ۴۵۰ مانو کوین\nپلاس ۱۲ ماهه ۸۰۰ مانو کوین`;
+  return send(id, text, plusPurchaseKeyboard());
+}
+async function handlePlusCallback(id, data, client, s) {
+  const me = await user(client, id);
+  const match = data.match(/^plus:buy:(1|3|6|12)$/);
+  if (match) {
+    const months = Number(match[1]); const price = PLUS_PRICES[months];
+    await updateAction(client, id, `plus_confirm:${months}`);
+    return send(id, `موجودی مانو کوین: ${Number(me.coins || 0)}\nمحصول: پلاس ${months} ماهه\nقیمت: ${price} مانو کوین\n\nخرید را تایید می‌کنید؟`, plusConfirmKeyboard());
+  }
+  if (data === 'plus:cancel') { await updateAction(client, id, null); return sendPlus(id, s); }
+  if (data === 'plus:confirm') {
+    const months = Number(String(me.action_state || '').split(':')[1]); const price = PLUS_PRICES[months];
+    if (!price) return sendPlus(id, s);
+    const tx = await pool.connect();
+    try {
+      await tx.query('BEGIN');
+      const locked = await tx.query('SELECT coins, plus_expires_at FROM users WHERE telegram_id=$1 FOR UPDATE', [id]);
+      const row = locked.rows[0];
+      if (!row || Number(row.coins) < price) { await tx.query('ROLLBACK'); await updateAction(client, id, null); return send(id, 'موجودی مانو کوین شما برای این خرید کافی نیست.', plusPurchaseKeyboard()); }
+      const base = row.plus_expires_at && new Date(row.plus_expires_at).getTime() > Date.now() ? new Date(row.plus_expires_at) : new Date();
+      base.setUTCMonth(base.getUTCMonth() + months);
+      await tx.query('UPDATE users SET coins=coins-$2, plus_expires_at=$3, plus_emoji=COALESCE(NULLIF(plus_emoji, \'\'), \'✨\'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1', [id, price, base]);
+      await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, price]);
+      await tx.query('COMMIT');
+      return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
+    } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
+  }
+  return false;
+}
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (payload !== null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
         return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s));
+      }
+      if (payload.startsWith('ref_')) {
+        const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]);
+        if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s));
+        const first = await rewardFirstEntry(id, Number(found.rows[0].telegram_id), 5, s);
+        return send(id, first ? '🎁 خوش آمدی! ۲۰ مانو کوین هدیهٔ ورود اول به حسابت اضافه شد.' : 'خوش آمدی!', mainKeyboard(s));
       }
       client.release();
       released = true;
@@ -277,7 +399,8 @@ async function handleStart(id, payload = null) {
     }
     if (me.status === 'waiting') return send(id, 'وضعیت فعلی: در صف انتظار هستی. به‌محض پیدا شدن فرد سازگار خبر می‌دهم.', waitingKeyboard(s));
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
-    return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
+    const first = await rewardFirstEntry(id, null, 0, s);
+    return send(id, first ? `${s.welcome_message || DEFAULTS.welcome_message}\n\n🎁 برای ورود اول، ۲۰ مانو کوین هدیه گرفتی.` : (s.welcome_message || DEFAULTS.welcome_message), mainKeyboard(s));
   } finally { if (!released) client.release(); }
 }
 
@@ -336,6 +459,7 @@ async function handleCallback(id, data) {
       await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`);
       return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
+    if (data.startsWith('plus:')) return handlePlusCallback(id, data, sClient, s);
     if (data === 'admin:toggle' && isAdmin(id)) { const enabled = !s.bot_enabled; await sClient.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', adminKeyboard(enabled)); }
     if (data === 'admin:rename' && isAdmin(id)) return send(id, 'کدام دکمه را تغییر می‌دهی؟', renameKeyboard());
     if (data.startsWith('admin:rename:') && isAdmin(id)) { const key = data.slice('admin:rename:'.length); if (!DEFAULTS[key]) return send(id, 'گزینه نامعتبر است.'); await updateAction(sClient, id, `rename:${key}`); return send(id, 'نام جدید را در یک پیام بفرست.'); }
@@ -368,7 +492,7 @@ async function handleText(id, text) {
       await updateAction(client, id, null);
       if (!found.rows[0]) return send(id, 'کاربری با این آیدی پیدا نشد.', adminMainKeyboard());
       const u = found.rows[0];
-      return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nسکه: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard());
+      return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nمانو کوین: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard());
     }
     if (isAdmin(id) && value === s.profile_button) return sendProfile(id, s);
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
@@ -389,7 +513,24 @@ async function handleText(id, text) {
     if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) return send(id, 'پنل مدیریت', adminMainKeyboard());
     if (isAdmin(id) && value === 'خروج از پنل') { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
     if (value === s.profile_button || value === 'پروفایل من') return sendProfile(id, s);
+    if (value === 'ظاهر ایموجی پلاس') {
+      if (!isPlus(me, id)) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', profileKeyboard(s));
+      await updateAction(client, id, 'plus_emoji');
+      return send(id, isAdmin(id) ? 'سه نشان مدیر را در یک پیام ارسال کن؛ مدیر می‌تواند متن دلخواه هم بفرستد.' : 'یک ایموجی دلخواه ارسال کن. فقط یک ایموجی مجاز است و متن یا شکل دیگری پذیرفته نمی‌شود.', emojiKeyboard(s));
+    }
+    if (value === 'ریست ایموجی') { await client.query("UPDATE users SET plus_emoji='✨', updated_at=NOW() WHERE telegram_id=$1", [id]); await updateAction(client, id, null); return send(id, 'ایموجی پلاس به ✨ برگردانده شد.', profileKeyboard(s)); }
+    if (value === s.increase_coins_button) return sendIncreaseCoins(id, s);
+    if (value === s.free_coins_button) return sendFreeCoins(id, s);
+    if (value === s.plus_button) return sendPlus(id, s);
     if (value === s.back_button || value === 'بازگشت') return send(id, s.welcome_message || DEFAULTS.welcome_message, mainKeyboard(s));
+    if (me.action_state === 'plus_emoji') {
+      if (isAdmin(id)) {
+        if (!value || value.length > 100) return send(id, 'نشان مدیر نمی‌تواند خالی یا خیلی طولانی باشد.', emojiKeyboard(s));
+      } else if (!oneEmoji(value)) return send(id, 'فقط یک ایموجی ارسال کن.', emojiKeyboard(s));
+      await client.query('UPDATE users SET plus_emoji=$2, updated_at=NOW() WHERE telegram_id=$1', [id, value]);
+      await updateAction(client, id, null);
+      return send(id, `نشان پلاس شما روی ${value} تنظیم شد.`, profileKeyboard(s));
+    }
     // A stale anonymous-link state must never swallow the normal connect button.
     if (value === s.connect_button) {
       await updateAction(client, id, null);
@@ -484,7 +625,9 @@ async function handleText(id, text) {
       [target, id]
     );
     if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
-    await send(target, text); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    const targetUser = await user(client, target);
+    const prefix = badgeFor(me, id);
+    await send(target, prefix ? `${prefix} ${text}` : text); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
   } finally { if (!released) client.release(); }
 }
 

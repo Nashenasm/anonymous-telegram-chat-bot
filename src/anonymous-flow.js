@@ -49,8 +49,27 @@ const isActiveState = (state) => typeof state === 'string' && state.startsWith('
 
 let usernamePromise = null;
 
-export function createAnonymousFlow({ pool, send, sendLink = send, connectButton, disconnectButton }) {
+export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = null, connectButton, disconnectButton }) {
   const uid = (id) => Number(id);
+  const deliverMessage = async (senderId, recipientId, text, markup) => {
+    if (sendAsUser) return sendAsUser(senderId, recipientId, text, markup);
+    return send(recipientId, text, markup);
+  };
+  const rewardFirstEntry = async (newcomerId, ownerId) => {
+    if (typeof pool.connect !== 'function' || String(newcomerId) === String(ownerId)) return false;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const first = await client.query('UPDATE users SET start_completed=TRUE WHERE telegram_id=$1 AND start_completed=FALSE RETURNING telegram_id', [uid(newcomerId)]);
+      if (!first.rowCount) { await client.query('COMMIT'); return false; }
+      await client.query('UPDATE users SET coins=coins+20 WHERE telegram_id=$1', [uid(newcomerId)]);
+      const owner = await client.query('UPDATE users SET coins=coins+3 WHERE telegram_id=$1 RETURNING telegram_id', [uid(ownerId)]);
+      await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
+      await client.query('COMMIT');
+      if (owner.rowCount) await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
+      return true;
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  };
 
   const kb = (rows) => ({ reply_markup: { keyboard: rows, resize_keyboard: true } });
   const inlineActions = (otherId) => ({
@@ -138,7 +157,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
 
   const deliver = async (senderId, recipientId, body) => {
     await setState(recipientId, `anon_last:${senderId}`);
-    await send(recipientId, MSG_HEADER + body, inlineActions(senderId));
+    await deliverMessage(senderId, recipientId, MSG_HEADER + body, inlineActions(senderId));
   };
 
   const finishSender = async (senderId) => {
@@ -201,7 +220,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
     if (accept && delivered && typeof delivered.body === 'string' && delivered.body.length > 0) {
       const realSenderId = delivered.senderId != null ? delivered.senderId : senderId;
       await setState(recipientId, `anon_last:${realSenderId}`);
-      await send(recipientId, MSG_HEADER + delivered.body, inlineActions(realSenderId));
+      await deliverMessage(realSenderId, recipientId, MSG_HEADER + delivered.body, inlineActions(realSenderId));
     } else {
       await setState(recipientId, null);
       await send(recipientId, DISCARDED_MSG, await mainKbFor(recipientId));
@@ -363,6 +382,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, connectButton
       await send(id, ACTIVE_ANON_MSG, await mainKbFor(id));
       return true;
     }
+    await rewardFirstEntry(id, targetId);
     await setState(id, `anon_compose:${targetId}`);
     await send(id, COMPOSE_PROMPT, composeKb());
     return true;
