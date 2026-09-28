@@ -51,3 +51,10 @@ npm run lint
 - Appearance values are stored as JSON in `bot_settings` under `appearance_public` and `appearance_private`; enable flags allow falling back to the default appearance without deleting the custom configuration.
 - `db/schema-v8-appearance-and-owner-tools.sql` is the additive migration for existing databases.
 - The technical tools are guarded by `OWNER_TELEGRAM_ID`, not merely `ADMIN_TELEGRAM_IDS`. Source export excludes `.env`, `.git`, and `node_modules`; database export is generated from PostgreSQL metadata and current rows so it remains independent of `pg_dump`.
+
+
+## Multi-format backup and deep screens
+
+The database backup is a ZIP archive containing SQL restore data, full JSON, per-table JSON, per-table CSV, schema metadata, a manifest, and a restore README. The source archive contains the portable source tree plus `SOURCE_MANIFEST.json`.
+
+The appearance schema now has editable screen/state objects for public matching and chat flows and for private management flows. The editor paginates the complete nested item list, including screen titles, messages, button labels, and internal feedback texts. Telegram does not support arbitrary custom fonts in ordinary messages, so the templates use portable Unicode typography and deliberate copy/layout instead of image-dependent typography.
