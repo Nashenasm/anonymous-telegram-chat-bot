@@ -2,6 +2,8 @@ import { Pool } from 'pg';
 import crypto from 'node:crypto';
 import { createAnonymousFlow } from '../src/anonymous-flow.js';
 import { decodeTrackingCode, formatMandatorySourceDetails, getMandatorySourceDetails, getMandatorySourceHistory, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, processMandatoryLifecycle, recordMandatorySourceHistory, syncMandatoryReport, trackingCommand } from '../src/mandatory-service.js';
+import { DEFAULT_MANDATORY_AUDIENCE, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
+import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -24,9 +26,10 @@ async function ensureRuntimeSchema() {
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS start_completed BOOLEAN NOT NULL DEFAULT TRUE");
-        await client.query(`CREATE TABLE IF NOT EXISTS mandatory_sources (id BIGSERIAL PRIMARY KEY, tracking_code TEXT NOT NULL UNIQUE, source_type TEXT NOT NULL CHECK (source_type IN ('channel','group','bot','web_app','website')), visibility TEXT CHECK (visibility IN ('private','public')), title TEXT NOT NULL, target TEXT NOT NULL, join_url TEXT, mode TEXT NOT NULL CHECK (mode IN ('time','count','start','click')), quota INTEGER, duration_seconds INTEGER, starts_at TIMESTAMPTZ, started_at TIMESTAMPTZ, paused_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('scheduled','active','paused','completed','failed','cancelled')), created_by BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE RESTRICT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await client.query(`CREATE TABLE IF NOT EXISTS mandatory_sources (id BIGSERIAL PRIMARY KEY, tracking_code TEXT NOT NULL UNIQUE, source_type TEXT NOT NULL CHECK (source_type IN ('channel','group','bot','web_app','website')), visibility TEXT CHECK (visibility IN ('private','public')), title TEXT NOT NULL, target TEXT NOT NULL, join_url TEXT, mode TEXT NOT NULL CHECK (mode IN ('time','count','start','click')), quota INTEGER, duration_seconds INTEGER, audience JSONB NOT NULL DEFAULT '{"regular_female":true,"regular_male":true,"plus_female":true,"plus_male":true}'::jsonb, starts_at TIMESTAMPTZ, started_at TIMESTAMPTZ, paused_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('scheduled','active','paused','completed','failed','cancelled')), created_by BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE RESTRICT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS mandatory_source_events (source_id BIGINT NOT NULL REFERENCES mandatory_sources(id) ON DELETE CASCADE, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, event_type TEXT NOT NULL, confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (source_id, telegram_id))`);
         await client.query(`CREATE TABLE IF NOT EXISTS mandatory_source_queue (id BIGSERIAL PRIMARY KEY, source_id BIGINT NOT NULL REFERENCES mandatory_sources(id) ON DELETE CASCADE, position INTEGER NOT NULL, queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(source_id), UNIQUE(position))`);
+        await client.query("ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS audience JSONB NOT NULL DEFAULT '{\"regular_female\":true,\"regular_male\":true,\"plus_female\":true,\"plus_male\":true}'::jsonb");
         await client.query('ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ');
         await client.query('ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ');
         await client.query("UPDATE mandatory_sources SET started_at=COALESCE(starts_at,created_at) WHERE status='active' AND started_at IS NULL");
@@ -60,8 +63,19 @@ async function ensureRuntimeSchema() {
           ('profile_button', 'پروفایل من'), ('back_button', 'بازگشت'),
           ('welcome_message', 'به چت ناشناس خوش آمدی.'),
           ('connected_message', 'وصل شدی؛ سلام کن و گفت‌وگو را شروع کن.'),
+          ('mandatory_join_message','برای استفاده از ربات، ابتدا در منابع اجباری عضو شو. با دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.'),
+          ('mandatory_join_button_label','عضویت در منبع'), ('mandatory_verify_button_label','بررسی عضویت'),
+          ('mandatory_join_button_layout','single'), ('mandatory_join_show_source_tags','true'),
           ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15')
           ON CONFLICT (key) DO NOTHING`);
+        await client.query("ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS audience JSONB NOT NULL DEFAULT '{\"regular_female\":true,\"regular_male\":true,\"plus_female\":true,\"plus_male\":true}'::jsonb");
+        await client.query(`INSERT INTO bot_settings(key,value) VALUES
+          ('mandatory_join_button_label','عضویت در منبع'),
+          ('mandatory_verify_button_label','بررسی عضویت'),
+          ('mandatory_join_button_layout','single'),
+          ('mandatory_join_show_source_tags','true')
+          ON CONFLICT (key) DO NOTHING`);
+        await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING', ['mandatory_join_message', DEFAULTS.mandatory_join_message]);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -84,6 +98,11 @@ const DEFAULTS = {
   increase_coins_button: 'افزایش مانو کوین',
   free_coins_button: 'افزایش مانو کوین رایگان',
   plus_button: 'اکانت پلاس',
+  mandatory_join_message: 'برای استفاده از ربات، ابتدا در منابع اجباری عضو شو. با دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.',
+  mandatory_join_button_label: 'عضویت در منبع',
+  mandatory_verify_button_label: 'بررسی عضویت',
+  mandatory_join_button_layout: 'single',
+  mandatory_join_show_source_tags: 'true',
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
@@ -152,14 +171,16 @@ function afterStopKeyboard() { return replyKeyboard([['بلاکش کن'], ['بع
 function blockKeyboard() { return replyKeyboard([[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']], true); }
 function adminKeyboard(enabled) { return adminMainKeyboard(); }
 function renameKeyboard() { return replyKeyboard([['دکمه اتصال'], ['دکمه انصراف'], ['دکمه قطع مکالمه']], true); }
-function mandatoryJoinKeyboard() { return replyKeyboard([['حذف', 'افزودن'], ['وضعیت', 'خاموش/روشن'], ['کنترل ظاهری'], ['بازگشت پنل']], true); }
+export function mandatoryJoinKeyboard() { return replyKeyboard([['افزودن', 'وضعیت'], ['کنترل ظاهری'], ['بازگشت پنل']], true); }
 function mandatoryTypeKeyboard() { return replyKeyboard([['کانال', 'گروه'], ['ربات', 'وب اپ'], ['وب سایت'], ['بازگشت']], true); }
 function mandatoryVisibilityKeyboard() { return replyKeyboard([['خصوصی', 'عمومی'], ['بازگشت']], true); }
 function mandatoryModeKeyboard(type) { return replyKeyboard(type === 'bot' ? [['براساس زمان', 'براساس استارت'], ['بازگشت']] : [['براساس زمان', 'براساس میزان'], ['بازگشت']], true); }
 function mandatoryActivationKeyboard() { return replyKeyboard([['زمان بندی کردن', 'شروع از الان'], ['ارسال به صف'], ['بازگشت']], true); }
 function mandatoryConfirmKeyboard() { return replyKeyboard([['تایید نهایی'], ['بازگشت']], true); }
 export function mandatoryScheduleListKeyboard() { return replyKeyboard([['الان ست کن', 'تغییر تایم'], ['کنسل کردن'], ['بازگشت']], true); }
-export function mandatoryStatusKeyboard() { return replyKeyboard([['لیست زمان بندی', 'صف انتظار'], ['درحال انجام', 'امور پیگیری'], ['بازگشت']], true); }
+export function mandatoryStatusKeyboard() { return replyKeyboard([['لیست زمان بندی', 'صف انتظار'], ['درحال انجام'], ['بازگشت']], true); }
+function mandatoryAppearanceKeyboard() { return replyKeyboard([['ویرایش متن جویین', 'نام دکمه عضویت'], ['نام دکمه بررسی', 'چیدمان دکمه‌ها'], ['نمایش/پنهان‌کردن برچسب منبع'], ['بازگشت']], true); }
+function mandatoryAppearanceLayoutKeyboard() { return replyKeyboard([['تک‌ردیفه', 'فشرده'], ['بازگشت']], true); }
 
 async function telegram(method, body, { timeoutMs = 8_000 } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -234,11 +255,13 @@ async function validateMandatoryReportChannel(target) {
     return false;
   }
 }
-async function mandatoryRequirements(id, client, { recordJoins = false } = {}) {
+async function mandatoryRequirements(id, client, { recordJoins = false, profile = null } = {}) {
   const sources = await activeMandatorySources(client);
+  const audienceProfile = profile || await user(client, id);
   const missing = [];
   let recordedAny = false;
   for (const source of sources.rows) {
+    if (!mandatoryAudienceIncludesUser(source.audience, audienceProfile)) continue;
     if (!['channel','group'].includes(source.source_type)) continue;
     const joined = await telegramChatMember(normalizeTelegramTarget(source.target), id);
     if (!joined) missing.push(source);
@@ -255,10 +278,13 @@ async function mandatoryRequirements(id, client, { recordJoins = false } = {}) {
   if (recordedAny) await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) });
   return missing;
 }
-async function recordMandatoryStart(id, payload, client) {
+async function recordMandatoryStart(id, payload, client, profile = null) {
   const code = String(payload || '').match(/^mj_([A-Za-z0-9_-]+)$/)?.[1];
-  if (!code) return;
-  const recorded = await client.query("INSERT INTO mandatory_source_events(source_id,telegram_id,event_type) SELECT id,$2,'start' FROM mandatory_sources WHERE tracking_code=$1 AND source_type='bot' ON CONFLICT DO NOTHING RETURNING source_id", [code, id]);
+  if (!code || isAdmin(id)) return;
+  const source = await client.query("SELECT id,audience FROM mandatory_sources WHERE tracking_code=$1 AND source_type='bot'", [code]);
+  const audienceProfile = profile || await user(client, id);
+  if (!source.rows[0] || !mandatoryAudienceIncludesUser(source.rows[0].audience, audienceProfile)) return;
+  const recorded = await client.query("INSERT INTO mandatory_source_events(source_id,telegram_id,event_type) SELECT id,$2,'start' FROM mandatory_sources WHERE id=$1 ON CONFLICT DO NOTHING RETURNING source_id", [source.rows[0].id, id]);
   if (recorded.rows[0]) {
     await client.query('UPDATE mandatory_sources SET updated_at=NOW() WHERE id=$1', [recorded.rows[0].source_id]);
     try { await syncMandatoryReport(client, recorded.rows[0].source_id, telegram); }
@@ -266,13 +292,33 @@ async function recordMandatoryStart(id, payload, client) {
     await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) });
   }
 }
-export function mandatoryJoinMessage() {
-  return 'برای استفاده از ربات، ابتدا در منابع اجباری عضو شو.\n\nبا دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.';
+export function mandatoryJoinMessage(missing = [], displaySettings = {}) {
+  const template = String(displaySettings.mandatory_join_message || DEFAULTS.mandatory_join_message);
+  return template.replace(/\{count\}/g, String(Array.isArray(missing) ? missing.length : 0));
 }
-export function mandatoryJoinMarkup(missing) {
-  const rows = missing.filter(x => /^https?:\/\//i.test(String(x.join_url || '')))
-    .map((x, i) => [{ text: `عضویت در منبع ${i + 1}`, url: x.join_url }]);
-  rows.push([{ text: 'بررسی عضویت', callback_data: 'mandatory:verify' }]);
+export function mandatoryJoinMarkup(missing, displaySettings = {}, telegramId = null) {
+  const sources = (Array.isArray(missing) ? missing : []).filter(x => /^https?:\/\//i.test(String(x.join_url || '')));
+  const showTags = displaySettings.mandatory_join_show_source_tags !== 'false';
+  const baseLabel = String(displaySettings.mandatory_join_button_label || DEFAULTS.mandatory_join_button_label).slice(0, 60);
+  const buttons = sources.map((x, i) => {
+    let url = x.join_url;
+    try {
+      const parsed = new URL(url);
+      if (telegramId && parsed.pathname.endsWith('/api/mandatory-track')) {
+        const token = encryptMandatoryTrackingUserId(telegramId, process.env.MANDATORY_TRACKING_SECRET || process.env.TELEGRAM_BOT_TOKEN);
+        if (token) parsed.searchParams.set('uid', token);
+        url = parsed.toString();
+      }
+    } catch {}
+    return { text: showTags ? `${baseLabel} ${i + 1}` : baseLabel, url };
+  });
+  const rows = [];
+  if (displaySettings.mandatory_join_button_layout === 'compact') {
+    for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  } else {
+    for (const item of buttons) rows.push([item]);
+  }
+  rows.push([{ text: String(displaySettings.mandatory_verify_button_label || DEFAULTS.mandatory_verify_button_label).slice(0, 60), callback_data: 'mandatory:verify' }]);
   return { reply_markup: { inline_keyboard: rows } };
 }
 async function settings(client) {
@@ -542,10 +588,10 @@ async function handlePremiumRoleCommand(viewerId, command) {
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
-    if (payload !== null) await recordMandatoryStart(id, payload, client);
+    if (payload !== null) await recordMandatoryStart(id, payload, client, me);
     if (!isAdmin(id)) {
-      const missing = await mandatoryRequirements(id, client);
-      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
+      const missing = await mandatoryRequirements(id, client, { profile: me });
+      if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
     }
     if (payload !== null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
@@ -574,8 +620,8 @@ async function handleConnect(id) {
   const client = await pool.connect(); try {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (!isAdmin(id)) {
-      const missing = await mandatoryRequirements(id, client);
-      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
+      const missing = await mandatoryRequirements(id, client, { profile: me });
+      if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
     }
     if (!s.bot_enabled && !isAdmin(id)) return send(id, 'ربات موقتاً خاموش است.');
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
@@ -634,13 +680,16 @@ async function handleMandatoryTrackingCallback(id, data) {
   } finally { client.release(); }
 }
 
-async function handleCallback(id, data) {
+async function handleCallback(id, data, callbackQuery = null) {
+  if (data.startsWith('mandatory:audience:')) return handleMandatoryAudienceCallback(id, data, callbackQuery);
   if (data === 'mandatory:verify') {
     const c = await pool.connect();
     try {
-      const missing = await mandatoryRequirements(id, c, { recordJoins: true });
-      if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
-      return send(id, '✅ عضویت شما در همهٔ منابع فعال تایید شد. حالا می‌توانی از ربات استفاده کنی.', mainKeyboard(await settings(c)));
+      const profile = await user(c, id);
+      const displaySettings = await settings(c);
+      const missing = await mandatoryRequirements(id, c, { recordJoins: true, profile });
+      if (missing.length) return send(id, mandatoryJoinMessage(missing, displaySettings), mandatoryJoinMarkup(missing, displaySettings, id));
+      return send(id, '✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد. حالا می‌توانی از ربات استفاده کنی.', mainKeyboard(displaySettings));
     } finally { c.release(); }
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
@@ -723,6 +772,145 @@ async function createMandatoryInviteLink(type, target, tracking) {
     catch (exportError) { throw new Error(`ساخت لینک دعوت خصوصی ممکن نشد: ${exportError.message || createError.message}`); }
   }
 }
+function mandatoryDraftFromActionState(actionState) {
+  const prefix = 'mandatory:audience:';
+  if (!String(actionState || '').startsWith(prefix)) return null;
+  try {
+    const draft = JSON.parse(decodeState(String(actionState).slice(prefix.length)));
+    if (!draft || !['channel','group','bot','web_app','website'].includes(draft.type) || !['time','count','start','click'].includes(draft.mode) || !['active','queued','scheduled'].includes(draft.activation) || !String(draft.target || '').trim()) return null;
+    draft.audience = normalizeMandatoryAudience(draft.audience);
+    return draft;
+  } catch { return null; }
+}
+function encodeMandatoryDraft(draft) { return encodeState(JSON.stringify(draft)); }
+function mandatoryAudiencePrompt(draft) {
+  const activation = draft.activation === 'active' ? 'شروع از الان' : draft.activation === 'queued' ? 'قرارگیری در صف' : `زمان‌بندی برای ${iranDate(draft.startsAt)}`;
+  return `مخاطبان این منبع را انتخاب کن. همهٔ گروه‌ها در شروع روشن هستند؛ هر دکمه را بزن تا روشن/خاموش شود.\n\nمنبع: ${mandatoryTypeLabel(draft.type)}\nروش: ${draft.mode}\nوضعیت شروع: ${activation}`;
+}
+function mandatoryAudienceReviewText(draft) {
+  const activation = draft.activation === 'active' ? 'شروع از الان' : draft.activation === 'queued' ? 'صف انتظار' : `زمان‌بندی برای ${iranDate(draft.startsAt)}`;
+  return `بازبینی نهایی جویین اجباری\n\nنوع: ${mandatoryTypeLabel(draft.type)}\nهدف: ${draft.target}\nروش: ${draft.mode}\nشروع: ${activation}\nمخاطبان: ${mandatoryAudienceLabels(draft.audience)}\n\nبا تأیید نهایی، منبع و لینک دعوت ساخته می‌شود.`;
+}
+async function beginMandatoryAudienceSelection(client, id, draft) {
+  const normalized = { ...draft, audience: normalizeMandatoryAudience(draft.audience || DEFAULT_MANDATORY_AUDIENCE) };
+  await updateAction(client, id, `mandatory:audience:${encodeMandatoryDraft(normalized)}`);
+  return send(id, mandatoryAudiencePrompt(normalized), mandatoryAudienceSelectionKeyboard(normalized.audience));
+}
+async function editAudienceCallback(callbackQuery, id, text, markup) {
+  const message = callbackQuery?.message;
+  if (message?.chat?.id && message?.message_id) {
+    try {
+      await telegram('editMessageText', { chat_id: message.chat.id, message_id: message.message_id, text, reply_markup: markup?.reply_markup || markup });
+      return;
+    } catch (error) {
+      if (/message is not modified/i.test(String(error?.message || error))) return;
+      console.error('mandatory_audience_message_edit_error', String(error?.message || error).slice(0, 160));
+    }
+  }
+  return send(id, text, markup);
+}
+async function clearAudienceCallback(callbackQuery) {
+  const message = callbackQuery?.message;
+  if (!message?.chat?.id || !message?.message_id) return;
+  try { await telegram('editMessageReplyMarkup', { chat_id: message.chat.id, message_id: message.message_id, reply_markup: { inline_keyboard: [] } }); }
+  catch (error) { console.error('mandatory_audience_keyboard_clear_error', String(error?.message || error).slice(0, 160)); }
+}
+async function persistMandatorySourceDraft(client, id, draft) {
+  const audience = normalizeMandatoryAudience(draft.audience);
+  if (!Object.values(audience).some(Boolean)) throw new Error('mandatory_audience_empty');
+  if (draft.mode === 'time' ? !(Number(draft.duration) > 0) : !(Number(draft.quota) > 0)) throw new Error('mandatory_draft_invalid');
+  const target = normalizeTelegramTarget(draft.target);
+  const targetInfo = await validateMandatoryTarget(draft.type, target);
+  if (targetInfo === false) throw new Error('mandatory_target_unavailable');
+  if (!targetInfo) throw new Error('mandatory_target_not_admin');
+  const storedTarget = targetInfo.chatId || target;
+  const title = (targetInfo.title || storedTarget).replace(/^https?:\/\//, '').slice(0, 120);
+  const tracking = sourceTrackingCode();
+  let joinUrl;
+  try { joinUrl = await createMandatoryInviteLink(draft.type, storedTarget, tracking); }
+  catch { throw new Error('mandatory_invite_failed'); }
+  const status = draft.activation === 'active' ? 'active' : 'scheduled';
+  const startsAt = draft.activation === 'scheduled' ? new Date(draft.startsAt) : null;
+  if (draft.activation === 'scheduled' && !Number.isFinite(startsAt?.getTime())) throw new Error('mandatory_draft_invalid');
+  let source;
+  try {
+    await client.query('BEGIN');
+    const created = await client.query(
+      `INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,started_at,created_by,audience)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $10='active' THEN NOW() ELSE NULL END,$12,$13::jsonb) RETURNING *`,
+      [tracking, draft.type, draft.visibility, title, storedTarget, joinUrl, draft.mode, draft.mode === 'time' ? null : Number(draft.quota), draft.mode === 'time' ? Number(draft.duration) : null, status, startsAt, id, JSON.stringify(audience)]
+    );
+    source = created.rows[0];
+    await recordMandatorySourceHistory(client, source, 'created', { toStatus: status, details: { note: `ثبت نهایی؛ مخاطبان: ${mandatoryAudienceLabels(audience)}`, audience } });
+    if (draft.activation === 'active') {
+      await recordMandatorySourceHistory(client, source, 'started', { fromStatus: null, toStatus: 'active', details: { note: 'از همان ابتدا فعال شد.' }, notifyAdmin: true });
+    } else if (draft.activation === 'queued') {
+      const pos = await client.query('SELECT COALESCE(MAX(position),0)+1 AS next FROM mandatory_source_queue');
+      await client.query('INSERT INTO mandatory_source_queue(source_id,position) VALUES ($1,$2)', [source.id, pos.rows[0].next]);
+      await recordMandatorySourceHistory(client, source, 'queued', { fromStatus: null, toStatus: 'queued', details: { note: 'در صف انتظار قرار گرفت.' } });
+    } else {
+      await recordMandatorySourceHistory(client, source, 'scheduled', { fromStatus: null, toStatus: 'scheduled', details: { note: `شروع برنامه‌ریزی‌شده: ${draft.scheduleLabel || iranDate(startsAt)}` } });
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw error;
+  }
+  try { await syncMandatoryReport(client, source.id, telegram); }
+  catch (error) { console.error('mandatory_report_sync_error', source.id, String(error?.message || error).slice(0, 200)); }
+  try { await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) }); }
+  catch (error) { console.error('mandatory_source_post_commit_error', source.id, String(error?.message || error).slice(0, 200)); }
+  const current = await getMandatorySourceDetails(client, { id: source.id });
+  const history = await getMandatorySourceHistory(client, source.id);
+  return { source: current, history };
+}
+async function handleMandatoryAudienceCallback(id, data, callbackQuery) {
+  if (!isAdmin(id)) return send(id, 'این تنظیم فقط برای مدیران ربات فعال است.');
+  const client = await pool.connect();
+  try {
+    const admin = await user(client, id);
+    const draft = mandatoryDraftFromActionState(admin?.action_state);
+    if (!draft) { await clearAudienceCallback(callbackQuery); return send(id, 'این مرحله منقضی شده است؛ منبع ثبت نشده.'); }
+    const audience = normalizeMandatoryAudience(draft.audience);
+    if (data.startsWith('mandatory:audience:toggle:')) {
+      const key = data.slice('mandatory:audience:toggle:'.length);
+      draft.audience = toggleMandatoryAudience(audience, key);
+      await updateAction(client, id, `mandatory:audience:${encodeMandatoryDraft(draft)}`);
+      return editAudienceCallback(callbackQuery, id, mandatoryAudiencePrompt(draft), mandatoryAudienceSelectionKeyboard(draft.audience));
+    }
+    if (data === 'mandatory:audience:edit') return editAudienceCallback(callbackQuery, id, mandatoryAudiencePrompt(draft), mandatoryAudienceSelectionKeyboard(audience));
+    if (data === 'mandatory:audience:review') {
+      if (!Object.values(audience).some(Boolean)) return editAudienceCallback(callbackQuery, id, 'حداقل یک گروه از کاربران را روشن کن.', mandatoryAudienceSelectionKeyboard(audience));
+      return editAudienceCallback(callbackQuery, id, mandatoryAudienceReviewText(draft), mandatoryAudienceReviewKeyboard());
+    }
+    if (data === 'mandatory:audience:cancel') {
+      await updateAction(client, id, null);
+      await clearAudienceCallback(callbackQuery);
+      return send(id, 'تنظیم منبع لغو شد و چیزی ثبت نشد.', mandatoryJoinKeyboard());
+    }
+    if (data === 'mandatory:audience:confirm') {
+      if (!Object.values(audience).some(Boolean)) return editAudienceCallback(callbackQuery, id, 'حداقل یک گروه از کاربران را انتخاب کن.', mandatoryAudienceSelectionKeyboard(audience));
+      try {
+        const result = await persistMandatorySourceDraft(client, id, { ...draft, audience });
+        await updateAction(client, id, null);
+        await clearAudienceCallback(callbackQuery);
+        const verb = draft.activation === 'scheduled' ? 'منبع زمان‌بندی شد.' : draft.activation === 'queued' ? 'منبع به صف اضافه شد.' : 'منبع ثبت و فعال شد.';
+        return send(id, `${verb}\n${formatMandatorySourceDetails(result.source, result.history, { includePrivateDetails: true })}`, mandatoryJoinKeyboard());
+      } catch (error) {
+        const message = error.message === 'mandatory_target_unavailable'
+          ? 'دریافت اطلاعات کانال/گروه انجام نشد؛ هدف را بررسی کن.'
+          : error.message === 'mandatory_target_not_admin'
+            ? 'ربات در این کانال یا گروه دسترسی ادمین ندارد.'
+            : error.message === 'mandatory_invite_failed'
+              ? 'ساخت لینک دعوت خصوصی انجام نشد؛ دسترسی ادمین کامل را بررسی کن. منبع ثبت نشد.'
+              : 'ثبت منبع انجام نشد؛ اطلاعات را بررسی و دوباره تلاش کن.';
+        return editAudienceCallback(callbackQuery, id, `${message}\n\n${mandatoryAudienceReviewText(draft)}`, mandatoryAudienceReviewKeyboard());
+      }
+    }
+    return send(id, 'این گزینه معتبر نیست.');
+  } finally { client.release(); }
+}
+
 function jalaliToGregorian(jy, jm, jd) {
   let gy = jy <= 979 ? 621 : 1600; let jy2 = jy <= 979 ? jy : jy - 979;
   let days = 365 * jy2 + Math.floor(jy2 / 33) * 8 + Math.floor((jy2 % 33 + 3) / 4) + 78 + jd + (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
@@ -741,12 +929,18 @@ function parseJalaliDateTime(value) {
 }
 export function mandatoryAdminSourceDetails(source) {
   const lines = [`${source.tracking_code} | ${source.title} | ${mandatoryTypeLabel(source.source_type)} | ${source.mode} | ${source.status}`, `دستور پیگیری: ${trackingCommand(source.tracking_code)}`];
+  lines.push(`مخاطبان: ${mandatoryAudienceLabels(source.audience)}`);
   if (['channel', 'group'].includes(source.source_type)) {
     lines.push(`آیدی عددی: ${source.target}`);
     lines.push(`لینک دعوت خصوصی: ${source.join_url || 'ساخته نشده'}`);
     lines.push(`اعضای تأییدشده: ${Number(source.joined_count || 0)}`);
   } else if (source.join_url) lines.push(`آدرس: ${source.join_url}`);
   return lines.join('\n');
+}
+function mandatoryAppearanceText(displaySettings) {
+  const layout = displaySettings.mandatory_join_button_layout === 'compact' ? 'فشرده (دو دکمه در هر ردیف)' : 'تک‌ردیفه';
+  const tags = displaySettings.mandatory_join_show_source_tags === 'false' ? 'خاموش' : 'روشن';
+  return `کنترل ظاهر جویین اجباری\n\nمتن فعلی: ${String(displaySettings.mandatory_join_message || DEFAULTS.mandatory_join_message).slice(0, 250)}\nنام دکمه عضویت: ${displaySettings.mandatory_join_button_label || DEFAULTS.mandatory_join_button_label}\nنام دکمه بررسی: ${displaySettings.mandatory_verify_button_label || DEFAULTS.mandatory_verify_button_label}\nچیدمان: ${layout}\nنمایش شماره منبع: ${tags}\n\nدکمه‌های عضویت برای حفظ شمارش همیشه شیشه‌ای و لینک‌دار می‌مانند؛ رنگ دکمه‌ها را تلگرام تعیین می‌کند.`;
 }
 async function mandatoryReportChannelText(client) {
   const result = await client.query("SELECT key,value FROM bot_settings WHERE key IN ('mandatory_report_channel_id','mandatory_report_channel_private')");
@@ -762,21 +956,35 @@ async function sendMandatoryTrackingDetails(client, id, { trackingCode, lookupKe
   const history = await getMandatorySourceHistory(client, source.id);
   return send(id, formatMandatorySourceDetails(source, history, { includePrivateDetails: true }), mandatorySourceKeyboard(source));
 }
-async function sendMandatoryTrackingList(id, text, sources, replyMarkup) {
+async function sendMandatoryTrackingList(id, text, sources, replyMarkup, { showInlineCodes = false } = {}) {
   await send(id, text, replyMarkup);
-  if (sources.length) return send(id, 'برای بازکردن جزئیات و کنترل هر سفارش، روی کد پیگیری زیر بزن:', mandatoryTrackingListKeyboard(sources));
+  if (showInlineCodes && sources.length) return send(id, 'برای بازکردن جزئیات و کنترل هر سفارش، روی کد پیگیری زیر بزن:', mandatoryTrackingListKeyboard(sources));
 }
 async function sendMandatoryScheduleList(client, id, prefix = '') {
   const rows = await client.query("SELECT tracking_code,title,status FROM mandatory_sources WHERE status='scheduled' AND starts_at IS NOT NULL ORDER BY starts_at,id LIMIT 50");
   const list = await mandatoryScheduleListText(client);
-  return sendMandatoryTrackingList(id, `${prefix ? `${prefix}\n\n` : ''}${list}`, rows.rows, mandatoryScheduleListKeyboard());
+  return sendMandatoryTrackingList(id, `${prefix ? `${prefix}\n\n` : ''}${list}`, rows.rows, mandatoryScheduleListKeyboard(), { showInlineCodes: true });
 }
-async function mandatoryStatusText(client) {
-  const r = await client.query(`SELECT ms.id,ms.tracking_code,ms.source_type,ms.title,ms.target,ms.join_url,ms.mode,ms.status,ms.quota,ms.duration_seconds,ms.starts_at,
+export async function mandatoryStatusText(client) {
+  const r = await client.query(`SELECT ms.id,ms.tracking_code,ms.source_type,ms.title,ms.target,ms.join_url,ms.mode,ms.status,ms.quota,ms.duration_seconds,ms.starts_at,ms.audience,
     (SELECT COUNT(*) FROM mandatory_source_events e WHERE e.source_id=ms.id AND e.event_type='join') AS joined_count
-    FROM mandatory_sources ms ORDER BY ms.id DESC`);
-  if (!r.rows.length) return 'هیچ جویین اجباری ثبت نشده است.';
-  return `منابع جویین اجباری\n\n${r.rows.map(mandatoryAdminSourceDetails).join('\n\n')}`;
+    FROM mandatory_sources ms WHERE ms.status IN ('scheduled','active','paused') ORDER BY ms.id DESC LIMIT 50`);
+  if (!r.rows.length) return 'هیچ منبع فعالی، در صف یا زمان‌بندی‌شده‌ای وجود ندارد.';
+  const heading = 'منابع جویین اجباری';
+  const sections = [];
+  let used = heading.length + 2;
+  for (const row of r.rows) {
+    const detail = mandatoryAdminSourceDetails(row);
+    if (sections.length && used + detail.length + 2 > 2800) break;
+    sections.push(detail.slice(0, 2700));
+    used += detail.length + 2;
+  }
+  const remainder = r.rows.slice(sections.length);
+  if (remainder.length) {
+    const codes = remainder.map(row => trackingCommand(row.tracking_code)).join(', ');
+    sections.push(`فهرست برای کوتاه ماندن در یک پیام محدود شد. موارد دیگر (${remainder.length}): ${codes}`);
+  }
+  return `${heading}\n\n${sections.join('\n\n')}`;
 }
 export async function mandatoryScheduleListText(client) {
   const r = await client.query("SELECT tracking_code,title,starts_at FROM mandatory_sources WHERE status='scheduled' AND starts_at IS NOT NULL ORDER BY starts_at,id");
@@ -786,7 +994,9 @@ export async function mandatoryScheduleListText(client) {
 }
 async function handleMandatoryBack(client, id, state) {
   const parts = String(state || '').split(':'); const kind = parts[1];
-  if (kind === 'type' || kind === 'delete') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
+  if (kind === 'type' || kind === 'audience') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
+  if (state === 'mandatory:appearance') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
+  if (kind === 'appearance') { await updateAction(client, id, 'mandatory:appearance'); return send(id, mandatoryAppearanceText(await settings(client)), mandatoryAppearanceKeyboard()); }
   if (kind === 'visibility') { await updateAction(client, id, 'mandatory:type'); return send(id, 'نوع جویین اجباری را انتخاب کن.', mandatoryTypeKeyboard()); }
   if (kind === 'target') { await updateAction(client, id, `mandatory:visibility:${parts[2]}`); return send(id, `نوع ${mandatoryTypeLabel(parts[2])} را انتخاب کن.`, mandatoryVisibilityKeyboard()); }
   if (kind === 'mode') { await updateAction(client, id, `mandatory:target:${parts[2]}:${parts[3]}`); return send(id, `لینک یا آیدی ${mandatoryTypeLabel(parts[2])} را بفرست.`); }
@@ -796,8 +1006,7 @@ async function handleMandatoryBack(client, id, state) {
   if (kind === 'status') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
   if (kind === 'schedule_list') {
     await updateAction(client, id, 'mandatory:status');
-    const rows = await client.query('SELECT tracking_code,title,status,source_type,mode FROM mandatory_sources ORDER BY updated_at DESC LIMIT 50');
-    return sendMandatoryTrackingList(id, await mandatoryStatusText(client), rows.rows, mandatoryStatusKeyboard());
+    return send(id, await mandatoryStatusText(client), mandatoryStatusKeyboard());
   }
   if (kind === 'cancel' || kind === 'activate' || kind === 'reschedule' || kind === 'reschedule_at') { await updateAction(client, id, 'mandatory:schedule_list'); return sendMandatoryScheduleList(client, id); }
   return false;
@@ -839,6 +1048,21 @@ async function handleText(id, text) {
     }
     if (isAdmin(id) && value === 'بازگشت' && me.action_state?.startsWith('mandatory:')) {
       const handled = await handleMandatoryBack(client, id, me.action_state); if (handled !== false) return handled;
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('mandatory:appearance:set:')) {
+      const key = me.action_state.slice('mandatory:appearance:set:'.length);
+      const limits = { mandatory_join_message: 4000, mandatory_join_button_label: 60, mandatory_verify_button_label: 60 };
+      if (!Object.hasOwn(limits, key)) { await updateAction(client, id, 'mandatory:appearance'); return send(id, 'تنظیم ظاهری معتبر نیست.', mandatoryAppearanceKeyboard()); }
+      if (!value) return send(id, 'متن نمی‌تواند خالی باشد؛ دوباره بفرست.');
+      await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value.slice(0, limits[key])]);
+      await updateAction(client, id, 'mandatory:appearance');
+      return send(id, 'تنظیم ذخیره شد.\n\n' + mandatoryAppearanceText(await settings(client)), mandatoryAppearanceKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'mandatory:appearance:layout') {
+      if (!['تک‌ردیفه','فشرده'].includes(value)) return send(id, 'یکی از دو چیدمان را انتخاب کن.', mandatoryAppearanceLayoutKeyboard());
+      await client.query("INSERT INTO bot_settings(key,value) VALUES ('mandatory_join_button_layout',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", [value === 'فشرده' ? 'compact' : 'single']);
+      await updateAction(client, id, 'mandatory:appearance');
+      return send(id, mandatoryAppearanceText(await settings(client)), mandatoryAppearanceKeyboard());
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:set:')) {
       const key = me.action_state.slice('admin:set:'.length);
@@ -890,13 +1114,11 @@ async function handleText(id, text) {
       return send(id, 'اتصال کانال برداشته شد؛ پست‌های قبلی در کانال حذف نمی‌شوند و از این به بعد به‌روزرسانی نخواهند شد.', reportChannelKeyboard());
     }
     if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard());
-    if (isAdmin(id) && value === 'جویین اجباری') return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard());
+    if (isAdmin(id) && value === 'جویین اجباری') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
     if (isAdmin(id) && value === 'افزودن') { await updateAction(client, id, 'mandatory:type'); return send(id, 'نوع جویین اجباری را انتخاب کن.', mandatoryTypeKeyboard()); }
-    if (isAdmin(id) && value === 'حذف') { await updateAction(client, id, 'mandatory:delete'); return send(id, 'کد پیگیری یا آدرس منبع را بفرست.', mandatoryJoinKeyboard()); }
     if (isAdmin(id) && value === 'وضعیت') {
       await updateAction(client, id, 'mandatory:status');
-      const rows = await client.query('SELECT tracking_code,title,status,source_type,mode FROM mandatory_sources ORDER BY updated_at DESC LIMIT 50');
-      return sendMandatoryTrackingList(id, await mandatoryStatusText(client), rows.rows, mandatoryStatusKeyboard());
+      return send(id, await mandatoryStatusText(client), mandatoryStatusKeyboard());
     }
     if (isAdmin(id) && value === 'لیست زمان بندی') {
       await updateAction(client, id, 'mandatory:schedule_list');
@@ -910,11 +1132,6 @@ async function handleText(id, text) {
     if (isAdmin(id) && value === 'درحال انجام') {
       const r = await client.query("SELECT tracking_code,title,source_type,mode,status FROM mandatory_sources WHERE status='active' ORDER BY id LIMIT 50");
       const text = r.rows.length ? `درحال انجام:\n\n${r.rows.map(x => `${trackingCommand(x.tracking_code)} (${x.tracking_code}) | ${x.title} | ${mandatoryTypeLabel(x.source_type)} | ${x.mode}`).join('\n')}` : 'منبع فعالی وجود ندارد.';
-      return sendMandatoryTrackingList(id, text, r.rows, mandatoryStatusKeyboard());
-    }
-    if (isAdmin(id) && value === 'امور پیگیری') {
-      const r = await client.query("SELECT tracking_code,title,status,updated_at,source_type,mode FROM mandatory_sources WHERE status IN ('failed','completed','cancelled') ORDER BY updated_at DESC LIMIT 50");
-      const text = r.rows.length ? `امور پیگیری:\n\n${r.rows.map(x => `${trackingCommand(x.tracking_code)} (${x.tracking_code}) | ${x.title} | ${x.status}`).join('\n')}` : 'موردی برای پیگیری وجود ندارد.';
       return sendMandatoryTrackingList(id, text, r.rows, mandatoryStatusKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'mandatory:schedule_list' && ['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)) { const action = value === 'کنسل کردن' ? 'cancel' : value === 'الان ست کن' ? 'activate' : 'reschedule'; await updateAction(client, id, `mandatory:${action}`); return send(id, 'کد پیگیری منبع را از همین فهرست بفرست.', mandatoryScheduleListKeyboard()); }
@@ -957,23 +1174,6 @@ async function handleText(id, text) {
       }
       await updateAction(client, id, 'mandatory:schedule_list'); return sendMandatoryScheduleList(client, id, r.rowCount ? `زمان منبع ${code} تغییر کرد.` : 'کد پیگیری در فهرست زمان‌بندی پیدا نشد.');
     }
-    if (isAdmin(id) && value === 'خاموش/روشن') {
-      const sources = await client.query("SELECT * FROM mandatory_sources WHERE status IN ('active','paused') ORDER BY id");
-      const pausingAll = sources.rows.some(source => source.status === 'active');
-      for (const source of sources.rows) {
-        const pausing = pausingAll;
-        if ((pausing && source.status !== 'active') || (!pausing && source.status !== 'paused')) continue;
-        const updated = pausing
-          ? await client.query("UPDATE mandatory_sources SET status='paused',paused_at=NOW(),updated_at=NOW() WHERE id=$1 AND status='active' RETURNING *", [source.id])
-          : await client.query("UPDATE mandatory_sources SET status='active',started_at=CASE WHEN paused_at IS NOT NULL THEN COALESCE(started_at,NOW()) + (NOW()-paused_at) ELSE COALESCE(started_at,NOW()) END,paused_at=NULL,updated_at=NOW() WHERE id=$1 AND status='paused' RETURNING *", [source.id]);
-        if (updated.rowCount) {
-          await recordMandatorySourceHistory(client, updated.rows[0], pausing ? 'paused' : 'resumed', { fromStatus: source.status, toStatus: pausing ? 'paused' : 'active', details: { note: 'وضعیت از پنل مدیریت تغییر کرد.' } });
-          try { await syncMandatoryReport(client, source.id, telegram); } catch (error) { console.error('mandatory_report_sync_error', source.id, String(error?.message || error).slice(0, 200)); }
-        }
-      }
-      await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) });
-      return send(id, 'وضعیت منابع فعال تغییر کرد.', mandatoryJoinKeyboard());
-    }
     if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
     if (isAdmin(id) && me.action_state === 'mandatory:type') {
       const type = mandatoryTypeKey(value); if (!type) return send(id, 'یک نوع معتبر انتخاب کن.', mandatoryTypeKeyboard());
@@ -1003,64 +1203,34 @@ async function handleText(id, text) {
       return (await updateAction(client, id, `mandatory:activate:${type}:${visibility}:${mode}:${encodedTarget}:${quota || 0}:${duration || 0}`), send(id, `جمع‌بندی منبع\nنوع: ${mandatoryTypeLabel(type)}\nآدرس: ${target}\nمقدار: ${mode === 'time' ? `${duration} ثانیه` : quota}\nروش فعال‌سازی را انتخاب کن.`, mandatoryActivationKeyboard()));
     }
     if (isAdmin(id) && me.action_state?.startsWith('mandatory:activate:')) {
-      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const rawTarget = decodeState(encodedTarget); const target = normalizeTelegramTarget(rawTarget); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
-      if (!['شروع از الان','ارسال به صف','زمان بندی کردن'].includes(value)) return send(id, 'یکی از روش‌های فعال‌سازی را انتخاب کن.', mandatoryActivationKeyboard());
+      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':');
       if (value === 'زمان بندی کردن') { await updateAction(client, id, `mandatory:schedule:${type}:${visibility}:${mode}:${encodedTarget}:${quotaRaw}:${durationRaw}`); return send(id, 'تاریخ و ساعت شمسی را با قالب 1405/6/10-17:10 بفرست.'); }
-      const targetInfo = await validateMandatoryTarget(type, target);
-      if (!targetInfo) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
-      const storedTarget = targetInfo.chatId || target;
-      const tracking = sourceTrackingCode(); const title = (targetInfo.title || storedTarget).replace(/^https?:\/\//, '').slice(0, 120); const status = value === 'ارسال به صف' ? 'scheduled' : 'active';
-      let joinUrl;
-      try { joinUrl = await createMandatoryInviteLink(type, storedTarget, tracking); }
-      catch (error) { console.error('mandatory_invite_create_error', error?.name || 'error'); return send(id, 'ساخت لینک دعوت خصوصی انجام نشد؛ دسترسی ادمین ربات در کانال یا گروه را بررسی کن. منبع ثبت نشد.', mandatoryActivationKeyboard()); }
-      const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,started_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CASE WHEN $10='active' THEN NOW() ELSE NULL END,$11) RETURNING *", [tracking,type,visibility,title,storedTarget,joinUrl,mode,quota,duration,status,id]);
-      if (value === 'ارسال به صف') {
-        const pos = await client.query('SELECT COALESCE(MAX(position),0)+1 AS next FROM mandatory_source_queue');
-        await client.query('INSERT INTO mandatory_source_queue(source_id,position) VALUES ($1,$2)', [created.rows[0].id, pos.rows[0].next]);
-      }
-      await recordMandatorySourceHistory(client, created.rows[0], 'created', { toStatus: status, details: { note: `ثبت به روش «${value}»` } });
-      if (status === 'active') await recordMandatorySourceHistory(client, created.rows[0], 'started', { fromStatus: null, toStatus: 'active', details: { note: 'از همان ابتدا فعال شد.' }, notifyAdmin: true });
-      else if (value === 'ارسال به صف') await recordMandatorySourceHistory(client, created.rows[0], 'queued', { fromStatus: null, toStatus: 'queued', details: { note: 'در صف انتظار قرار گرفت.' } });
-      try { await syncMandatoryReport(client, created.rows[0].id, telegram); } catch (error) { console.error('mandatory_report_sync_error', created.rows[0].id, String(error?.message || error).slice(0, 200)); }
-      await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) });
-      await updateAction(client, id, null);
-      const current = await getMandatorySourceDetails(client, { id: created.rows[0].id });
-      const history = await getMandatorySourceHistory(client, created.rows[0].id);
-      return send(id, `منبع ثبت شد.\n${formatMandatorySourceDetails(current, history, { includePrivateDetails: true })}`, mandatorySourceKeyboard(current));
+      if (!['شروع از الان','ارسال به صف'].includes(value)) return send(id, 'یکی از روش‌های فعال‌سازی را انتخاب کن.', mandatoryActivationKeyboard());
+      const draft = { type, visibility, mode, target: decodeState(encodedTarget), quota: Number(quotaRaw) || null, duration: Number(durationRaw) || null, activation: value === 'شروع از الان' ? 'active' : 'queued', startsAt: null, audience: { ...DEFAULT_MANDATORY_AUDIENCE } };
+      return beginMandatoryAudienceSelection(client, id, draft);
     }
     if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:')) {
-      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const startsAt = parseJalaliDateTime(value); if (!startsAt) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/6/10-17:10.');
-      const rawTarget = decodeState(encodedTarget); const target = normalizeTelegramTarget(rawTarget); const targetInfo = await validateMandatoryTarget(type, target);
-      if (!targetInfo) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
-      const storedTarget = targetInfo.chatId || target; const tracking = sourceTrackingCode(); const title = (targetInfo.title || storedTarget).replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
-      let joinUrl;
-      try { joinUrl = await createMandatoryInviteLink(type, storedTarget, tracking); }
-      catch (error) { console.error('mandatory_invite_create_error', error?.name || 'error'); return send(id, 'ساخت لینک دعوت خصوصی انجام نشد؛ دسترسی ادمین ربات در کانال یا گروه را بررسی کن. منبع ثبت نشد.', mandatoryStatusKeyboard()); }
-      const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,started_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'scheduled',$10,NULL,$11) RETURNING *", [tracking,type,visibility,title,storedTarget,joinUrl,mode,quota,duration,startsAt,id]);
-      await recordMandatorySourceHistory(client, created.rows[0], 'created', { toStatus: 'scheduled', details: { note: 'منبع زمان‌بندی‌شده ثبت شد.' } });
-      await recordMandatorySourceHistory(client, created.rows[0], 'scheduled', { fromStatus: null, toStatus: 'scheduled', details: { note: `شروع برنامه‌ریزی‌شده: ${value}` } });
-      try { await syncMandatoryReport(client, created.rows[0].id, telegram); } catch (error) { console.error('mandatory_report_sync_error', created.rows[0].id, String(error?.message || error).slice(0, 200)); }
-      await updateAction(client, id, null);
-      const history = await getMandatorySourceHistory(client, created.rows[0].id);
-      return send(id, `منبع زمان‌بندی شد.\n${formatMandatorySourceDetails(created.rows[0], history, { includePrivateDetails: true })}`, mandatorySourceKeyboard(created.rows[0]));
+      const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':');
+      const startsAt = parseJalaliDateTime(value);
+      if (!startsAt) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/6/10-17:10.');
+      const draft = { type, visibility, mode, target: decodeState(encodedTarget), quota: Number(quotaRaw) || null, duration: Number(durationRaw) || null, activation: 'scheduled', startsAt: startsAt.toISOString(), scheduleLabel: value, audience: { ...DEFAULT_MANDATORY_AUDIENCE } };
+      return beginMandatoryAudienceSelection(client, id, draft);
     }
-    if (isAdmin(id) && me.action_state === 'mandatory:delete') {
-      const before = await client.query("SELECT * FROM mandatory_sources WHERE (tracking_code=$1 OR target=$1) AND status IN ('scheduled','active','paused')", [value]);
-      const result = before.rowCount
-        ? await client.query("UPDATE mandatory_sources SET status='cancelled',starts_at=NULL,paused_at=NULL,updated_at=NOW() WHERE id=ANY($1::bigint[]) RETURNING *", [before.rows.map(row => row.id)])
-        : { rows: [], rowCount: 0 };
-      if (result.rowCount) {
-        await client.query('DELETE FROM mandatory_source_queue WHERE source_id=ANY($1::bigint[])', [result.rows.map(row => row.id)]);
-        for (const removed of result.rows) {
-          const previous = before.rows.find(row => String(row.id) === String(removed.id));
-          await recordMandatorySourceHistory(client, removed, 'removed', { fromStatus: previous?.status || null, toStatus: 'cancelled', details: { note: 'از فهرست اجرا خارج شد؛ کد و تاریخچه برای پیگیری حفظ شد.' } });
-          try { await syncMandatoryReport(client, removed.id, telegram); } catch (error) { console.error('mandatory_report_sync_error', removed.id, String(error?.message || error).slice(0, 200)); }
-        }
-        await processMandatoryLifecycle(client, { telegramCall: telegram, sendAdmin: (chatId, text, markup) => send(chatId, text, markup) });
+    if (isAdmin(id) && value === 'کنترل ظاهری') {
+      await updateAction(client, id, 'mandatory:appearance');
+      return send(id, mandatoryAppearanceText(s), mandatoryAppearanceKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'mandatory:appearance') {
+      const settingKeys = { 'ویرایش متن جویین': 'mandatory_join_message', 'نام دکمه عضویت': 'mandatory_join_button_label', 'نام دکمه بررسی': 'mandatory_verify_button_label' };
+      if (settingKeys[value]) { await updateAction(client, id, `mandatory:appearance:set:${settingKeys[value]}`); return send(id, value === 'ویرایش متن جویین' ? 'متن پیام جویین را بفرست. برای تعداد منابع از {count} استفاده کن.' : 'نام جدید دکمه را بفرست (حداکثر ۶۰ نویسه).'); }
+      if (value === 'چیدمان دکمه‌ها') { await updateAction(client, id, 'mandatory:appearance:layout'); return send(id, 'چیدمان دکمه‌های شیشه‌ای را انتخاب کن.', mandatoryAppearanceLayoutKeyboard()); }
+      if (value === 'نمایش/پنهان‌کردن برچسب منبع') {
+        const next = s.mandatory_join_show_source_tags === 'false' ? 'true' : 'false';
+        await client.query("INSERT INTO bot_settings(key,value) VALUES ('mandatory_join_show_source_tags',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", [next]);
+        return send(id, mandatoryAppearanceText(await settings(client)), mandatoryAppearanceKeyboard());
       }
-      await updateAction(client, id, null);
-      return send(id, result.rowCount ? `${result.rows.map(row => row.tracking_code).join('، ')} از اجرا خارج شد؛ کد پیگیری، تاریخچه و پست گزارش باقی می‌ماند.` : 'منبع فعالی با این کد یا آدرس پیدا نشد.', mandatoryJoinKeyboard());
     }
+    if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
 
     if (isAdmin(id) && value === 'پیام همگانی') { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
     if (isAdmin(id) && value === 'پیام خوش‌آمد') { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
@@ -1194,7 +1364,7 @@ async function processUpdate(update) {
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
-  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl)) { await answerCallback(callback.id); await handleCallback(Number(callback.from.id), callbackData); return; }
+  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl)) { await answerCallback(callback.id); await handleCallback(Number(callback.from.id), callbackData, callback); return; }
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
   const id = Number(message.from.id); const text = String(message.text || '').trim(); if (!text) return;

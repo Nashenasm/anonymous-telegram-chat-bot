@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, mandatoryScheduleListText, mandatoryStatusKeyboard, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinKeyboard, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, mandatoryScheduleListText, mandatoryStatusKeyboard, mandatoryStatusText, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
 import { isMandatoryJobsAuthorized } from '../api/mandatory-jobs.js';
 import { formatMandatorySourceDetails, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, trackingCommand } from '../src/mandatory-service.js';
+import { DEFAULT_MANDATORY_AUDIENCE, MANDATORY_AUDIENCE_OPTIONS, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
+import { decryptMandatoryTrackingUserId, encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
 import fs from 'node:fs';
 
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
 const trackingMigration = fs.readFileSync(new URL('../db/schema-v6-mandatory-tracking.sql', import.meta.url), 'utf8');
+const audienceMigration = fs.readFileSync(new URL('../db/schema-v7-mandatory-audience.sql', import.meta.url), 'utf8');
 const source = fs.readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
 const serviceSource = fs.readFileSync(new URL('../src/mandatory-service.js', import.meta.url), 'utf8');
 const serverSource = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
@@ -23,6 +26,11 @@ describe('anonymous chat public contract', () => {
       increase_coins_button: 'افزایش مانو کوین',
       free_coins_button: 'افزایش مانو کوین رایگان',
       plus_button: 'اکانت پلاس',
+      mandatory_join_message: 'برای استفاده از ربات، ابتدا در منابع اجباری عضو شو. با دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.',
+      mandatory_join_button_label: 'عضویت در منبع',
+      mandatory_verify_button_label: 'بررسی عضویت',
+      mandatory_join_button_layout: 'single',
+      mandatory_join_show_source_tags: 'true',
     });
     expect(Object.values(BLOCK_REASONS)).toHaveLength(4);
   });
@@ -75,14 +83,16 @@ describe('anonymous chat public contract', () => {
     expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_sources');
     expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_events');
     expect(schema).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_queue');
+    expect(schema).toContain('audience JSONB NOT NULL');
+    expect(audienceMigration).toContain('ADD COLUMN IF NOT EXISTS audience JSONB');
     expect(source).toContain("telegram('getChatMember'");
     expect(source).toContain("data === 'mandatory:verify'");
-    expect(source).toContain('mandatoryJoinMarkup(missing)');
+    expect(source).toContain('mandatoryJoinMarkup(missing, s, id)');
     expect(source).toContain("value === 'جویین اجباری'");
     expect(source).toContain("me.action_state === 'mandatory:schedule_list' && ['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)");
     expect(source).toContain("privateMatch = raw.match");
     expect(source).toContain("telegram('getChat'");
-    expect(source).toContain("value === 'ارسال به صف'");
+    expect(source).toContain("['شروع از الان','ارسال به صف'].includes(value)");
     expect(source).toContain("1405/6/10-17:10");
     expect(serviceSource).toContain("status='completed'");
   });
@@ -91,6 +101,9 @@ describe('anonymous chat public contract', () => {
     const statusButtons = mandatoryStatusKeyboard().keyboard.flat();
     const scheduleButtons = mandatoryScheduleListKeyboard().keyboard.flat();
     expect(statusButtons).toContain('لیست زمان بندی');
+    expect(mandatoryJoinKeyboard().keyboard.flat()).not.toContain('حذف');
+    expect(mandatoryJoinKeyboard().keyboard.flat()).not.toContain('خاموش/روشن');
+    expect(statusButtons).not.toContain('امور پیگیری');
     expect(statusButtons).not.toContain('الان ست کن');
     expect(statusButtons).not.toContain('تغییر تایم');
     expect(statusButtons).not.toContain('کنسل کردن');
@@ -157,16 +170,17 @@ describe('anonymous chat public contract', () => {
     const verify = source.slice(source.indexOf("if (data === 'mandatory:verify')"), source.indexOf("if (data.startsWith('anon:'))"));
     const start = source.slice(source.indexOf('async function handleStart'), source.indexOf('async function handleConnect'));
     const connect = source.slice(source.indexOf('async function handleConnect'), source.indexOf('async function handleCallback'));
-    const addSource = source.slice(source.indexOf("if (isAdmin(id) && me.action_state?.startsWith('mandatory:activate:'))"), source.indexOf("if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:'))"));
+    const addSource = source.slice(source.indexOf('async function persistMandatorySourceDraft'), source.indexOf('async function handleMandatoryAudienceCallback'));
     expect(requirement).toContain('recordJoins = false');
     expect(requirement).toContain('else if (recordJoins)');
     expect(requirement).toContain('ON CONFLICT DO NOTHING');
-    expect(verify).toContain('{ recordJoins: true }');
-    expect(start).toContain('mandatoryRequirements(id, client)');
+    expect(verify).toContain('{ recordJoins: true, profile }');
+    expect(start).toContain('mandatoryRequirements(id, client, { profile: me })');
     expect(start).not.toContain('recordJoins: true');
-    expect(connect).toContain('mandatoryRequirements(id, client)');
+    expect(connect).toContain('mandatoryRequirements(id, client, { profile: me })');
     expect(connect).not.toContain('recordJoins: true');
     expect(addSource).toContain('INSERT INTO mandatory_sources');
+    expect(addSource).toContain('audience');
     expect(addSource).not.toContain('ON CONFLICT');
     expect(schema).toMatch(/CREATE TABLE IF NOT EXISTS mandatory_source_events[\s\S]*PRIMARY KEY \(source_id, telegram_id\)/);
     expect(schema).toMatch(/mandatory_source_events[\s\S]*REFERENCES mandatory_sources\(id\) ON DELETE CASCADE/);
@@ -258,8 +272,67 @@ describe('anonymous chat public contract', () => {
     expect(mandatoryTrackingListKeyboard([{ tracking_code: 'MJ-A1B2C3D4' }]).reply_markup.inline_keyboard[0][0]).toMatchObject({
       text: '/mj_a1b2c3d4', callback_data: expect.stringMatching(/^mandatory:details:/),
     });
-    expect(source).toContain("status='cancelled',starts_at=NULL,paused_at=NULL,updated_at=NOW()");
+    expect(source).toContain("status='cancelled',updated_at=NOW()");
     expect(source).not.toContain('DELETE FROM mandatory_sources');
+  });
+
+  it('supports four audience toggles, profile matching, conservative missing-gender behavior, and review confirmation', () => {
+    expect(MANDATORY_AUDIENCE_OPTIONS.map(x => x.label)).toEqual(['کاربر معمولی (دختر)','کاربر معمولی (پسر)','کاربر پلاس (دختر)','کاربر پلاس (پسر)']);
+    expect(Object.values(DEFAULT_MANDATORY_AUDIENCE).every(Boolean)).toBe(true);
+    const keyboard = mandatoryAudienceSelectionKeyboard(DEFAULT_MANDATORY_AUDIENCE).reply_markup.inline_keyboard;
+    expect(keyboard.slice(0,4).flat().map(x => x.text)).toEqual(MANDATORY_AUDIENCE_OPTIONS.map(x => `✅ ${x.label}`));
+    expect(keyboard[4][0].callback_data).toBe('mandatory:audience:review');
+    expect(mandatoryAudienceReviewKeyboard().reply_markup.inline_keyboard[0][0].callback_data).toBe('mandatory:audience:confirm');
+    const onlyRegularFemale = normalizeMandatoryAudience({regular_female:true,regular_male:false,plus_female:false,plus_male:false});
+    expect(mandatoryAudienceIncludesUser(onlyRegularFemale,{gender:'female',plus_expires_at:null})).toBe(true);
+    expect(mandatoryAudienceIncludesUser(onlyRegularFemale,{gender:'male',plus_expires_at:null})).toBe(false);
+    expect(mandatoryAudienceIncludesUser(onlyRegularFemale,{gender:'female',plus_expires_at:new Date(Date.now()+86400000)})).toBe(false);
+    expect(mandatoryAudienceIncludesUser(onlyRegularFemale,{gender:null,plus_expires_at:null})).toBe(true);
+    expect(mandatoryAudienceLabels(onlyRegularFemale)).toContain('کاربر معمولی (دختر)');
+    expect(toggleMandatoryAudience(onlyRegularFemale,'regular_female').regular_female).toBe(false);
+    expect(Object.values(toggleMandatoryAudience({regular_female:false,regular_male:false,plus_female:false,plus_male:false},'bad')).some(Boolean)).toBe(false);
+    const persistence = source.slice(source.indexOf('async function persistMandatorySourceDraft'), source.indexOf('async function handleMandatoryAudienceCallback'));
+    expect((persistence.match(/sourceTrackingCode\(\)/g) || [])).toHaveLength(1);
+    expect(persistence).toContain('createMandatoryInviteLink(draft.type, storedTarget, tracking)');
+    expect(persistence).toContain("await client.query('BEGIN')");
+    expect(persistence).toContain("await client.query('COMMIT')");
+    expect(source).toContain('await handleCallback(Number(callback.from.id), callbackData, callback)');
+  });
+
+  it('customizes join text and inline-button appearance while keeping tracked URL buttons', () => {
+    const missing = [{join_url:'https://t.me/+private-code'}];
+    expect(mandatoryJoinMessage(missing,{mandatory_join_message:'Join {count} sources'})).toBe('Join 1 sources');
+    const markup = mandatoryJoinMarkup(missing,{mandatory_join_button_label:'ورود',mandatory_join_show_source_tags:'false',mandatory_join_button_layout:'compact',mandatory_verify_button_label:'تأیید'}).reply_markup.inline_keyboard;
+    expect(markup).toEqual([[{text:'ورود',url:'https://t.me/+private-code'}],[{text:'تأیید',callback_data:'mandatory:verify'}]]);
+    const previousSecret = process.env.MANDATORY_TRACKING_SECRET;
+    process.env.MANDATORY_TRACKING_SECRET = 's'.repeat(32);
+    try {
+      const tracked = mandatoryJoinMarkup([{join_url:'https://example.com/api/mandatory-track?code=MJ-A1B2C3D4'}], {}, '123456789').reply_markup.inline_keyboard[0][0].url;
+      const token = new URL(tracked).searchParams.get('uid');
+      expect(token).not.toBe('123456789');
+      expect(decryptMandatoryTrackingUserId(token, 's'.repeat(32))).toBe('123456789');
+      expect(decryptMandatoryTrackingUserId(token, 'x'.repeat(32))).toBeNull();
+      const changedToken = `${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`;
+      expect(decryptMandatoryTrackingUserId(changedToken, 's'.repeat(32))).toBeNull();
+    } finally {
+      if (previousSecret === undefined) delete process.env.MANDATORY_TRACKING_SECRET;
+      else process.env.MANDATORY_TRACKING_SECRET = previousSecret;
+    }
+  });
+
+  it('uses one operational status list without completed records or a second inline tracking list', async () => {
+    let sql='';
+    const text=await mandatoryStatusText({query:async q=>{sql=q;return {rows:[]};}});
+    expect(sql).toContain("status IN ('scheduled','active','paused')");
+    expect(text).toContain('هیچ منبع فعالی');
+    const statusHandler=source.slice(source.indexOf("if (isAdmin(id) && value === 'وضعیت')"),source.indexOf("if (isAdmin(id) && value === 'لیست زمان بندی')"));
+    expect(statusHandler).toContain('return send(id, await mandatoryStatusText(client), mandatoryStatusKeyboard())');
+    expect(statusHandler).not.toContain('sendMandatoryTrackingList');
+    const joinKeyboard=source.slice(source.indexOf('export function mandatoryJoinKeyboard'),source.indexOf('function mandatoryTypeKeyboard'));
+    expect(joinKeyboard).not.toContain('حذف');
+    expect(joinKeyboard).not.toContain('امور پیگیری');
+    expect(joinKeyboard).not.toContain('خاموش/روشن');
+    expect(source).toContain("status IN ('scheduled','active','paused') ORDER BY ms.id DESC LIMIT 50");
   });
 
   it('keeps private invite links out of public reports but allows them in private reports', () => {

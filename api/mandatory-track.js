@@ -1,6 +1,8 @@
 import pg from 'pg';
 import { processMandatoryLifecycle, syncMandatoryReport } from '../src/mandatory-service.js';
+import { mandatoryAudienceIncludesUser } from '../src/mandatory-audience.js';
 import { prepareBotDatabase } from './webhook.js';
+import { decryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
 
 const { Pool } = pg;
 let pool;
@@ -27,12 +29,14 @@ export default async function handler(req, res) {
   await prepareBotDatabase();
   const client = await getPool().connect();
   try {
-    const found = await client.query("SELECT id,target,source_type,status,created_by FROM mandatory_sources WHERE tracking_code=$1", [code]);
+    const found = await client.query("SELECT id,target,source_type,status,created_by,audience FROM mandatory_sources WHERE tracking_code=$1", [code]);
     const source = found.rows[0];
     if (!source || source.status !== 'active' || !/^https?:\/\//i.test(source.target)) return res.status(404).send('source unavailable');
-    const userId = String(req.query?.uid || '').match(/^\d{3,20}$/)?.[0];
+    const userId = decryptMandatoryTrackingUserId(String(req.query?.uid || ''), process.env.MANDATORY_TRACKING_SECRET || process.env.TELEGRAM_BOT_TOKEN);
     if (userId) {
-      const recorded = await client.query("INSERT INTO mandatory_source_events(source_id,telegram_id,event_type) VALUES ($1,$2,'click') ON CONFLICT DO NOTHING RETURNING source_id", [source.id, userId]);
+      const profile = await client.query('SELECT gender,plus_expires_at FROM users WHERE telegram_id=$1', [userId]);
+      const eligible = profile.rows[0] && mandatoryAudienceIncludesUser(source.audience, profile.rows[0]);
+      const recorded = eligible ? await client.query("INSERT INTO mandatory_source_events(source_id,telegram_id,event_type) VALUES ($1,$2,'click') ON CONFLICT DO NOTHING RETURNING source_id", [source.id, userId]) : { rowCount: 0 };
       if (recorded.rowCount) {
         await client.query('UPDATE mandatory_sources SET updated_at=NOW() WHERE id=$1', [source.id]);
         try {

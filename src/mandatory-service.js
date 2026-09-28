@@ -2,6 +2,7 @@ const SOURCE_TYPES = { channel: 'کانال', group: 'گروه', bot: 'ربات'
 const SOURCE_MODES = { time: 'براساس زمان', count: 'براساس عضویت تأییدشده', start: 'براساس استارت', click: 'براساس کلیک' };
 const SOURCE_STATUSES = { scheduled: 'زمان‌بندی‌شده', active: 'درحال اجرا', paused: 'متوقف موقت', completed: 'تکمیل‌شده', failed: 'ناموفق', cancelled: 'لغوشده' };
 const HISTORY_LABELS = { created: 'ثبت شد', queued: 'به صف اضافه شد', scheduled: 'زمان‌بندی شد', started: 'شروع شد', paused: 'متوقف شد', rescheduled: 'زمان شروع تغییر کرد', completed: 'تکمیل شد', cancelled: 'لغو شد', removed: 'از اجرای فعال خارج شد', resumed: 'دوباره فعال شد' };
+import { mandatoryAudienceLabels } from './mandatory-audience.js';
 
 export function trackingCommand(trackingCode) {
   const suffix = String(trackingCode || '').trim().replace(/^MJ[-_]?/i, '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 28);
@@ -73,6 +74,7 @@ export function formatMandatorySourceDetails(source, history = [], { includePriv
     `نوع منبع: ${sourceType}`,
     `وضعیت: ${status}`,
     `روش: ${mode}`,
+    `مخاطبان: ${mandatoryAudienceLabels(source.audience)}`,
     `آیدی/هدف منبع: ${source.target || 'ثبت نشده'}`,
     `عضویت تأییدشده: ${Number(source.join_count || 0)}`,
     `استارت ثبت‌شده: ${Number(source.start_count || 0)}`,
