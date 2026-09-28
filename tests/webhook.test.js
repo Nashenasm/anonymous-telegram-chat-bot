@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinMarkup, mandatoryJoinMessage, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, mandatoryScheduleListText, mandatoryStatusKeyboard, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { isMandatoryJobsAuthorized } from '../api/mandatory-jobs.js';
+import { formatMandatorySourceDetails, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, trackingCommand } from '../src/mandatory-service.js';
 import fs from 'node:fs';
 
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
+const trackingMigration = fs.readFileSync(new URL('../db/schema-v6-mandatory-tracking.sql', import.meta.url), 'utf8');
 const source = fs.readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
+const serviceSource = fs.readFileSync(new URL('../src/mandatory-service.js', import.meta.url), 'utf8');
+const serverSource = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
 
 describe('anonymous chat public contract', () => {
   it('keeps the requested default Persian button labels', () => {
@@ -74,12 +79,46 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("data === 'mandatory:verify'");
     expect(source).toContain('mandatoryJoinMarkup(missing)');
     expect(source).toContain("value === 'جویین اجباری'");
-    expect(source).toContain("value === 'کنسل کردن'");
+    expect(source).toContain("me.action_state === 'mandatory:schedule_list' && ['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)");
     expect(source).toContain("privateMatch = raw.match");
     expect(source).toContain("telegram('getChat'");
     expect(source).toContain("value === 'ارسال به صف'");
     expect(source).toContain("1405/6/10-17:10");
-    expect(source).toContain("status='completed'");
+    expect(serviceSource).toContain("status='completed'");
+  });
+
+  it('shows schedule actions only from the schedule-list keyboard', () => {
+    const statusButtons = mandatoryStatusKeyboard().keyboard.flat();
+    const scheduleButtons = mandatoryScheduleListKeyboard().keyboard.flat();
+    expect(statusButtons).toContain('لیست زمان بندی');
+    expect(statusButtons).not.toContain('الان ست کن');
+    expect(statusButtons).not.toContain('تغییر تایم');
+    expect(statusButtons).not.toContain('کنسل کردن');
+    expect(scheduleButtons).toEqual(['الان ست کن', 'تغییر تایم', 'کنسل کردن', 'بازگشت']);
+    expect(source).toContain("updateAction(client, id, 'mandatory:schedule_list')");
+  });
+
+  it('lists only dated scheduled sources and returns a friendly empty state', async () => {
+    let sql = '';
+    const client = { query: async (statement) => { sql = statement; return { rows: [{ tracking_code: 'MJ-SCHED-1', title: 'Campaign A', starts_at: new Date('2026-10-01T12:00:00Z') }] }; } };
+    const text = await mandatoryScheduleListText(client);
+    expect(sql).toContain("status='scheduled'");
+    expect(sql).toContain('starts_at IS NOT NULL');
+    expect(sql).toContain('ORDER BY starts_at,id');
+    expect(text).toContain('MJ-SCHED-1');
+    expect(text).toContain('Campaign A');
+    const emptyText = await mandatoryScheduleListText({ query: async () => ({ rows: [] }) });
+    expect(emptyText).toContain('مورد زمان‌بندی‌شده‌ای وجود ندارد');
+  });
+
+  it('gates cancel/activate/reschedule actions to the schedule-list state and returns there after edits', () => {
+    const actions = source.slice(source.indexOf("me.action_state === 'mandatory:schedule_list' &&"), source.indexOf("if (isAdmin(id) && me.action_state === 'mandatory:cancel')"));
+    const back = source.slice(source.indexOf('async function handleMandatoryBack'), source.indexOf('async function handleText'));
+    expect(actions).toContain("['کنسل کردن','الان ست کن','تغییر تایم'].includes(value)");
+    expect(actions).toContain('mandatoryScheduleListKeyboard()');
+    expect(back).toContain("kind === 'schedule_list'");
+    expect(back).toContain("kind === 'cancel' || kind === 'activate' || kind === 'reschedule' || kind === 'reschedule_at'");
+    expect(source).toContain("status='scheduled' AND starts_at IS NOT NULL");
   });
 
   it('keeps mandatory-join URLs out of user text and offers only generic inline join/verify buttons', () => {
@@ -198,6 +237,51 @@ describe('anonymous chat public contract', () => {
     expect(preferenceFromText('مهم نیست')).toBe('any');
     expect(normalizeFa('ك\f')).not.toContain('\u000c');
     expect(source).toContain("preferenceText && me.status === 'idle'");
+  });
+
+  it('exposes stable, clickable slash commands for every tracking code', () => {
+    expect(trackingCommand('MJ-AB12CD34')).toBe('/mj_ab12cd34');
+    expect(parseTrackingCommand('/mj_ab12cd34')).toBe('mjab12cd34');
+    expect(parseTrackingCommand('/mj_ab12cd34@mybot')).toBe('mjab12cd34');
+    expect(parseTrackingCommand('/start')).toBeNull();
+    expect(source).toContain('parseTrackingCommand(rawCommand)');
+    expect(source).toContain('lookupKey: trackingKey');
+  });
+
+  it('offers status-specific inline controls without deleting completed history', () => {
+    const active = mandatorySourceKeyboard({ tracking_code: 'MJ-A1B2C3D4', status: 'active' }).reply_markup.inline_keyboard;
+    const scheduled = mandatorySourceKeyboard({ tracking_code: 'MJ-A1B2C3D4', status: 'scheduled', queue_position: 2 }).reply_markup.inline_keyboard;
+    const completed = mandatorySourceKeyboard({ tracking_code: 'MJ-A1B2C3D4', status: 'completed' }).reply_markup.inline_keyboard;
+    expect(active.flat().map(x => x.text)).toEqual(['/mj_a1b2c3d4', 'توقف موقت', 'کنسل کردن']);
+    expect(scheduled.flat().map(x => x.text)).toEqual(['/mj_a1b2c3d4', 'الان ست کن', 'زمان‌بندی کردن', 'کنسل کردن']);
+    expect(completed.flat().map(x => x.text)).toEqual(['/mj_a1b2c3d4']);
+    expect(mandatoryTrackingListKeyboard([{ tracking_code: 'MJ-A1B2C3D4' }]).reply_markup.inline_keyboard[0][0]).toMatchObject({
+      text: '/mj_a1b2c3d4', callback_data: expect.stringMatching(/^mandatory:details:/),
+    });
+    expect(source).toContain("status='cancelled',starts_at=NULL,paused_at=NULL,updated_at=NOW()");
+    expect(source).not.toContain('DELETE FROM mandatory_sources');
+  });
+
+  it('keeps private invite links out of public reports but allows them in private reports', () => {
+    const record = {
+      tracking_code: 'MJ-AB12CD34', title: 'Example', source_type: 'channel', status: 'active', mode: 'count',
+      target: '-1001234567890', join_url: 'https://t.me/+privateInvite', quota: 10,
+      created_at: new Date('2026-09-01T10:00:00Z'), updated_at: new Date('2026-09-01T10:00:00Z'),
+    };
+    expect(formatMandatorySourceDetails(record)).not.toContain(record.join_url);
+    expect(formatMandatorySourceDetails(record, [], { includePrivateDetails: true })).toContain(record.join_url);
+    expect(serviceSource).toContain("key='mandatory_report_channel_private'");
+  });
+
+  it('protects the every-minute lifecycle route with a timing-safe bearer secret', () => {
+    const secret = 's'.repeat(32);
+    expect(isMandatoryJobsAuthorized({ headers: { authorization: `Bearer ${secret}` } }, secret)).toBe(true);
+    expect(isMandatoryJobsAuthorized({ headers: { authorization: `Bearer ${'x'.repeat(32)}` } }, secret)).toBe(false);
+    expect(isMandatoryJobsAuthorized({ headers: {} }, secret)).toBe(false);
+    expect(trackingMigration).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_history');
+    expect(trackingMigration).toContain('CREATE TABLE IF NOT EXISTS mandatory_source_reports');
+    expect(trackingMigration).toContain('ADD COLUMN IF NOT EXISTS paused_at');
+    expect(serverSource).toContain("req.url === '/api/mandatory-jobs'");
   });
 
   it('processes gender selection before a same-word search preference', () => {

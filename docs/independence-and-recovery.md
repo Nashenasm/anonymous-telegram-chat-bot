@@ -32,11 +32,12 @@
 این روش downtime را کم می‌کند و معمولاً ساده‌ترین انتقال است:
 
 1. از مخزن GitHub روی میزبان جدید deploy بگیرید؛ Node.js 20+، `npm ci`، `npm run build` و `npm test` را اجرا کنید.
-2. متغیرهای محیطی را در secret manager مقصد وارد کنید: `TELEGRAM_BOT_TOKEN`، `TELEGRAM_WEBHOOK_SECRET`، `DATABASE_URL` و `ADMIN_TELEGRAM_IDS`. برای PostgreSQL بیرونی معمولاً `DATABASE_SSL=true` لازم است. `DB_POOL_MAX` اختیاری است.
+2. متغیرهای محیطی را در secret manager مقصد وارد کنید: `TELEGRAM_BOT_TOKEN`، `TELEGRAM_WEBHOOK_SECRET`، `DATABASE_URL` و `ADMIN_TELEGRAM_IDS`. برای scheduler دقیقه‌ای، `CRON_SECRET` تصادفی با حداقل ۳۲ بایت نیز لازم است و باید فقط در Vercel و سرویس زمان‌بندی ثبت شود. برای PostgreSQL بیرونی معمولاً `DATABASE_SSL=true` لازم است. `DB_POOL_MAX` اختیاری است.
 3. `DATABASE_URL` را به همان دیتابیس فعلی Neon تنظیم کنید. برای انتقال میزبان، روی دیتابیس schema یا data جدید نسازید.
-4. HTTPS و مسیر `POST /api/webhook` را فعال کنید. اگر از اجرای مستقل Node استفاده می‌کنید، `npm start` سرور را روی `0.0.0.0:$PORT` اجرا می‌کند؛ مسیر سلامت آن `GET /health` است.
-5. ابتدا از میزبان جدید health check بگیرید. سپس Telegram webhook را به URL جدید منتقل کنید. Telegram برای هر bot یک webhook فعال دارد؛ بعد از تغییر URL، updateها به میزبان جدید می‌روند.
-6. پس از تأیید دریافت updateها و کارکرد ربات، میزبان قبلی را متوقف کنید. secrets را فقط پس از اطمینان از انتقال موفق از آن حذف کنید.
+4. HTTPS و مسیر `POST /api/webhook` را فعال کنید. مسیر `GET /api/mandatory-track?code=...` برای لینک‌های وب‌اپ/وب‌سایت و `GET /api/mandatory-jobs` برای scheduler محافظت‌شده نیز لازم‌اند. اگر از اجرای مستقل Node استفاده می‌کنید، `npm start` سرور را روی `0.0.0.0:$PORT` اجرا می‌کند؛ هر سه مسیر API و مسیر سلامت `GET /health` پشتیبانی می‌شوند.
+5. اگر scheduler بیرونی فعال است، URL job را به `https://YOUR_NEW_HOST.example/api/mandatory-jobs` منتقل کنید و همان `Authorization: Bearer <CRON_SECRET>` را در تنظیمات امنش قرار دهید؛ اجرای آن را روی هر دقیقه نگه دارید.
+6. ابتدا از میزبان جدید health check بگیرید. سپس Telegram webhook را به URL جدید منتقل کنید. Telegram برای هر bot یک webhook فعال دارد؛ بعد از تغییر URL، updateها به میزبان جدید می‌روند.
+7. پس از تأیید دریافت updateها و کارکرد ربات، میزبان قبلی را متوقف کنید. secrets را فقط پس از اطمینان از انتقال موفق از آن حذف کنید.
 
 برای انتقال webhook، URL را جایگزین کنید و **`drop_pending_updates` را نفرستید** تا updateهای منتظر عمداً دور ریخته نشوند:
 
