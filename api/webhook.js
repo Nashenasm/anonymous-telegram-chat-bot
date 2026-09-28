@@ -367,7 +367,7 @@ function appearanceEditorText(section, appearance) { const title = APPEARANCE_SE
 
 از «قالب‌های آماده» یک ظاهر کامل انتخاب کن یا از «ویرایش آیتم‌ها» نام دکمه و متن پاسخ هر مرحله را جداگانه تغییر بده.`; }
 function saveAppearanceQuery(section, appearance) { return [APPEARANCE_SECTIONS[section].key, JSON.stringify(appearance)]; }
-function technicalKeyboard() { return replyKeyboard([['فایل اوپن سورس'], ['بک آپ دیتابیس'], ['وضعیت سرور'], ['بازگشت']], true); }
+function technicalKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(privateAppearance(settings), 'technical', [['فایل اوپن سورس'], ['بک آپ دیتابیس'], ['وضعیت سرور'], ['بازگشت']]), true); }
 function sourceFormatKeyboard() { return replyKeyboard([['ZIP'], ['TAR.GZ'], ['بازگشت']], true); }
 function databaseFormatKeyboard() { return replyKeyboard([['ZIP چندفرمتی'], ['SQL'], ['JSON'], ['CSV (ZIP)'], ['بازگشت']], true); }
 
@@ -1118,11 +1118,11 @@ ${templateListText()}`, appearanceTemplateKeyboard()); }
   }
   return false;
 }
-async function handleTechnicalAction(id, client, value, state = 'admin:technical', s = {}) {
+async function handleTechnicalAction(id, client, value, state = 'admin:technical', s = {}, actionId = null) {
   if (!isOwner(id)) return send(id, 'این بخش فقط برای مالک اصلی ربات فعال است.', reportsKeyboard(s));
-  if (value === 'بخش فنی') { await updateAction(client, id, 'admin:technical'); return send(id, `بخش فنی مالک\n\nاینجا قبل از ارسال، فرمت فایل را از خودت می‌پرسد.`, technicalKeyboard()); }
-  if (value === 'بازگشت') {
-    if (state === 'admin:technical:source_format' || state === 'admin:technical:database_format') { await updateAction(client, id, 'admin:technical'); return send(id, 'بخش فنی مالک', technicalKeyboard()); }
+  if (actionId === 'technical' || value === 'بخش فنی') { await updateAction(client, id, 'admin:technical'); return send(id, `بخش فنی مالک\n\nاینجا قبل از ارسال، فرمت فایل را از خودت می‌پرسد.`, technicalKeyboard(s)); }
+  if (actionId === 'back' || value === 'بازگشت') {
+    if (state === 'admin:technical:source_format' || state === 'admin:technical:database_format') { await updateAction(client, id, 'admin:technical'); return send(id, 'بخش فنی مالک', technicalKeyboard(s)); }
     await updateAction(client, id, 'admin:reports_menu'); return send(id, 'گزارش‌ها', reportsKeyboard(s));
   }
   if (state === 'admin:technical:source_format') {
@@ -1140,14 +1140,20 @@ async function handleTechnicalAction(id, client, value, state = 'admin:technical
     await fs.writeFile(temp, backup);
     try { return await sendDocument(id, temp, `anonymous-telegram-chat-database-backup.${extension}`, `بک‌آپ دیتابیس با فرمت ${value}`); } finally { await removeTempFile(temp); }
   }
-  if (value === 'فایل اوپن سورس') { await updateAction(client, id, 'admin:technical:source_format'); return send(id, 'سورس را با چه فرمتی می‌خواهی؟', sourceFormatKeyboard()); }
-  if (value === 'بک آپ دیتابیس') { await updateAction(client, id, 'admin:technical:database_format'); return send(id, 'بک‌آپ دیتابیس را با چه فرمتی می‌خواهی؟', databaseFormatKeyboard()); }
-  if (value === 'وضعیت سرور') { return send(id, await collectServerStatus(pool, telegram), technicalKeyboard()); }
+  if (actionId === 'source' || value === 'فایل اوپن سورس') { await updateAction(client, id, 'admin:technical:source_format'); return send(id, 'سورس را با چه فرمتی می‌خواهی؟', sourceFormatKeyboard()); }
+  if (actionId === 'database' || value === 'بک آپ دیتابیس') { await updateAction(client, id, 'admin:technical:database_format'); return send(id, 'بک‌آپ دیتابیس را با چه فرمتی می‌خواهی؟', databaseFormatKeyboard()); }
+  if (actionId === 'server' || value === 'وضعیت سرور') { return send(id, await collectServerStatus(pool, telegram), technicalKeyboard(s)); }
   return false;
 }
 
 function dynamicPublicAction(value, s) { return appearanceButtonId(value, 'public', s); }
 function dynamicPrivateAction(value, s) { return appearanceButtonId(value, 'private', s); }
+function visiblePrivateAction(value, s) {
+  const appearance = privateAppearance(s); const text = String(value);
+  for (const row of appearance.buttons || []) for (const item of row || []) if (String(item.label) === text) return item.id;
+  for (const screen of Object.values(appearance.screens || {})) for (const item of screen.buttons || []) if (String(item.label) === text) return item.id;
+  return null;
+}
 function visiblePublicAction(value, s) {
   const appearance = publicAppearance(s); const text = String(value);
   for (const row of appearance.buttons || []) for (const item of row || []) if (String(item.label) === text) return item.id;
@@ -1162,6 +1168,7 @@ async function handleText(id, text) {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
     const publicActionId = visiblePublicAction(value, s);
+    const privateActionId = visiblePrivateAction(value, s);
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
       const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s);
@@ -1173,12 +1180,12 @@ async function handleText(id, text) {
       return send(id, 'یکی از دو بخش پابلیک یا پرایویسی را انتخاب کن.', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true));
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:technical')) {
-      const technical = await handleTechnicalAction(id, client, value, me.action_state, s);
+      const technical = await handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
       if (technical !== false) return technical;
     }
     if (isAdmin(id) && value === 'بازگشت' && me.action_state === 'admin:reports_channel') {
       await updateAction(client, id, 'admin:reports_menu');
-      return send(id, 'گزارش‌ها', reportsKeyboard());
+      return send(id, 'گزارش‌ها', reportsKeyboard(s));
     }
     if (isAdmin(id) && value === 'بازگشت' && me.action_state === 'admin:reports_channel_target') {
       await updateAction(client, id, 'admin:reports_channel');
@@ -1244,13 +1251,14 @@ async function handleText(id, text) {
       const u = found.rows[0];
       return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nمانو کوین: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard());
     }
-    if (isAdmin(id) && (value === 'بخش فنی' || me.action_state === 'admin:reports_menu' && value === 'بخش فنی')) return handleTechnicalAction(id, client, value);
-    const privateAction = isAdmin(id) ? dynamicPrivateAction(value, s) : null;
-    if (privateAction === 'ads') return send(id, appearanceFeedback(privateAppearance(s), 'ads', 'مدیریت تبلیغات'), adsKeyboard());
-    if (privateAction === 'control') return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard());
+    if (isAdmin(id) && privateActionId === 'back') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
+if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی')) return handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
+    const privateAction = isAdmin(id) ? visiblePrivateAction(value, s) : null;
+    if (privateAction === 'ads') return send(id, appearanceFeedback(privateAppearance(s), 'ads', 'مدیریت تبلیغات'), adsKeyboard(s));
+    if (privateAction === 'control') return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard(s));
     if (privateAction === 'users') { await updateAction(client, id, 'admin:user_search'); return send(id, appearanceFeedback(privateAppearance(s), 'users', 'آیدی عددی کاربر را بفرست.')); }
     if (privateAction === 'status') { const stats = await adminStats(client); return send(id, stats, adminMainKeyboard(s)); }
-    if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, appearanceFeedback(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard()); }
+    if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, appearanceFeedback(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard(s)); }
     if (privateAction === 'admins') return send(id, `${appearanceFeedback(privateAppearance(s), 'admins', 'مدیران فعلی')}
 
 ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
@@ -1265,9 +1273,9 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
     if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
     if (isAdmin(id) && value === 'کنترل ربات') return send(id, 'کنترل ربات', controlKeyboard());
-    if (isAdmin(id) && value === 'بخش ظاهری پابلیک') return sendAppearanceEditor(id, client, 'public');
-    if (isAdmin(id) && value === 'بخش ظاهری پرایویسی') return sendAppearanceEditor(id, client, 'private');
-    if (isAdmin(id) && value === 'قالب‌های آماده') { await updateAction(client, id, 'appearance:choose'); return send(id, 'قالب آماده را برای کدام بخش اعمال می‌کنی؟', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true)); }
+    if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');
+    if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
+    if (isAdmin(id) && (privateActionId === 'templates' || value === 'قالب‌های آماده')) { await updateAction(client, id, 'appearance:choose'); return send(id, 'قالب آماده را برای کدام بخش اعمال می‌کنی؟', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true)); }
     if (isAdmin(id) && value === 'کنترل کاربران') { await updateAction(client, id, 'admin:user_search'); return send(id, 'آیدی عددی کاربر را بفرست.'); }
     if (isAdmin(id) && value === 'وضعیت ربات') { const stats = await adminStats(client); return send(id, stats, adminMainKeyboard()); }
     if (isAdmin(id) && value === 'گزارش‌ها') {
@@ -1275,8 +1283,8 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       const r = await client.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS open FROM reports");
       return send(id, `گزارش‌ها\n\nگزارش کاربران — کل: ${r.rows[0].total} | باز: ${r.rows[0].open}\n\nاز دکمه‌های زیر برای گزارش‌های کاربران یا کانال گزارش‌دهی جویین اجباری استفاده کن.`, reportsKeyboard());
     }
-    if (isAdmin(id) && me.action_state === 'admin:reports_menu' && value === 'بخش فنی') return handleTechnicalAction(id, client, value);
-    if (isAdmin(id) && me.action_state === 'admin:reports_menu' && value === 'گزارش‌های کاربران') {
+    if (isAdmin(id) && me.action_state === 'admin:reports_menu' && (privateActionId === 'technical' || value === 'بخش فنی')) return handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
+    if (isAdmin(id) && me.action_state === 'admin:reports_menu' && (privateActionId === 'user_reports' || value === 'گزارش‌های کاربران')) {
       const r = await client.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS open FROM reports");
       return send(id, `گزارش کاربران\n\nکل: ${r.rows[0].total}\nباز: ${r.rows[0].open}`, reportsKeyboard());
     }
@@ -1294,7 +1302,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       return send(id, 'اتصال کانال برداشته شد؛ پست‌های قبلی در کانال حذف نمی‌شوند و از این به بعد به‌روزرسانی نخواهند شد.', reportChannelKeyboard());
     }
     if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard());
-    if (isAdmin(id) && value === 'جویین اجباری') { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
+    if (isAdmin(id) && (privateActionId === 'join' || value === 'جویین اجباری')) { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
     if (isAdmin(id) && value === 'افزودن') { await updateAction(client, id, 'mandatory:type'); return send(id, 'نوع جویین اجباری را انتخاب کن.', mandatoryTypeKeyboard()); }
     if (isAdmin(id) && value === 'وضعیت') {
       await updateAction(client, id, 'mandatory:status');
@@ -1412,15 +1420,15 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     }
     if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
 
-    if (isAdmin(id) && value === 'پیام همگانی') { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
-    if (isAdmin(id) && value === 'پیام خوش‌آمد') { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
-    if (isAdmin(id) && value === 'تبلیغ اتصال') { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
-    if (isAdmin(id) && value === 'تبلیغ میان مکالمه') return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard());
-    if (isAdmin(id) && value === 'بخش ظاهری پابلیک') return send(id, 'ظاهر عمومی فعلاً از تنظیمات دکمه‌های اتصال، انصراف، قطع مکالمه و پروفایل استفاده می‌کند.', controlKeyboard());
-    if (isAdmin(id) && value === 'بخش ظاهری پرایویسی') return send(id, 'ظاهر پنل مدیریت در این نسخه با منوی قابل توسعه فعال است.', controlKeyboard());
-    if (isAdmin(id) && value === 'روشن/خاموش کردن ربات') { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard()); }
+    if (isAdmin(id) && (privateActionId === 'broadcast' || value === 'پیام همگانی')) { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
+    if (isAdmin(id) && (privateActionId === 'welcome' || value === 'پیام خوش‌آمد')) { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
+    if (isAdmin(id) && (privateActionId === 'connection_ad' || value === 'تبلیغ اتصال')) { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
+    if (isAdmin(id) && (privateActionId === 'mid_ad' || value === 'تبلیغ میان مکالمه')) return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard(s));
+    if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');
+    if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
+    if (isAdmin(id) && (privateActionId === 'toggle' || value === 'روشن/خاموش کردن ربات')) { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard(s)); }
     if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
-    if (isAdmin(id) && value === 'خروج از پنل') { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
+    if (isAdmin(id) && (privateActionId === 'exit' || value === 'خروج از پنل')) { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
     if (publicActionId === 'profile' || value === 'پروفایل من') return sendProfile(id, s);
     if (publicActionId === 'emoji' || value === 'ظاهر ایموجی پلاس') {
       if (!isPlus(me, id)) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', profileKeyboard(s));

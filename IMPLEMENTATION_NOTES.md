@@ -63,3 +63,7 @@ The appearance schema now has editable screen/state objects for public matching 
 ## Beginner-friendly server status
 
 The owner-only status report now reads the visible memory limit where the host exposes it, compares current RSS usage against that limit, shows used/remaining values and a visual percentage bar, and explains green/yellow/red thresholds. It also reports Node heap usage, CPU cores/load, temporary disk usage, database connectivity, Telegram connectivity, basic user counts, Vercel execution-time limits, and a plain-language explanation of what each number means. If the platform does not expose a hard memory limit, the report explicitly says so instead of presenting the host total as a guaranteed plan limit.
+
+## Deep creative themes
+
+The three non-default themes now provide screen-by-screen copy, labels, feedback language, private-panel labels, and distinct keyboard layout rhythm. The routing layer resolves visible labels back to immutable IDs for both public and owner-only menus. This keeps the creative layer independent from bot behavior.
