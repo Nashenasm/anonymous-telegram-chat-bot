@@ -58,3 +58,8 @@ npm run lint
 The database backup is a ZIP archive containing SQL restore data, full JSON, per-table JSON, per-table CSV, schema metadata, a manifest, and a restore README. The source archive contains the portable source tree plus `SOURCE_MANIFEST.json`.
 
 The appearance schema now has editable screen/state objects for public matching and chat flows and for private management flows. The editor paginates the complete nested item list, including screen titles, messages, button labels, and internal feedback texts. Telegram does not support arbitrary custom fonts in ordinary messages, so the templates use portable Unicode typography and deliberate copy/layout instead of image-dependent typography.
+
+
+## Beginner-friendly server status
+
+The owner-only status report now reads the visible memory limit where the host exposes it, compares current RSS usage against that limit, shows used/remaining values and a visual percentage bar, and explains green/yellow/red thresholds. It also reports Node heap usage, CPU cores/load, temporary disk usage, database connectivity, Telegram connectivity, basic user counts, Vercel execution-time limits, and a plain-language explanation of what each number means. If the platform does not expose a hard memory limit, the report explicitly says so instead of presenting the host total as a guaranteed plan limit.
