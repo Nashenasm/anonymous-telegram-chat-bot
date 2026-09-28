@@ -43,3 +43,11 @@ npm test
 npm run build
 npm run lint
 ```
+
+
+## Appearance editor and owner tools
+
+- `src/appearance.js` contains the portable public/private appearance schema, templates, nested item editing, feedback text, and layout normalization.
+- Appearance values are stored as JSON in `bot_settings` under `appearance_public` and `appearance_private`; enable flags allow falling back to the default appearance without deleting the custom configuration.
+- `db/schema-v8-appearance-and-owner-tools.sql` is the additive migration for existing databases.
+- The technical tools are guarded by `OWNER_TELEGRAM_ID`, not merely `ADMIN_TELEGRAM_IDS`. Source export excludes `.env`, `.git`, and `node_modules`; database export is generated from PostgreSQL metadata and current rows so it remains independent of `pg_dump`.

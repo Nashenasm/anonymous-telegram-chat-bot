@@ -54,6 +54,10 @@ INSERT INTO bot_settings(key, value) VALUES
   ('mandatory_join_show_source_tags', 'true'),
   ('mid_chat_ad_enabled', 'false'),
   ('mid_chat_ad_minutes', '15'),
+  ('appearance_public_enabled', 'true'),
+  ('appearance_private_enabled', 'true'),
+  ('appearance_public', '{}'),
+  ('appearance_private', '{}'),
   ('bot_enabled', 'true')
 ON CONFLICT (key) DO NOTHING;
 

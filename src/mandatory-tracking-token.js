@@ -20,6 +20,7 @@ export function decryptMandatoryTrackingUserId(token, secret) {
   if (!key || typeof token !== 'string' || !/^[A-Za-z0-9_-]{39,100}$/.test(token)) return null;
   try {
     const payload = Buffer.from(token, 'base64url');
+    if (payload.toString('base64url') !== token) return null;
     if (payload.length < 29) return null;
     const decipher = createDecipheriv('aes-256-gcm', key, payload.subarray(0, 12));
     decipher.setAuthTag(payload.subarray(12, 28));
