@@ -17,16 +17,17 @@ function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-async function zipBuffer(filename, content) {
+async function archiveBuffer(entries, format = 'zip') {
   return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = archiver(format === 'tar.gz' ? 'tar' : 'zip', format === 'tar.gz' ? { gzip: true, gzipOptions: { level: 9 } } : { zlib: { level: 9 } });
     const output = new PassThrough(); const chunks = [];
-    output.on('data', chunk => chunks.push(chunk));
-    output.on('end', () => resolve(Buffer.concat(chunks)));
+    output.on('data', chunk => chunks.push(chunk)); output.on('end', () => resolve(Buffer.concat(chunks)));
     output.on('error', reject); archive.on('error', reject); archive.pipe(output);
-    archive.append(content, { name: filename }); archive.finalize().catch(reject);
+    for (const entry of entries) archive.append(entry.content, { name: entry.name });
+    archive.finalize().catch(reject);
   });
 }
+async function zipBuffer(filename, content) { return archiveBuffer([{ name: filename, content }], 'zip'); }
 
 function csvValue(value) {
   if (value === null || value === undefined) return '';
@@ -34,7 +35,7 @@ function csvValue(value) {
   return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-export async function createDatabaseBackup(pool) {
+export async function createDatabaseBackup(pool, format = 'zip') {
   const tables = await pool.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename`);
   const sqlChunks = ['-- Anonymous Telegram Chat database backup', `-- Created at ${new Date().toISOString()}`, 'BEGIN;'];
   const data = {};
@@ -64,31 +65,32 @@ export async function createDatabaseBackup(pool) {
     restore: 'Use database.sql for PostgreSQL restore. JSON and CSV files are portable exports for inspection or migration.',
   };
   const readme = `Anonymous Telegram Chat database backup\n\nPrimary restore: database.sql\nPortable data: database.json and tables/*.json\nSpreadsheet/import data: tables/*.csv\nSchema metadata: schema.json\nCreated: ${manifest.createdAt}\n`;
-  const archive = archiver('zip', { zlib: { level: 9 } });
-  const output = new PassThrough(); const chunks = [];
-  output.on('data', chunk => chunks.push(chunk));
-  const finished = new Promise((resolve, reject) => { output.on('end', () => resolve(Buffer.concat(chunks))); output.on('error', reject); archive.on('error', reject); });
-  archive.pipe(output);
-  archive.append(Buffer.from(sqlChunks.join('\n'), 'utf8'), { name: 'database.sql' });
-  archive.append(Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf8'), { name: 'database.json' });
-  archive.append(Buffer.from(JSON.stringify(schema, null, 2) + '\n', 'utf8'), { name: 'schema.json' });
-  archive.append(Buffer.from(readme, 'utf8'), { name: 'README.txt' });
-  archive.append(Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8'), { name: 'manifest.json' });
-  for (const file of files) archive.append(Buffer.from(file.content, 'utf8'), { name: file.name });
-  await archive.finalize();
-  return finished;
+  const sqlBuffer = Buffer.from(sqlChunks.join('\n'), 'utf8');
+  const jsonBuffer = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf8');
+  if (format === 'sql') return sqlBuffer;
+  if (format === 'json') return jsonBuffer;
+  if (format === 'csv') return archiveBuffer(files.filter(file => file.name.endsWith('.csv')), 'zip');
+  const entries = [
+    { name: 'database.sql', content: sqlBuffer }, { name: 'database.json', content: jsonBuffer },
+    { name: 'schema.json', content: Buffer.from(JSON.stringify(schema, null, 2) + '\n', 'utf8') },
+    { name: 'README.txt', content: Buffer.from(readme, 'utf8') },
+    { name: 'manifest.json', content: Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8') },
+    ...files.map(file => ({ name: file.name, content: Buffer.from(file.content, 'utf8') })),
+  ];
+  return archiveBuffer(entries, 'zip');
 }
 
 async function projectRoot() {
   return path.resolve(process.cwd());
 }
 
-export async function createSourceArchive() {
+export async function createSourceArchive(format = 'zip') {
   const root = await projectRoot();
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'anonymous-bot-source-'));
-  const output = path.join(temp, 'anonymous-telegram-chat-bot-updated.zip');
+  const extension = format === 'tar.gz' ? 'tar.gz' : 'zip';
+  const output = path.join(temp, `anonymous-telegram-chat-bot-updated.${extension}`);
   await new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = archiver(format === 'tar.gz' ? 'tar' : 'zip', format === 'tar.gz' ? { gzip: true, gzipOptions: { level: 9 } } : { zlib: { level: 9 } });
     const stream = createWriteStream(output);
     stream.on('close', resolve);
     stream.on('error', reject);
@@ -98,7 +100,7 @@ export async function createSourceArchive() {
     archive.append(Buffer.from(JSON.stringify({ format: 'anonymous-telegram-chat-source', createdAt: new Date().toISOString(), excludes: ['.env', '.git', 'node_modules'], restore: 'Extract this ZIP and run npm ci, then apply the database migration.' }, null, 2) + '\n'), { name: 'SOURCE_MANIFEST.json' });
     archive.finalize().catch(reject);
   });
-  return { path: output, name: 'anonymous-telegram-chat-bot-updated.zip' };
+  return { path: output, name: `anonymous-telegram-chat-bot-updated.${extension}` };
 }
 
 function humanBytes(value) {

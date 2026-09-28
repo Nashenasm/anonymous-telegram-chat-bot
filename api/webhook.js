@@ -222,7 +222,8 @@ function flowFor(settings) {
     try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text), replyMarkup); }
     finally { c.release(); }
   };
-  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: settings.connect_button, disconnectButton: settings.disconnect_button });
+  const appearance = publicAppearance(settings);
+  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, connectButton: appearanceButton(appearance, 'connect', settings.connect_button), disconnectButton: appearanceButton(appearance, 'disconnect', settings.disconnect_button) });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
@@ -366,7 +367,9 @@ function appearanceEditorText(section, appearance) { const title = APPEARANCE_SE
 
 از «قالب‌های آماده» یک ظاهر کامل انتخاب کن یا از «ویرایش آیتم‌ها» نام دکمه و متن پاسخ هر مرحله را جداگانه تغییر بده.`; }
 function saveAppearanceQuery(section, appearance) { return [APPEARANCE_SECTIONS[section].key, JSON.stringify(appearance)]; }
-function technicalKeyboard() { return replyKeyboard([['فایل اوپن سورس ZIP'], ['بک آپ دیتابیس ZIP'], ['وضعیت سرور'], ['بازگشت']], true); }
+function technicalKeyboard() { return replyKeyboard([['فایل اوپن سورس'], ['بک آپ دیتابیس'], ['وضعیت سرور'], ['بازگشت']], true); }
+function sourceFormatKeyboard() { return replyKeyboard([['ZIP'], ['TAR.GZ'], ['بازگشت']], true); }
+function databaseFormatKeyboard() { return replyKeyboard([['ZIP چندفرمتی'], ['SQL'], ['JSON'], ['CSV (ZIP)'], ['بازگشت']], true); }
 
 async function ensureUser(client, id) {
   await client.query("INSERT INTO users (telegram_id, coins, start_completed) VALUES ($1, 20, FALSE) ON CONFLICT (telegram_id) DO UPDATE SET updated_at=NOW()", [id]);
@@ -1115,30 +1118,50 @@ ${templateListText()}`, appearanceTemplateKeyboard()); }
   }
   return false;
 }
-async function handleTechnicalAction(id, client, value) {
-  if (!isOwner(id)) return send(id, 'این بخش فقط برای مالک اصلی ربات فعال است.', reportsKeyboard());
-  if (value === 'بخش فنی') { await updateAction(client, id, 'admin:technical'); return send(id, `بخش فنی مالک\n\nاین ابزارها فقط برای مالک اصلی فعال هستند.`, technicalKeyboard()); }
-  if (value === 'بازگشت') { await updateAction(client, id, 'admin:reports_menu'); return send(id, 'گزارش‌ها', reportsKeyboard()); }
-  if (value === 'وضعیت سرور') { return send(id, await collectServerStatus(pool, telegram), technicalKeyboard()); }
-  if (value === 'فایل اوپن سورس' || value === 'فایل اوپن سورس ZIP') {
-    const archive = await createSourceArchive();
-    try { return await sendDocument(id, archive.path, archive.name, 'فایل اوپن‌سورس به‌روز ربات'); } finally { await removeTempFile(archive.path); }
+async function handleTechnicalAction(id, client, value, state = 'admin:technical', s = {}) {
+  if (!isOwner(id)) return send(id, 'این بخش فقط برای مالک اصلی ربات فعال است.', reportsKeyboard(s));
+  if (value === 'بخش فنی') { await updateAction(client, id, 'admin:technical'); return send(id, `بخش فنی مالک\n\nاینجا قبل از ارسال، فرمت فایل را از خودت می‌پرسد.`, technicalKeyboard()); }
+  if (value === 'بازگشت') {
+    if (state === 'admin:technical:source_format' || state === 'admin:technical:database_format') { await updateAction(client, id, 'admin:technical'); return send(id, 'بخش فنی مالک', technicalKeyboard()); }
+    await updateAction(client, id, 'admin:reports_menu'); return send(id, 'گزارش‌ها', reportsKeyboard(s));
   }
-  if (value === 'بک آپ دیتابیس' || value === 'بک آپ دیتابیس ZIP') {
-    const backup = await createDatabaseBackup(pool); const temp = `${process.env.TMPDIR || '/tmp'}/anonymous-db-${Date.now()}.zip`;
+  if (state === 'admin:technical:source_format') {
+    const format = value === 'ZIP' ? 'zip' : value === 'TAR.GZ' ? 'tar.gz' : null;
+    if (!format) return send(id, 'فرمت سورس را انتخاب کن.', sourceFormatKeyboard());
+    const archive = await createSourceArchive(format);
+    try { return await sendDocument(id, archive.path, archive.name, `فایل اوپن‌سورس با فرمت ${value}`); } finally { await removeTempFile(archive.path); }
+  }
+  if (state === 'admin:technical:database_format') {
+    const format = value === 'ZIP چندفرمتی' ? 'zip' : value === 'SQL' ? 'sql' : value === 'JSON' ? 'json' : value === 'CSV (ZIP)' ? 'csv' : null;
+    if (!format) return send(id, 'فرمت بک‌آپ دیتابیس را انتخاب کن.', databaseFormatKeyboard());
+    const backup = await createDatabaseBackup(pool, format);
+    const extension = format === 'sql' ? 'sql' : format === 'json' ? 'json' : 'zip';
+    const temp = `${process.env.TMPDIR || '/tmp'}/anonymous-db-${Date.now()}.${extension}`;
     await fs.writeFile(temp, backup);
-    try { return await sendDocument(id, temp, 'anonymous-telegram-chat-database-backup.zip', 'بک‌آپ ZIP به‌روز دیتابیس؛ فایل SQL داخل ZIP قرار دارد'); } finally { await removeTempFile(temp); }
+    try { return await sendDocument(id, temp, `anonymous-telegram-chat-database-backup.${extension}`, `بک‌آپ دیتابیس با فرمت ${value}`); } finally { await removeTempFile(temp); }
   }
+  if (value === 'فایل اوپن سورس') { await updateAction(client, id, 'admin:technical:source_format'); return send(id, 'سورس را با چه فرمتی می‌خواهی؟', sourceFormatKeyboard()); }
+  if (value === 'بک آپ دیتابیس') { await updateAction(client, id, 'admin:technical:database_format'); return send(id, 'بک‌آپ دیتابیس را با چه فرمتی می‌خواهی؟', databaseFormatKeyboard()); }
+  if (value === 'وضعیت سرور') { return send(id, await collectServerStatus(pool, telegram), technicalKeyboard()); }
   return false;
 }
+
 function dynamicPublicAction(value, s) { return appearanceButtonId(value, 'public', s); }
 function dynamicPrivateAction(value, s) { return appearanceButtonId(value, 'private', s); }
+function visiblePublicAction(value, s) {
+  const appearance = publicAppearance(s); const text = String(value);
+  for (const row of appearance.buttons || []) for (const item of row || []) if (String(item.label) === text) return item.id;
+  for (const screen of Object.values(appearance.screens || {})) for (const item of screen.buttons || []) if (String(item.label) === text) return item.id;
+  const legacy = { [s.connect_button]: 'connect', [s.cancel_button]: 'cancel', [s.disconnect_button]: 'disconnect', [s.profile_button]: 'profile', [s.increase_coins_button]: 'coins', [s.free_coins_button]: 'free_coins', [s.plus_button]: 'plus', [s.back_button]: 'back' };
+  return legacy[text] || null;
+}
 async function handleText(id, text) {
   const client = await pool.connect();
   let released = false;
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    const publicActionId = visiblePublicAction(value, s);
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
       const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s);
@@ -1149,8 +1172,8 @@ async function handleText(id, text) {
       if (value === 'پرایویسی') return sendAppearanceEditor(id, client, 'private');
       return send(id, 'یکی از دو بخش پابلیک یا پرایویسی را انتخاب کن.', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true));
     }
-    if (isAdmin(id) && me.action_state === 'admin:technical') {
-      const technical = await handleTechnicalAction(id, client, value);
+    if (isAdmin(id) && me.action_state?.startsWith('admin:technical')) {
+      const technical = await handleTechnicalAction(id, client, value, me.action_state, s);
       if (technical !== false) return technical;
     }
     if (isAdmin(id) && value === 'بازگشت' && me.action_state === 'admin:reports_channel') {
@@ -1398,17 +1421,17 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (isAdmin(id) && value === 'روشن/خاموش کردن ربات') { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard()); }
     if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
     if (isAdmin(id) && value === 'خروج از پنل') { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
-    if (value === s.profile_button || value === 'پروفایل من') return sendProfile(id, s);
-    if (value === 'ظاهر ایموجی پلاس') {
+    if (publicActionId === 'profile' || value === 'پروفایل من') return sendProfile(id, s);
+    if (publicActionId === 'emoji' || value === 'ظاهر ایموجی پلاس') {
       if (!isPlus(me, id)) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', profileKeyboard(s));
       await updateAction(client, id, 'plus_emoji');
       return send(id, isOwner(id) ? 'سه ایموجی ارسال کن؛ نشان مالک فقط با سه ایموجی معتبر ذخیره می‌شود.' : isAdmin(id) ? 'دو ایموجی ارسال کن؛ نشان ادمین فقط با دو ایموجی معتبر ذخیره می‌شود.' : 'یک ایموجی دلخواه ارسال کن. فقط یک ایموجی مجاز است و متن یا شکل دیگری پذیرفته نمی‌شود.', emojiKeyboard(s));
     }
-    if (value === 'ریست ایموجی') { await client.query("UPDATE users SET plus_emoji='✨', updated_at=NOW() WHERE telegram_id=$1", [id]); await updateAction(client, id, null); return send(id, 'ایموجی پلاس به ✨ برگردانده شد.', profileKeyboard(s)); }
-    if (value === s.increase_coins_button) return sendIncreaseCoins(id, s);
-    if (value === s.free_coins_button) return sendFreeCoins(id, s);
-    if (value === s.plus_button) return sendPlus(id, s);
-    if (value === s.back_button || value === 'بازگشت') return send(id, publicAppearance(s).message, mainKeyboard(s));
+    if (publicActionId === 'reset' || value === 'ریست ایموجی') { await client.query("UPDATE users SET plus_emoji='✨', updated_at=NOW() WHERE telegram_id=$1", [id]); await updateAction(client, id, null); return send(id, 'ایموجی پلاس به ✨ برگردانده شد.', profileKeyboard(s)); }
+    if (publicActionId === 'coins' || value === s.increase_coins_button) return sendIncreaseCoins(id, s);
+    if (publicActionId === 'free_coins' || value === s.free_coins_button) return sendFreeCoins(id, s);
+    if (publicActionId === 'plus' || value === s.plus_button) return sendPlus(id, s);
+    if (publicActionId === 'back' || value === s.back_button || value === 'بازگشت') return send(id, publicAppearance(s).message, mainKeyboard(s));
     if (me.action_state === 'plus_emoji') {
       const requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1;
       if (!emojiSequence(value, requiredCount)) return send(id, `دقیقاً ${requiredCount} ایموجی ارسال کن.`, emojiKeyboard(s));
@@ -1417,7 +1440,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       return send(id, `نشان پلاس شما روی ${value} تنظیم شد.`, profileKeyboard(s));
     }
     // A stale anonymous-link state must never swallow the normal connect button.
-    if (value === s.connect_button) {
+    if (publicActionId === 'connect' || value === s.connect_button) {
       await updateAction(client, id, null);
       client.release();
       released = true;
@@ -1430,13 +1453,13 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     }
     if (me.action_state?.startsWith('anon_')) {
       const flow = flowFor(s);
-      if (me.action_state === 'anon_done' && value === s.connect_button) {
+      if (me.action_state === 'anon_done' && (publicActionId === 'connect' || value === s.connect_button)) {
         await updateAction(client, id, null);
         client.release();
         released = true;
         return handleConnect(id);
       }
-      if (me.action_state === 'anon_done' && value === ANONYMOUS_LINK_BUTTON) {
+      if (me.action_state === 'anon_done' && (publicActionId === 'anonymous_link' || value === ANONYMOUS_LINK_BUTTON)) {
         client.release();
         released = true;
         return flow.handleLinkButton(id);
@@ -1445,7 +1468,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       released = true;
       return flow.handleText(id, value, me.action_state);
     }
-    if (value === ANONYMOUS_LINK_BUTTON) {
+    if (publicActionId === 'anonymous_link' || value === ANONYMOUS_LINK_BUTTON) {
       client.release();
       released = true;
       return flowFor(s).handleLinkButton(id);
@@ -1453,14 +1476,14 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (me.action_state === 'choose_gender' || me.action_state?.startsWith('choose_gender_for:')) {
       const pendingMatch = me.action_state.match(/^choose_gender_for:(male|female|any)$/)?.[1];
       const normalized = normalizeFa(value);
-      const gender = [normalizeFa(GENDER_LABELS.male), 'پسر'].includes(normalized) ? 'male' : [normalizeFa(GENDER_LABELS.female), 'دختر'].includes(normalized) ? 'female' : null;
+      const gender = publicActionId === 'male' ? 'male' : publicActionId === 'female' ? 'female' : [normalizeFa(GENDER_LABELS.male), 'پسر'].includes(normalized) ? 'male' : [normalizeFa(GENDER_LABELS.female), 'دختر'].includes(normalized) ? 'female' : null;
       if (!gender) return send(id, 'یکی از دو گزینهٔ جنسیت خودت را انتخاب کن.', genderKeyboard(s));
       await client.query('UPDATE users SET gender=$2, action_state=$3, updated_at=NOW() WHERE telegram_id=$1', [id, gender, pendingMatch ? null : 'choose_preference']);
       if (pendingMatch) return searchByPreference(id, pendingMatch, s);
       return send(id, screenText(publicAppearance(s), 'preference', appearanceFeedback(publicAppearance(s), 'connect_prompt', 'دوست داری به چه کسی وصل شوی؟')), preferenceKeyboard(s));
     }
     if (me.action_state === 'choose_preference') {
-      const preference = preferenceFromText(value);
+      const preference = ['male', 'female', 'any'].includes(publicActionId) ? publicActionId : preferenceFromText(value);
       if (!preference) return send(id, screenText(publicAppearance(s), 'preference', 'یکی از گزینه‌های جنسیت را انتخاب کن.'), preferenceKeyboard(s));
       if (!['male', 'female'].includes(me.gender)) {
         await updateAction(client, id, `choose_gender_for:${preference}`);
@@ -1469,35 +1492,37 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       return searchByPreference(id, preference, s);
     }
     const preferenceText = preferenceFromText(value);
-    if (preferenceText && me.status === 'waiting') return send(id, 'وضعیت فعلی: هنوز در صف انتظار هستی؛ برای لغو دکمه انصراف را بزن.', waitingKeyboard(s));
-    if (preferenceText && me.status === 'idle') {
+    const resolvedPreferenceText = ['male', 'female', 'any'].includes(publicActionId) ? publicActionId : preferenceText;
+    if (resolvedPreferenceText && me.status === 'waiting') return send(id, 'وضعیت فعلی: هنوز در صف انتظار هستی؛ برای لغو دکمه انصراف را بزن.', waitingKeyboard(s));
+    // preferenceText && me.status === 'idle' remains the legacy branch; resolvedPreferenceText adds renamed-label support.
+    if (resolvedPreferenceText && me.status === 'idle') {
       if (!['male', 'female'].includes(me.gender)) {
-        await updateAction(client, id, `choose_gender_for:${preferenceText}`);
+        await updateAction(client, id, `choose_gender_for:${resolvedPreferenceText}`);
         return send(id, screenText(publicAppearance(s), 'gender', OWN_GENDER_PROMPT), genderKeyboard(s));
       }
-      return searchByPreference(id, preferenceText, s);
+      return searchByPreference(id, resolvedPreferenceText, s);
     }
-    if (value === s.cancel_button && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
-    if (value === s.disconnect_button && me.status === 'chatting') {
+    if ((publicActionId === 'cancel' || value === s.cancel_button) && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
+    if ((publicActionId === 'disconnect' || value === s.disconnect_button) && me.status === 'chatting') {
       const started = me.conversation_started_at ? new Date(me.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000;
       if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s));
       await updateAction(client, id, 'confirm_stop'); return send(id, screenText(publicAppearance(s), 'confirm_stop', 'مطمئنی مکالمه قطع بشه؟'), confirmStopKeyboard(s));
     }
     if (me.action_state === 'confirm_stop') {
-      if (value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s)); }
-      if (value === 'اره مطمئنم') {
+      if (publicActionId === 'continue' || value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s)); }
+      if (publicActionId === 'confirm' || value === 'اره مطمئنم') {
         const partnerId = await disconnect(id); await updateAction(client, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard(s));
       }
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', confirmStopKeyboard(s));
     }
     if (me.action_state === 'after_stop') {
-      if (value === 'بعدا وصلش کن') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
-      if (value === 'بلاکش کن') { await updateAction(client, id, 'choose_block_reason'); return send(id, screenText(publicAppearance(s), 'block_reason', 'به چه دلیلی بلاک بشه؟'), blockKeyboard(s)); }
+      if (publicActionId === 'later' || value === 'بعدا وصلش کن') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      if (publicActionId === 'block' || value === 'بلاکش کن') { await updateAction(client, id, 'choose_block_reason'); return send(id, screenText(publicAppearance(s), 'block_reason', 'به چه دلیلی بلاک بشه؟'), blockKeyboard(s)); }
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', afterStopKeyboard(s));
     }
     if (me.action_state === 'choose_block_reason') {
-      const entries = Object.entries(BLOCK_REASONS); const found = entries.find(([, label]) => label === value);
-      if (value === 'بذار بعدا هم وصل بشم') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      const entries = Object.entries(BLOCK_REASONS); const found = Object.hasOwn(BLOCK_REASONS, publicActionId) ? [publicActionId, BLOCK_REASONS[publicActionId]] : entries.find(([, label]) => label === value);
+      if (publicActionId === 'later' || value === 'بذار بعدا هم وصل بشم') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
       if (!found) return send(id, 'یکی از دلایل را انتخاب کن.', blockKeyboard(s));
       const target = me.last_partner_id ? Number(me.last_partner_id) : null;
       if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
