@@ -25,7 +25,7 @@ Do not run `db/schema.sql` on a database that already contains production data.
 ## Current intentional scope limits
 
 - Broadcast currently accepts text. Media broadcast should be added using Telegram `copyMessage` after validating the complete update/media flow.
-- Forced channel join is represented in the admin menu but requires a channel registry and `getChatMember` checks before activation.
+- Mandatory channel/group join is implemented with Telegram membership checks and bot-generated private invite links. Users see generic inline join/verify buttons; confirmed counts are sticky and unique per source setup.
 - Mid-chat advertising has settings placeholders but needs a scheduler/trigger strategy compatible with the selected host.
 - The admin HTTP health endpoint remains separate from the Telegram `/manpin` panel.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinMarkup, mandatoryJoinMessage, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
 import fs from 'node:fs';
 
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
@@ -80,6 +80,68 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("value === 'ارسال به صف'");
     expect(source).toContain("1405/6/10-17:10");
     expect(source).toContain("status='completed'");
+  });
+
+  it('keeps mandatory-join URLs out of user text and offers only generic inline join/verify buttons', () => {
+    const secretJoinUrl = 'https://t.me/+privateInviteCode';
+    const missing = [
+      { source_type: 'channel', title: 'Hidden Channel Title', target: '-1001234567890', join_url: secretJoinUrl },
+      { source_type: 'group', title: 'Hidden Group Title', target: '-1009876543210', join_url: 'https://t.me/+anotherPrivateCode' },
+    ];
+    const message = mandatoryJoinMessage(missing);
+    expect(message).toContain('بررسی عضویت');
+    expect(message).not.toContain(secretJoinUrl);
+    expect(message).not.toContain('Hidden Channel Title');
+    expect(message).not.toContain('-1001234567890');
+    expect(message).not.toContain('/start');
+    expect(mandatoryJoinMarkup(missing).reply_markup.inline_keyboard).toEqual([
+      [{ text: 'عضویت در منبع 1', url: secretJoinUrl }],
+      [{ text: 'عضویت در منبع 2', url: 'https://t.me/+anotherPrivateCode' }],
+      [{ text: 'بررسی عضویت', callback_data: 'mandatory:verify' }],
+    ]);
+  });
+
+  it('shows chat IDs and private invite links only in admin source details', () => {
+    const details = mandatoryAdminSourceDetails({
+      tracking_code: 'MJ-AB12CD34', source_type: 'channel', title: 'Private Channel',
+      target: '-1001234567890', join_url: 'https://t.me/+adminOnlyLink', mode: 'count',
+      status: 'active', joined_count: '7',
+    });
+    expect(details).toContain('آیدی عددی: -1001234567890');
+    expect(details).toContain('لینک دعوت خصوصی: https://t.me/+adminOnlyLink');
+    expect(details).toContain('اعضای تأییدشده: 7');
+    expect(mandatoryJoinMessage()).not.toContain('https://t.me/');
+  });
+
+  it('counts only explicit membership verification and keeps one sticky event per setup/user', () => {
+    const requirement = source.slice(source.indexOf('async function mandatoryRequirements'), source.indexOf('async function recordMandatoryStart'));
+    const verify = source.slice(source.indexOf("if (data === 'mandatory:verify')"), source.indexOf("if (data.startsWith('anon:'))"));
+    const start = source.slice(source.indexOf('async function handleStart'), source.indexOf('async function handleConnect'));
+    const connect = source.slice(source.indexOf('async function handleConnect'), source.indexOf('async function handleCallback'));
+    const addSource = source.slice(source.indexOf("if (isAdmin(id) && me.action_state?.startsWith('mandatory:activate:'))"), source.indexOf("if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:'))"));
+    expect(requirement).toContain('recordJoins = false');
+    expect(requirement).toContain('else if (recordJoins)');
+    expect(requirement).toContain('ON CONFLICT DO NOTHING');
+    expect(verify).toContain('{ recordJoins: true }');
+    expect(start).toContain('mandatoryRequirements(id, client)');
+    expect(start).not.toContain('recordJoins: true');
+    expect(connect).toContain('mandatoryRequirements(id, client)');
+    expect(connect).not.toContain('recordJoins: true');
+    expect(addSource).toContain('INSERT INTO mandatory_sources');
+    expect(addSource).not.toContain('ON CONFLICT');
+    expect(schema).toMatch(/CREATE TABLE IF NOT EXISTS mandatory_source_events[\s\S]*PRIMARY KEY \(source_id, telegram_id\)/);
+    expect(schema).toMatch(/mandatory_source_events[\s\S]*REFERENCES mandatory_sources\(id\) ON DELETE CASCADE/);
+    expect(source).not.toContain('DELETE FROM mandatory_source_events');
+  });
+
+  it('accepts restricted members only when Telegram confirms they are still members', () => {
+    expect(isTelegramMember({ status: 'creator' })).toBe(true);
+    expect(isTelegramMember({ status: 'administrator' })).toBe(true);
+    expect(isTelegramMember({ status: 'member' })).toBe(true);
+    expect(isTelegramMember({ status: 'restricted', is_member: true })).toBe(true);
+    expect(isTelegramMember({ status: 'restricted', is_member: false })).toBe(false);
+    expect(isTelegramMember({ status: 'left' })).toBe(false);
+    expect(isTelegramMember({ status: 'kicked' })).toBe(false);
   });
 
   it('enforces two-way preference matching and reply keyboards', () => {

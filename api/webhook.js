@@ -186,8 +186,12 @@ async function activeMandatorySources(client) {
   return client.query("SELECT * FROM mandatory_sources WHERE status='active' AND (starts_at IS NULL OR starts_at <= NOW()) ORDER BY id");
 }
 async function telegramChatMember(target, userId) {
-  try { const member = await telegram('getChatMember', { chat_id: target, user_id: userId }); return ['creator','administrator','member','restricted'].includes(member?.status); }
+  try { const member = await telegram('getChatMember', { chat_id: target, user_id: userId }); return isTelegramMember(member); }
   catch (error) { console.error('mandatory_membership_check_error', error.message); return false; }
+}
+export function isTelegramMember(member) {
+  return ['creator', 'administrator', 'member'].includes(member?.status)
+    || (member?.status === 'restricted' && member.is_member === true);
 }
 function normalizeTelegramTarget(value) {
   const raw = String(value || '').trim();
@@ -201,20 +205,21 @@ function normalizeTelegramTarget(value) {
   return `@${match[1]}`;
 }
 async function validateMandatoryTarget(type, target) {
-  if (!['channel', 'group'].includes(type)) return true;
+  if (!['channel', 'group'].includes(type)) return {};
   try {
     const me = await telegram('getMe', {}); const normalized = normalizeTelegramTarget(target); const chat = await telegram('getChat', { chat_id: normalized }); const member = await telegram('getChatMember', { chat_id: chat.id || normalized, user_id: me.id });
-    return ['creator', 'administrator'].includes(member?.status);
+    if (!['creator', 'administrator'].includes(member?.status)) return null;
+    return { chatId: String(chat.id || normalized), title: String(chat.title || chat.username || chat.id || normalized) };
   } catch (error) { console.error('mandatory_target_validation_error', error.message); return false; }
 }
-async function mandatoryRequirements(id, client) {
+async function mandatoryRequirements(id, client, { recordJoins = false } = {}) {
   const sources = await activeMandatorySources(client);
   const missing = [];
   for (const source of sources.rows) {
     if (!['channel','group'].includes(source.source_type)) continue;
     const joined = await telegramChatMember(normalizeTelegramTarget(source.target), id);
     if (!joined) missing.push(source);
-    else await client.query("INSERT INTO mandatory_source_events(source_id, telegram_id, event_type) VALUES ($1,$2,'join') ON CONFLICT DO NOTHING", [source.id, id]);
+    else if (recordJoins) await client.query("INSERT INTO mandatory_source_events(source_id, telegram_id, event_type) VALUES ($1,$2,'join') ON CONFLICT DO NOTHING", [source.id, id]);
   }
   return missing;
 }
@@ -223,12 +228,13 @@ async function recordMandatoryStart(id, payload, client) {
   if (!code) return;
   await client.query("INSERT INTO mandatory_source_events(source_id,telegram_id,event_type) SELECT id,$2,'start' FROM mandatory_sources WHERE tracking_code=$1 AND source_type='bot' ON CONFLICT DO NOTHING", [code, id]);
 }
-function mandatoryJoinMessage(missing) {
-  return `برای استفاده از ربات، ابتدا در منابع زیر عضو شو:\n\n${missing.map((x,i)=>`${i+1}) ${x.title}${x.join_url ? `\n${x.join_url}` : ''}`).join('\n\n')}\n\nبعد از عضویت دوباره /start را بفرست.`;
+export function mandatoryJoinMessage() {
+  return 'برای استفاده از ربات، ابتدا در منابع اجباری عضو شو.\n\nبا دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.';
 }
-function mandatoryJoinMarkup(missing) {
-  const rows = missing.filter(x => /^https?:\/\//i.test(String(x.join_url || ''))).map(x => [{ text: `عضویت: ${x.title}`, url: x.join_url }]);
-  rows.push([{ text: 'تایید عضویت', callback_data: 'mandatory:verify' }]);
+export function mandatoryJoinMarkup(missing) {
+  const rows = missing.filter(x => /^https?:\/\//i.test(String(x.join_url || '')))
+    .map((x, i) => [{ text: `عضویت در منبع ${i + 1}`, url: x.join_url }]);
+  rows.push([{ text: 'بررسی عضویت', callback_data: 'mandatory:verify' }]);
   return { reply_markup: { inline_keyboard: rows } };
 }
 async function settings(client) {
@@ -543,7 +549,7 @@ async function handleCallback(id, data) {
   if (data === 'mandatory:verify') {
     const c = await pool.connect();
     try {
-      const missing = await mandatoryRequirements(id, c);
+      const missing = await mandatoryRequirements(id, c, { recordJoins: true });
       if (missing.length) return send(id, mandatoryJoinMessage(missing), mandatoryJoinMarkup(missing));
       return send(id, '✅ عضویت شما در همهٔ منابع فعال تایید شد. حالا می‌توانی از ربات استفاده کنی.', mainKeyboard(await settings(c)));
     } finally { c.release(); }
@@ -643,10 +649,21 @@ function parseJalaliDateTime(value) {
   if (!m) return null; const d = jalaliToGregorian(Number(m[1]), Number(m[2]), Number(m[3]));
   if (!d || Number(m[4]) > 23 || Number(m[5]) > 59) return null; d.setUTCHours(Number(m[4]) - 3, Number(m[5]) - 30); return d;
 }
+export function mandatoryAdminSourceDetails(source) {
+  const lines = [`${source.tracking_code} | ${source.title} | ${mandatoryTypeLabel(source.source_type)} | ${source.mode} | ${source.status}`];
+  if (['channel', 'group'].includes(source.source_type)) {
+    lines.push(`آیدی عددی: ${source.target}`);
+    lines.push(`لینک دعوت خصوصی: ${source.join_url || 'ساخته نشده'}`);
+    lines.push(`اعضای تأییدشده: ${Number(source.joined_count || 0)}`);
+  } else if (source.join_url) lines.push(`آدرس: ${source.join_url}`);
+  return lines.join('\n');
+}
 async function mandatoryStatusText(client) {
-  const r = await client.query('SELECT id,tracking_code,source_type,title,mode,status,quota,duration_seconds,starts_at FROM mandatory_sources ORDER BY id DESC');
+  const r = await client.query(`SELECT ms.id,ms.tracking_code,ms.source_type,ms.title,ms.target,ms.join_url,ms.mode,ms.status,ms.quota,ms.duration_seconds,ms.starts_at,
+    (SELECT COUNT(*) FROM mandatory_source_events e WHERE e.source_id=ms.id AND e.event_type='join') AS joined_count
+    FROM mandatory_sources ms ORDER BY ms.id DESC`);
   if (!r.rows.length) return 'هیچ جویین اجباری ثبت نشده است.';
-  return `منابع جویین اجباری\n\n${r.rows.map(x => `${x.tracking_code} | ${x.title} | ${mandatoryTypeLabel(x.source_type)} | ${x.mode} | ${x.status}`).join('\n')}`;
+  return `منابع جویین اجباری\n\n${r.rows.map(mandatoryAdminSourceDetails).join('\n\n')}`;
 }
 async function handleMandatoryBack(client, id, state) {
   const parts = String(state || '').split(':'); const kind = parts[1];
@@ -751,18 +768,27 @@ async function handleText(id, text) {
       const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const rawTarget = decodeState(encodedTarget); const target = normalizeTelegramTarget(rawTarget); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
       if (!['شروع از الان','ارسال به صف','زمان بندی کردن'].includes(value)) return send(id, 'یکی از روش‌های فعال‌سازی را انتخاب کن.', mandatoryActivationKeyboard());
       if (value === 'زمان بندی کردن') { await updateAction(client, id, `mandatory:schedule:${type}:${visibility}:${mode}:${encodedTarget}:${quotaRaw}:${durationRaw}`); return send(id, 'تاریخ و ساعت شمسی را با قالب 1405/6/10-17:10 بفرست.'); }
-      if (!(await validateMandatoryTarget(type, target))) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
-      const tracking = sourceTrackingCode(); const title = target.replace(/^https?:\/\//, '').slice(0, 120); const status = value === 'ارسال به صف' ? 'scheduled' : 'active';
-      const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id", [tracking,type,visibility,title,target,rawTarget,mode,quota,duration,status,id]);
-      await client.query('UPDATE mandatory_sources SET join_url=$2 WHERE id=$1', [created.rows[0].id, await createMandatoryInviteLink(type, rawTarget, tracking)]);
+      const targetInfo = await validateMandatoryTarget(type, target);
+      if (!targetInfo) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
+      const storedTarget = targetInfo.chatId || target;
+      const tracking = sourceTrackingCode(); const title = (targetInfo.title || storedTarget).replace(/^https?:\/\//, '').slice(0, 120); const status = value === 'ارسال به صف' ? 'scheduled' : 'active';
+      let joinUrl;
+      try { joinUrl = await createMandatoryInviteLink(type, storedTarget, tracking); }
+      catch (error) { console.error('mandatory_invite_create_error', error?.name || 'error'); return send(id, 'ساخت لینک دعوت خصوصی انجام نشد؛ دسترسی ادمین ربات در کانال یا گروه را بررسی کن. منبع ثبت نشد.', mandatoryActivationKeyboard()); }
+      const created = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id", [tracking,type,visibility,title,storedTarget,joinUrl,mode,quota,duration,status,id]);
       if (value === 'ارسال به صف') { const pos = await client.query('SELECT COALESCE(MAX(position),0)+1 AS next FROM mandatory_source_queue'); await client.query('INSERT INTO mandatory_source_queue(source_id,position) VALUES ($1,$2)', [created.rows[0].id, pos.rows[0].next]); }
-      await updateAction(client, id, null); return send(id, `منبع ثبت شد.\nکد پیگیری: ${tracking}\nوضعیت: ${value}`, mandatoryJoinKeyboard());
+      await updateAction(client, id, null); return send(id, `منبع ثبت شد.\nکد پیگیری: ${tracking}\nوضعیت: ${value}\n${mandatoryAdminSourceDetails({ tracking_code: tracking, source_type: type, title, target: storedTarget, join_url: joinUrl, mode, status, joined_count: 0 })}`, mandatoryJoinKeyboard());
     }
     if (isAdmin(id) && me.action_state?.startsWith('mandatory:schedule:')) {
       const [, , type, visibility, mode, encodedTarget, quotaRaw, durationRaw] = me.action_state.split(':'); const startsAt = parseJalaliDateTime(value); if (!startsAt) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/6/10-17:10.');
-      const rawTarget = decodeState(encodedTarget); const target = normalizeTelegramTarget(rawTarget); if (!(await validateMandatoryTarget(type, target))) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.'); const tracking = sourceTrackingCode(); const title = rawTarget.replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
-      const scheduled = await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'scheduled',$10,$11) RETURNING id", [tracking,type,visibility,title,target,rawTarget,mode,quota,duration,startsAt,id]); await client.query('UPDATE mandatory_sources SET join_url=$2 WHERE id=$1', [scheduled.rows[0].id, await createMandatoryInviteLink(type, rawTarget, tracking)]); await updateAction(client, id, null);
-      return send(id, `منبع زمان‌بندی شد.\nکد پیگیری: ${tracking}\nشروع: ${value}`, mandatoryJoinKeyboard());
+      const rawTarget = decodeState(encodedTarget); const target = normalizeTelegramTarget(rawTarget); const targetInfo = await validateMandatoryTarget(type, target);
+      if (!targetInfo) return send(id, 'ربات در این کانال یا گروه ادمین کامل نیست؛ ابتدا دسترسی ادمین کامل بده.');
+      const storedTarget = targetInfo.chatId || target; const tracking = sourceTrackingCode(); const title = (targetInfo.title || storedTarget).replace(/^https?:\/\//, '').slice(0, 120); const quota = Number(quotaRaw) || null; const duration = Number(durationRaw) || null;
+      let joinUrl;
+      try { joinUrl = await createMandatoryInviteLink(type, storedTarget, tracking); }
+      catch (error) { console.error('mandatory_invite_create_error', error?.name || 'error'); return send(id, 'ساخت لینک دعوت خصوصی انجام نشد؛ دسترسی ادمین ربات در کانال یا گروه را بررسی کن. منبع ثبت نشد.', mandatoryStatusKeyboard()); }
+      await client.query("INSERT INTO mandatory_sources(tracking_code,source_type,visibility,title,target,join_url,mode,quota,duration_seconds,status,starts_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'scheduled',$10,$11)", [tracking,type,visibility,title,storedTarget,joinUrl,mode,quota,duration,startsAt,id]); await updateAction(client, id, null);
+      return send(id, `منبع زمان‌بندی شد.\nکد پیگیری: ${tracking}\nشروع: ${value}\n${mandatoryAdminSourceDetails({ tracking_code: tracking, source_type: type, title, target: storedTarget, join_url: joinUrl, mode, status: 'scheduled', joined_count: 0 })}`, mandatoryJoinKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'mandatory:delete') {
       const result = await client.query('DELETE FROM mandatory_sources WHERE tracking_code=$1 OR target=$1 RETURNING tracking_code', [value]); await updateAction(client, id, null);
