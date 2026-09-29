@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS bot_games (
 INSERT INTO bot_games(slug,name,prompt) VALUES ('truth-or-dare','حقیقت یا جرئت','انتخاب کن: حقیقت یا جرئت؟') ON CONFLICT (slug) DO NOTHING;
 INSERT INTO bot_settings(key,value) VALUES
  ('chat_permissions','{"photo":true,"gif":true,"video":true,"text":true,"sticker":true,"emoji":true,"telegram_link":true,"mention":true,"english":true,"profanity":false,"voice":true,"music":true,"instagram_link":true,"website_link":true,"app":true,"file":true,"location":true,"contact":true}'),
- ('min_chat_duration','15S'), ('spam_consecutive_limit','3'), ('spam_delay','2S'), ('mid_chat_games_enabled','true'), ('mid_chat_ideas_enabled','true'), ('daily_coin_amount','20'), ('daily_coin_command','/daily'), ('daily_coin_reset','24H')
+ ('min_chat_duration','15S'), ('spam_consecutive_limit','3'), ('spam_delay','2S'), ('mid_chat_games_enabled','true'), ('mid_chat_ideas_enabled','true'), ('chat_cost_any','0'), ('chat_cost_male','0'), ('chat_cost_female','0'), ('daily_coin_amount','20'), ('daily_coin_command','/daily'), ('daily_coin_reset','24H')
 ON CONFLICT (key) DO NOTHING;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;

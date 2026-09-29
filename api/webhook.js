@@ -79,7 +79,7 @@ async function ensureRuntimeSchema() {
           ('mandatory_join_message','برای استفاده از ربات، ابتدا در منابع اجباری عضو شو. با دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.'),
           ('mandatory_join_button_label','عضویت در منبع'), ('mandatory_verify_button_label','بررسی عضویت'),
           ('mandatory_join_button_layout','single'), ('mandatory_join_show_source_tags','true'),
-          ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15'), ('mid_chat_games_enabled', 'true'), ('mid_chat_ideas_enabled', 'true'), ('daily_coin_amount', '20'), ('daily_coin_command', '/daily'), ('daily_coin_reset', '24H'), ('appearance_public_enabled', 'true'), ('appearance_private_enabled', 'true'), ('appearance_public', '{}'), ('appearance_private', '{}')
+          ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15'), ('mid_chat_games_enabled', 'true'), ('mid_chat_ideas_enabled', 'true'), ('chat_cost_any', '0'), ('chat_cost_male', '0'), ('chat_cost_female', '0'), ('daily_coin_amount', '20'), ('daily_coin_command', '/daily'), ('daily_coin_reset', '24H'), ('appearance_public_enabled', 'true'), ('appearance_private_enabled', 'true'), ('appearance_public', '{}'), ('appearance_private', '{}')
           ON CONFLICT (key) DO NOTHING`);
         await client.query("ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS audience JSONB NOT NULL DEFAULT '{\"regular_female\":true,\"regular_male\":true,\"plus_female\":true,\"plus_male\":true}'::jsonb");
         await client.query(`INSERT INTO bot_settings(key,value) VALUES
@@ -185,7 +185,8 @@ function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
 function adminKeyboard(enabled) { return adminMainKeyboard(); }
 function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['لیست بن شده ها'], ['دریافت وضعیت کاربران'], ['کد هدیه'], ['بازگشت پنل']], true); }
-function conversationControlKeyboard() { return replyKeyboard([['مجوز های چت'], ['سرگرمی میان چت'], ['حداقل تایم چت'], ['پیام اسپم'], ['بازگشت کنترل کاربران']], true); }
+function conversationControlKeyboard() { return replyKeyboard([['مجوز های چت'], ['سرگرمی میان چت'], ['هزینه هر چت'], ['حداقل تایم چت'], ['پیام اسپم'], ['بازگشت کنترل کاربران']], true); }
+function chatCostInlineKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `مهم نیست: ${settings.chat_cost_any || 0}`, callback_data: 'conversation:cost:any' }], [{ text: `پسر: ${settings.chat_cost_male || 0}`, callback_data: 'conversation:cost:male' }], [{ text: `دختر: ${settings.chat_cost_female || 0}`, callback_data: 'conversation:cost:female' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
 function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { return { reply_markup: { inline_keyboard: permissionKeyboard(permissions).map(item => [{ text: item.label, callback_data: `conversation:permission:${item.key}` }]).concat([[{ text: 'بازگشت', callback_data: 'conversation:back' }]]) } }; }
 function entertainmentAdminKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `${settings.mid_chat_games_enabled !== 'false' ? '✅' : '❌'} بازی`, callback_data: 'conversation:entertainment:games' }, { text: `${settings.mid_chat_ideas_enabled !== 'false' ? '✅' : '❌'} ایده صحبت`, callback_data: 'conversation:entertainment:ideas' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
 function spamAdminKeyboard() { return replyKeyboard([['تعداد پیام متوالی'], ['تاخیر بین پیام‌ها'], ['بازگشت کنترل مکالمات']], true); }
@@ -532,6 +533,7 @@ async function findPair(id, preference) {
     // Serialize queue searches so two simultaneous searches do not each skip the other's locked row.
     await client.query('SELECT pg_advisory_xact_lock(20260925, 1)');
     await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1 FOR UPDATE', [id]);
+    await client.query('UPDATE users SET match_preference=$2, updated_at=NOW() WHERE telegram_id=$1', [id, preference]);
     const candidate = await client.query(`
       SELECT candidate.telegram_id, candidate.gender FROM users AS candidate
       WHERE candidate.status='waiting' AND candidate.telegram_id<>$1
@@ -560,6 +562,18 @@ async function findPair(id, preference) {
     return { kind: 'paired', partnerId: other };
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
+async function chargeSuccessfulConnection(userIds) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const costs = Object.fromEntries((await client.query("SELECT key,value FROM bot_settings WHERE key IN ('chat_cost_any','chat_cost_male','chat_cost_female')")).rows.map(row => [row.key, Number(row.value) || 0]));
+    for (const userId of userIds.filter(Boolean)) {
+      const row = (await client.query('SELECT match_preference FROM users WHERE telegram_id=$1 FOR UPDATE', [userId])).rows[0]; const cost = costs[`chat_cost_${row?.match_preference || 'any'}`] || 0;
+      if (cost > 0) await client.query('UPDATE users SET coins=GREATEST(0,coins-$2),updated_at=NOW() WHERE telegram_id=$1', [userId, cost]);
+    }
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
 async function searchByPreference(id, preference, s) {
   if (!['male', 'female', 'any'].includes(preference)) return send(id, screenText(publicAppearance(s), 'preference', 'یکی از سه گزینهٔ پسر، دختر یا مهم نیست را انتخاب کن.'), preferenceKeyboard(s));
   const result = await findPair(id, preference);
@@ -569,6 +583,7 @@ async function searchByPreference(id, preference, s) {
   }
   if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s, isAdmin(id)));
   if (result.kind === 'paired') {
+    await chargeSuccessfulConnection([id, result.partnerId]);
     await sendConnectionNotice(id, s, chatKeyboard(s, isAdmin(id)));
     await sendConnectionNotice(result.partnerId, s, chatKeyboard(s, isAdmin(result.partnerId)));
     return;
@@ -844,6 +859,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       current[key] = current[key] === false; await saveBotSetting(sClient, 'chat_permissions', JSON.stringify({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
       return send(id, permissionText(JSON.stringify(current)), permissionInlineKeyboard({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
     }
+    if (isAdmin(id) && data.startsWith('conversation:cost:')) { const preference = data.slice('conversation:cost:'.length); if (!['any','male','female'].includes(preference)) return send(id, 'نوع انتخاب نامعتبر است.'); await updateAction(sClient, id, `admin:chat_cost:${preference}`); return send(id, `هزینهٔ هر اتصال موفق برای «${preference === 'any' ? 'مهم نیست' : preference === 'male' ? 'پسر' : 'دختر'}» را به مانو کوین بفرست.`); }
     if (isAdmin(id) && data.startsWith('conversation:entertainment:')) {
       const kind = data.slice('conversation:entertainment:'.length); const key = kind === 'games' ? 'mid_chat_games_enabled' : kind === 'ideas' ? 'mid_chat_ideas_enabled' : null;
       if (!key) return send(id, 'گزینه نامعتبر است.'); const next = (await botSettingValue(sClient, key, 'true')) !== 'true'; await saveBotSetting(sClient, key, String(next));
@@ -1419,6 +1435,7 @@ async function handleText(id, text) {
     if (isAdmin(id) && me.action_state === 'admin:conversation_control') {
       if (value === 'بازگشت کنترل کاربران') { await updateAction(client, id, null); return send(id, 'کنترل کاربران', userControlKeyboard()); }
       if (value === 'مجوز های چت') { const permissions = JSON.parse(await botSettingValue(client, 'chat_permissions', JSON.stringify(DEFAULT_CHAT_PERMISSIONS)) || '{}'); return send(id, permissionText(JSON.stringify(permissions)), permissionInlineKeyboard({ ...DEFAULT_CHAT_PERMISSIONS, ...permissions })); }
+      if (value === 'هزینه هر چت') { const costs = { chat_cost_any: await botSettingValue(client, 'chat_cost_any', '0'), chat_cost_male: await botSettingValue(client, 'chat_cost_male', '0'), chat_cost_female: await botSettingValue(client, 'chat_cost_female', '0') }; return send(id, 'هزینهٔ اتصال موفق را برای هر نوع انتخاب کن:', chatCostInlineKeyboard(costs)); }
       if (value === 'حداقل تایم چت') { await updateAction(client, id, 'admin:min_time'); return send(id, `حداقل تایم فعلی: ${await botSettingValue(client, 'min_chat_duration', '15S')}\nمقدار جدید را مثل 15S، 2M یا 1H بفرست.`); }
       if (value === 'پیام اسپم') { await updateAction(client, id, 'admin:spam'); return send(id, `تنظیمات پیام اسپم\nتعداد فعلی: ${await botSettingValue(client, 'spam_consecutive_limit', '3')}\nتاخیر فعلی: ${await botSettingValue(client, 'spam_delay', '2S')}`, spamAdminKeyboard()); }
       if (value === 'سرگرمی میان چت') { return send(id, 'تنظیمات سرگرمی میان چت', entertainmentAdminKeyboard(s)); }
@@ -1482,6 +1499,9 @@ async function handleText(id, text) {
     }
     if (isAdmin(id) && me.action_state === 'admin:min_time') {
       const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب نامعتبر است؛ نمونه: 15S، 2M یا 1H.'); await saveBotSetting(client, 'min_chat_duration', value.toUpperCase()); await updateAction(client, id, 'admin:conversation_control'); return send(id, `حداقل زمان روی ${durationLabel(seconds)} تنظیم شد.`, conversationControlKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:chat_cost:')) {
+      const preference = me.action_state.split(':')[2]; if (!['any','male','female'].includes(preference) || !/^\d+$/.test(value)) return send(id, 'هزینه باید عدد صحیح صفر یا بیشتر باشد.'); await saveBotSetting(client, `chat_cost_${preference}`, String(Number(value))); await updateAction(client, id, 'admin:conversation_control'); const costs = { chat_cost_any: await botSettingValue(client, 'chat_cost_any', '0'), chat_cost_male: await botSettingValue(client, 'chat_cost_male', '0'), chat_cost_female: await botSettingValue(client, 'chat_cost_female', '0') }; return send(id, 'هزینه ذخیره شد؛ فقط پس از اتصال موفق کسر می‌شود.', chatCostInlineKeyboard(costs));
     }
     if (isAdmin(id) && me.action_state === 'admin:spam') {
       if (value === 'بازگشت کنترل مکالمات') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
