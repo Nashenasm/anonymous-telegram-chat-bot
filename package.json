@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "build": "node --check server.js && node --check api/webhook.js && node --check api/admin.js && node --check api/mandatory-track.js && node --check api/mandatory-jobs.js && node --check src/mandatory-service.js && node --check src/mandatory-audience.js && node --check src/mandatory-tracking-token.js && node --check src/link-service.js && node --check src/link-handler.js && node --check src/safety-service.js && node --check src/anonymous-link-service.js && node --check src/anonymous-flow.js",
+    "build": "node --check server.js && node --check api/webhook.js && node --check api/admin.js && node --check api/mandatory-track.js && node --check api/mandatory-jobs.js && node --check src/mandatory-service.js && node --check src/mandatory-audience.js && node --check src/mandatory-tracking-token.js && node --check src/link-service.js && node --check src/link-handler.js && node --check src/safety-service.js && node --check src/anonymous-link-service.js && node --check src/anonymous-flow.js && node --check src/admin-control.js",
     "test": "vitest run --passWithNoTests",
     "lint": "tsc --noEmit"
   },

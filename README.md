@@ -99,6 +99,14 @@ MIT
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema-v8-appearance-and-owner-tools.sql
 ```
 
+برای قابلیت‌های کنترل کاربر، لاگ مدیریتی، آمار چت، کد هدیه و تنظیمات مکالمه نیز migration افزایشی زیر را اجرا کنید:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema-v9-admin-controls.sql
+```
+
+این نسخه در زمان اجرا به Manus یا Atria وابسته نیست؛ Atria فقط ابزار توسعه است و کل اجرای production با Node.js، Telegram Bot API و PostgreSQL/Neon انجام می‌شود. برای انتقال، سورس و همه migrationها را کپی کنید، متغیرهای محیطی را در secret manager مقصد قرار دهید، backup PostgreSQL را restore کنید و webhook را به آدرس جدید تغییر دهید.
+
 ## ابزارهای فنی مالک
 
 در مسیر «گزارش‌ها» گزینهٔ «بخش فنی» فقط برای `OWNER_TELEGRAM_ID` فعال است؛ حتی ادمین‌های معمولی اجازهٔ اجرای آن را ندارند. این بخش سه دکمه دارد:

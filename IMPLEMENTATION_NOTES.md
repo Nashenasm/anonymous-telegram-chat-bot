@@ -35,6 +35,13 @@ Runtime startup also initializes these tables idempotently. Do not run `db/schem
 - Mid-chat advertising has settings placeholders but needs a scheduler/trigger strategy compatible with the selected host.
 - The admin HTTP health endpoint remains separate from the Telegram `/manpin` panel.
 
+## Admin controls and live chat tools
+
+- Additive migration `db/schema-v9-admin-controls.sql` adds chat metrics, audit logs, gift-code storage, games, configurable permissions, ban fields, and chat timing settings.
+- `/manpin` now exposes a reply-keyboard `کنترل کاربر` flow with numeric lookup, coin/Plus adjustments, ban list, status, gift-code creation, audit history, conversation settings, minimum chat duration, and spam limits.
+- An authorized admin who is actively chatting receives a private `🎛 کنترل کاربر` reply-keyboard button. It is not sent to the chat partner. Public active chats also expose `بازی` and `ایده صحبت`; game approval remains inline only where a two-sided accept/reject interaction is required.
+- Runtime does not call Manus or Atria. Atria may be used as a development assistant, but the deployed bot remains portable Node.js + PostgreSQL and can be moved by copying source, environment variables, migration files, and a PostgreSQL backup.
+
 ## Verification
 
 ```bash

@@ -1,0 +1,10 @@
+{
+  "format": "anonymous-telegram-chat-source",
+  "createdAt": "2026-09-28T20:43:33.482Z",
+  "excludes": [
+    ".env",
+    ".git",
+    "node_modules"
+  ],
+  "restore": "Extract this ZIP and run npm ci, then apply the database migration."
+}

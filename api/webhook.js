@@ -7,6 +7,7 @@ import { DEFAULT_MANDATORY_AUDIENCE, mandatoryAudienceIncludesUser, mandatoryAud
 import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
 import { APPEARANCE_SECTIONS, appearanceButton, appearanceFeedback, appearanceItems, appearanceKeyboard, normalizeAppearance, screenKeyboard, screenText, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
+import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -56,6 +57,11 @@ async function ensureRuntimeSchema() {
         await client.query("ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days')");
         await client.query('ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL');
         await client.query("INSERT INTO bot_settings(key, value) VALUES ('unblock_all_v1', 'pending') ON CONFLICT (key) DO NOTHING");
+        await client.query(`CREATE TABLE IF NOT EXISTS chat_metrics (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, total_chat_seconds BIGINT NOT NULL DEFAULT 0, total_chats INTEGER NOT NULL DEFAULT 0, completed_chats INTEGER NOT NULL DEFAULT 0, total_messages BIGINT NOT NULL DEFAULT 0, longest_chat_seconds BIGINT NOT NULL DEFAULT 0, longest_chat_messages INTEGER NOT NULL DEFAULT 0, active_days INTEGER NOT NULL DEFAULT 0, last_active_day DATE, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ)`);
+        await client.query(`CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT NOT NULL, target_user_id BIGINT, action TEXT NOT NULL, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
+        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT');
+        await client.query("INSERT INTO bot_settings(key,value) VALUES ('chat_permissions',$1),('min_chat_duration','15S'),('spam_consecutive_limit','3'),('spam_delay','2S') ON CONFLICT (key) DO NOTHING", [JSON.stringify(DEFAULT_CHAT_PERMISSIONS)]);
         const unblock = await client.query("SELECT value FROM bot_settings WHERE key='unblock_all_v1'");
         if (unblock.rows[0]?.value === 'pending') {
           await client.query('DELETE FROM anonymous_blocks');
@@ -160,7 +166,7 @@ function emojiKeyboard(settings) { return replyKeyboard(screenKeyboard(publicApp
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
 function plusPurchaseKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پلاس 1 ماهه⭐', callback_data: 'plus:buy:1' }], [{ text: 'پلاس 3 ماهه🌟', callback_data: 'plus:buy:3' }], [{ text: 'پلاس 6 ماهه✨', callback_data: 'plus:buy:6' }], [{ text: 'پلاس 12 ماهه💎', callback_data: 'plus:buy:12' }]] } }; }
 function plusConfirmKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'بله تایید میکنم', callback_data: 'plus:confirm' }, { text: 'خیر بعدا میخرم', callback_data: 'plus:cancel' }]] } }; }
-function adminMainKeyboard(settings = {}) { const a = privateAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
+function adminMainKeyboard(settings = {}) { const a = privateAppearance(settings); return replyKeyboard([...appearanceKeyboard(a), ['کنترل کاربر']]); }
 function reportsKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(privateAppearance(settings), 'reports', [['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']]), true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
 function adsKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(privateAppearance(settings), 'ads', [['جویین اجباری', 'پیام همگانی'], ['پیام خوش‌آمد', 'تبلیغ اتصال'], ['تبلیغ میان مکالمه'], ['بازگشت پنل']]), true); }
@@ -168,11 +174,15 @@ function controlKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(pr
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
-function chatKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)]])); }
+function chatKeyboard(settings, liveControl = false) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)], ['بازی', 'ایده صحبت'], ...(liveControl ? [['🎛 کنترل کاربر']] : [] )])); }
+function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '✅ حقیقت یا جرئت', callback_data: 'game:truth-or-dare' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
 function adminKeyboard(enabled) { return adminMainKeyboard(); }
+function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['افزایش/کسر مانو کوین', 'افزایش/کسر مانو پلاس'], ['لیست بن شده ها'], ['دریافت وضعیت کاربران'], ['کد هدیه'], ['بازگشت پنل']], true); }
+function conversationControlKeyboard() { return replyKeyboard([['مجوز های چت'], ['سرگرمی میان چت'], ['حداقل تایم چت'], ['پیام اسپم'], ['بازگشت کنترل کاربران']], true); }
+function userActionsKeyboard() { return replyKeyboard([['افزایش/کسر مانو کوین', 'افزایش/کسر مانو پلاس'], ['بن/رفع بن'], ['پیام اختصاصی'], ['تاریخچه فعالیت'], ['بازگشت کنترل کاربران']], true); }
 function renameKeyboard() { return replyKeyboard([['دکمه اتصال'], ['دکمه انصراف'], ['دکمه قطع مکالمه']], true); }
 export function mandatoryJoinKeyboard() { return replyKeyboard([['افزودن', 'وضعیت'], ['کنترل ظاهری'], ['بازگشت پنل']], true); }
 function mandatoryTypeKeyboard() { return replyKeyboard([['کانال', 'گروه'], ['ربات', 'وب اپ'], ['وب سایت'], ['بازگشت']], true); }
@@ -423,6 +433,23 @@ async function adminStats(client) {
   const x = r.rows[0];
   return `وضعیت ربات\n\nکاربران: ${x.users}\nدر صف انتظار: ${x.waiting}\nمکالمه‌های فعال: ${x.chatting}\nگزارش‌های باز: ${x.reports}`;
 }
+async function audit(client, adminId, targetId, action, details = {}) {
+  await client.query('INSERT INTO admin_audit_log(admin_id,target_user_id,action,details) VALUES ($1,$2,$3,$4)', [adminId, targetId || null, action, JSON.stringify(details)]);
+}
+async function adminUserPanel(client, viewerId, targetId) {
+  const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [targetId]);
+  if (!result.rows[0]) return { text: 'کاربری با این آیدی پیدا نشد.', markup: userControlKeyboard() };
+  const u = result.rows[0];
+  const metrics = (await client.query('SELECT * FROM chat_metrics WHERE user_id=$1', [targetId])).rows[0] || {};
+  const purchase = await client.query('SELECT COALESCE(SUM(price),0)::int AS total, MAX(created_at) AS last FROM plus_purchases WHERE telegram_id=$1', [targetId]);
+  const blockedByUser = await client.query('SELECT COUNT(*)::int AS n FROM anonymous_blocks WHERE user_low=$1 OR user_high=$1', [targetId]);
+  const blockedUser = await client.query('SELECT COUNT(*)::int AS n FROM reports WHERE target_id=$1 AND reason ILIKE \'%block%\'', [targetId]);
+  await audit(client, viewerId, targetId, 'view_user_panel');
+  return { text: adminUserSummary(u, metrics, { totalPurchase: purchase.rows[0]?.total || 0, lastPurchase: purchase.rows[0]?.last ? iranDate(purchase.rows[0].last) : 'ندارد', membershipTime: iranDate(u.created_at), lastActivity: u.last_action_at ? iranDate(u.last_action_at) : '-', isPlus: isPlus(u, targetId), plusRemaining: isPlus(u, targetId) ? iranDate(u.plus_expires_at) : 'ندارد', blockedByUser: blockedByUser.rows[0]?.n || 0, blockedUser: blockedUser.rows[0]?.n || 0 }), markup: userActionsKeyboard() };
+}
+async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
+async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
+function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
 async function broadcastText(client, text, senderId) {
   const users = await client.query('SELECT telegram_id FROM users');
   let sent = 0;
@@ -480,10 +507,10 @@ async function searchByPreference(id, preference, s) {
     await pool.query('UPDATE users SET action_state=$2, updated_at=NOW() WHERE telegram_id=$1', [id, `choose_gender_for:${preference}`]);
     return send(id, screenText(publicAppearance(s), 'gender', OWN_GENDER_PROMPT), genderKeyboard(s));
   }
-  if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s));
+  if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s, isAdmin(id)));
   if (result.kind === 'paired') {
-    await sendConnectionNotice(id, s, chatKeyboard(s));
-    await sendConnectionNotice(result.partnerId, s, chatKeyboard(s));
+    await sendConnectionNotice(id, s, chatKeyboard(s, isAdmin(id)));
+    await sendConnectionNotice(result.partnerId, s, chatKeyboard(s, isAdmin(result.partnerId)));
     return;
   }
   return send(id, appearanceFeedback(publicAppearance(s), 'waiting', 'در صف انتظار قرار گرفتی؛ هنوز کسی با این انتخاب پیدا نشده است. به‌محض اتصال خبرت می‌دهم.'), waitingKeyboard(s));
@@ -501,6 +528,10 @@ async function disconnect(id) {
   try {
     await client.query('BEGIN');
     const me = await user(client, id); const partnerId = me?.partner_id ? Number(me.partner_id) : null;
+    if (me?.conversation_started_at) {
+      const seconds = Math.max(0, Math.floor((Date.now() - new Date(me.conversation_started_at).getTime()) / 1000));
+      for (const metricUser of [id, partnerId].filter(Boolean)) await client.query(`INSERT INTO chat_metrics(user_id,total_chat_seconds,total_chats,longest_chat_seconds,first_seen_at,last_seen_at) VALUES ($1,$2,1,$2,NOW(),NOW()) ON CONFLICT (user_id) DO UPDATE SET total_chat_seconds=chat_metrics.total_chat_seconds+$2,total_chats=chat_metrics.total_chats+1,longest_chat_seconds=GREATEST(chat_metrics.longest_chat_seconds,$2),last_seen_at=NOW()`, [metricUser, seconds]);
+    }
     if (partnerId) await client.query("UPDATE users SET status='idle', partner_id=NULL, last_partner_id=$3, conversation_started_at=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id IN ($1,$2)", [id, partnerId, partnerId]);
     else await client.query("UPDATE users SET status='idle', partner_id=NULL, conversation_started_at=NULL, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id]);
     await client.query('COMMIT'); return partnerId;
@@ -746,6 +777,19 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (data === 'game:truth-or-dare' && me.status === 'chatting' && me.partner_id) {
+      await send(Number(me.partner_id), '🎲 طرف مقابل درخواست بازی «حقیقت یا جرئت» داده است. قبول می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: 'قبول', callback_data: `game:accept:${id}` }, { text: 'رد', callback_data: `game:reject:${id}` }]] } });
+      return send(id, 'درخواست بازی برای طرف مقابل ارسال شد.', chatKeyboard(s, isAdmin(id)));
+    }
+    if (data.startsWith('game:accept:') || data.startsWith('game:reject:')) {
+      const requester = Number(data.split(':')[2]); if (!me.partner_id || Number(me.partner_id) !== requester) return send(id, 'این درخواست دیگر معتبر نیست.', chatKeyboard(s, isAdmin(id)));
+      if (data.startsWith('game:reject:')) { await send(requester, 'درخواست بازی رد شد.'); return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id))); }
+      await send(requester, '🎲 بازی حقیقت یا جرئت شروع شد؛ نوبت با درخواست‌دهنده است.'); return send(id, '🎲 بازی شروع شد؛ نوبت طرف مقابل است.', chatKeyboard(s, isAdmin(id)));
+    }
+    if (data.startsWith('idea:')) {
+      const ideas = { today: 'اتفاق امروزت چه چیزی بود که ارزش تعریف کردن داشته باشد؟', childhood: 'یک خاطره شیرین یا عجیب از کودکی تعریف کن.', recent: 'عجیب‌ترین اتفاق اخیرت چه بوده؟' };
+      return send(id, `💬 ایده صحبت\n\n${ideas[data.slice(5)] || 'درباره هر چیزی که دوست دارید صحبت کنید.'}`, chatKeyboard(s, isAdmin(id)));
+    }
     if (data === 'connect') return handleConnect(id);
     if (data === 'gender:male' || data === 'gender:female') {
       const pendingMatch = me.action_state?.match(/^choose_gender_for:(male|female|any)$/)?.[1];
@@ -1243,6 +1287,54 @@ async function handleText(id, text) {
       await updateAction(client, id, null);
       return broadcastText(client, value, id);
     }
+    if (isAdmin(id) && me.action_state === 'admin:user_control_lookup') {
+      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s)); }
+      if (publicActionId === 'connect' || value === s.connect_button) { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
+      if (value === 'لیست بن شده ها') { const banned = await client.query("SELECT telegram_id,ban_reason,banned_until FROM users WHERE banned_until IS NOT NULL AND banned_until > NOW() ORDER BY banned_until DESC LIMIT 50"); return send(id, `لیست بن‌شده‌ها\n\n${banned.rows.map(x => `${x.telegram_id} — تا ${iranDate(x.banned_until)}${x.ban_reason ? ` — ${x.ban_reason}` : ''}`).join('\n') || 'موردی نیست'}`, userControlKeyboard()); }
+      if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
+      if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gift_code'); return send(id, 'کد هدیه را با قالب CODE,COINS,PLUS_DAYS بفرست؛ مثال: WELCOME100,100,0'); }
+      if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.', userControlKeyboard());
+      const panel = await adminUserPanel(client, id, value); await updateAction(client, id, `admin:user_control:${value}`); return send(id, panel.text, panel.markup);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:user_control:')) {
+      const targetId = me.action_state.split(':')[2];
+      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s)); }
+      if (publicActionId === 'connect' || value === s.connect_button) { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
+      if (value === 'بازگشت کنترل کاربران' || value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'کنترل کاربران', userControlKeyboard()); }
+      if (value === 'کنترل مکالمات') { await updateAction(client, id, `admin:conversation_control:${targetId}`); return send(id, 'کنترل مکالمات', conversationControlKeyboard()); }
+      if (value === 'افزایش/کسر مانو کوین') { await updateAction(client, id, `admin:coin:${targetId}`); return send(id, 'مقدار را با علامت بفرست؛ مثال: +100 یا -50'); }
+      if (value === 'افزایش/کسر مانو پلاس') { await updateAction(client, id, `admin:plus:${targetId}`); return send(id, 'تعداد روز پلاس را با علامت بفرست؛ مثال: +30 یا -7'); }
+      if (value === 'بن/رفع بن') { await updateAction(client, id, `admin:ban:${targetId}`); return send(id, 'برای رفع بن «رفع» یا برای بن مدت مثل 1H بفرست.'); }
+      if (value === 'تاریخچه فعالیت') { const logs = await client.query('SELECT action,created_at FROM admin_audit_log WHERE target_user_id=$1 ORDER BY id DESC LIMIT 15', [targetId]); return send(id, `تاریخچه فعالیت\n\n${logs.rows.map(x => `${iranDate(x.created_at)} — ${x.action}`).join('\n') || 'موردی ثبت نشده'}`, userActionsKeyboard()); }
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:conversation_control:')) {
+      const targetId = me.action_state.split(':')[2];
+      if (value === 'بازگشت کنترل کاربران') { await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, panel.text, panel.markup); }
+      if (value === 'مجوز های چت') { return send(id, permissionText(await botSettingValue(client, 'chat_permissions')), conversationControlKeyboard()); }
+      if (value === 'حداقل تایم چت') { await updateAction(client, id, `admin:min_time:${targetId}`); return send(id, `حداقل تایم فعلی: ${await botSettingValue(client, 'min_chat_duration', '15S')}\nمقدار جدید را مثل 15S، 2M یا 1H بفرست.`); }
+      if (value === 'پیام اسپم') { await updateAction(client, id, `admin:spam:${targetId}`); return send(id, `مقدار را با قالب 3,2S بفرست. فعلی: ${await botSettingValue(client, 'spam_consecutive_limit', '3')},${await botSettingValue(client, 'spam_delay', '2S')}`); }
+      if (value === 'سرگرمی میان چت') return send(id, 'بازی و ایده صحبت در بخش عمومی چت فعال می‌شود.', conversationControlKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:coin:')) {
+      const targetId = me.action_state.split(':')[2]; const amount = Number(value); if (!Number.isInteger(amount) || amount === 0) return send(id, 'مقدار صحیح مثل +100 یا -50 بفرست.');
+      const changed = await client.query('UPDATE users SET coins=GREATEST(0,coins+$2),updated_at=NOW() WHERE telegram_id=$1 RETURNING coins', [targetId, amount]); await audit(client, id, targetId, 'coin_adjustment', { amount, balance: changed.rows[0]?.coins }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, `تغییر ثبت شد.\n\n${panel.text}`, panel.markup);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:plus:')) {
+      const targetId = me.action_state.split(':')[2]; const days = Number(value); if (!Number.isInteger(days) || days === 0) return send(id, 'تعداد روز صحیح مثل +30 یا -7 بفرست.');
+      await client.query("UPDATE users SET plus_expires_at=GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' days')::interval,updated_at=NOW() WHERE telegram_id=$1", [targetId, String(days)]); await audit(client, id, targetId, 'plus_adjustment', { days }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, `مانو پلاس تغییر کرد.\n\n${panel.text}`, panel.markup);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:ban:')) {
+      const targetId = me.action_state.split(':')[2]; if (value === 'رفع') await client.query('UPDATE users SET banned_until=NULL,ban_reason=NULL WHERE telegram_id=$1', [targetId]); else { const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب بن نامعتبر است؛ مثل 1H یا 7D. برای 7D عدد روز را بفرست: 168H.'); await client.query('UPDATE users SET banned_until=NOW()+($2 || \' seconds\')::interval,ban_reason=\'admin\' WHERE telegram_id=$1', [targetId, String(seconds)]); } await audit(client, id, targetId, value === 'رفع' ? 'unban' : 'ban', { value }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, panel.text, panel.markup);
+    }
+    if (isAdmin(id) && me.action_state === 'admin:gift_code') {
+      const [code, coins, plusDays] = value.split(',').map(x => x.trim()); if (!/^[A-Za-z0-9_-]{3,64}$/.test(code) || !/^\d+$/.test(coins || '') || !/^\d+$/.test(plusDays || '')) return send(id, 'قالب نامعتبر است؛ مثال: WELCOME100,100,0'); await client.query('CREATE TABLE IF NOT EXISTS gift_codes (code TEXT PRIMARY KEY, coins INTEGER NOT NULL DEFAULT 0, plus_days INTEGER NOT NULL DEFAULT 0, max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ, created_by BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())'); await client.query('INSERT INTO gift_codes(code,coins,plus_days,created_by) VALUES ($1,$2,$3,$4) ON CONFLICT (code) DO UPDATE SET coins=EXCLUDED.coins,plus_days=EXCLUDED.plus_days', [code, Number(coins), Number(plusDays), id]); await audit(client, id, null, 'gift_code_create', { code, coins, plusDays }); await updateAction(client, id, null); return send(id, `کد هدیه ${code} ساخته شد.`, userControlKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:min_time:')) {
+      const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب نامعتبر است؛ نمونه: 15S، 2M یا 1H.'); await saveBotSetting(client, 'min_chat_duration', value.toUpperCase()); await updateAction(client, id, `admin:conversation_control:${me.action_state.split(':')[2]}`); return send(id, `حداقل زمان روی ${durationLabel(seconds)} تنظیم شد.`, conversationControlKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:spam:')) {
+      const [limit, delay] = value.split(',').map(x => x.trim()); if (!/^\d+$/.test(limit) || parseDuration(delay) === null) return send(id, 'قالب نامعتبر است؛ نمونه: 3,2S'); await saveBotSetting(client, 'spam_consecutive_limit', limit); await saveBotSetting(client, 'spam_delay', delay.toUpperCase()); await updateAction(client, id, `admin:conversation_control:${me.action_state.split(':')[2]}`); return send(id, 'تنظیمات پیام اسپم ذخیره شد.', conversationControlKeyboard());
+    }
     if (isAdmin(id) && me.action_state === 'admin:user_search') {
       if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.');
       const found = await client.query('SELECT telegram_id,status,gender,coins,created_at FROM users WHERE telegram_id=$1', [value]);
@@ -1256,6 +1348,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     const privateAction = isAdmin(id) ? visiblePrivateAction(value, s) : null;
     if (privateAction === 'ads') return send(id, appearanceFeedback(privateAppearance(s), 'ads', 'مدیریت تبلیغات'), adsKeyboard(s));
     if (privateAction === 'control') return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard(s));
+    if (value === 'کنترل کاربر') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, 'آیدی عددی کاربر را برای کنترل بفرست.', userControlKeyboard()); }
     if (privateAction === 'users') { await updateAction(client, id, 'admin:user_search'); return send(id, appearanceFeedback(privateAppearance(s), 'users', 'آیدی عددی کاربر را بفرست.')); }
     if (privateAction === 'status') { const stats = await adminStats(client); return send(id, stats, adminMainKeyboard(s)); }
     if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, appearanceFeedback(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard(s)); }
@@ -1273,6 +1366,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
     if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
     if (isAdmin(id) && value === 'کنترل ربات') return send(id, 'کنترل ربات', controlKeyboard());
+    if (isAdmin(id) && value === 'کنترل کاربر') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, 'آیدی عددی کاربر را برای کنترل بفرست.', userControlKeyboard()); }
     if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');
     if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
     if (isAdmin(id) && (privateActionId === 'templates' || value === 'قالب‌های آماده')) { await updateAction(client, id, 'appearance:choose'); return send(id, 'قالب آماده را برای کدام بخش اعمال می‌کنی؟', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true)); }
@@ -1512,8 +1606,8 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     }
     if ((publicActionId === 'cancel' || value === s.cancel_button) && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
     if ((publicActionId === 'disconnect' || value === s.disconnect_button) && me.status === 'chatting') {
-      const started = me.conversation_started_at ? new Date(me.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000;
-      if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s));
+      const started = me.conversation_started_at ? new Date(me.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000; const minSeconds = Number(parseDuration(await botSettingValue(client, 'min_chat_duration', '15S')) ?? STOP_MIN_SECONDS);
+      if (elapsed < minSeconds) return send(id, `این مکالمه تا ${Math.ceil(minSeconds - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s, isAdmin(id)));
       await updateAction(client, id, 'confirm_stop'); return send(id, screenText(publicAppearance(s), 'confirm_stop', 'مطمئنی مکالمه قطع بشه؟'), confirmStopKeyboard(s));
     }
     if (me.action_state === 'confirm_stop') {
@@ -1536,6 +1630,11 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
       await block(id, target, found[1]); await updateAction(client, id, null); await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`); return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
+    if (value === '🎛 کنترل کاربر' && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
+      const panel = await adminUserPanel(client, id, Number(me.partner_id)); await updateAction(client, id, `admin:user_control:${me.partner_id}`); return send(id, panel.text, panel.markup);
+    }
+    if (value === 'بازی' && me.status === 'chatting' && me.partner_id) return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games'));
+    if (value === 'ایده صحبت' && me.status === 'chatting' && me.partner_id) return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas'));
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id);
     const blocked = await client.query(
