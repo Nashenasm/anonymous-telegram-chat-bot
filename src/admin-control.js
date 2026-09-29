@@ -14,10 +14,12 @@ export function parseDuration(value) {
   return matches.reduce((total, match) => total + Number(match[1]) * units[match[2].toUpperCase()], 0);
 }
 export function durationLabel(seconds) {
-  const n = Number(seconds || 0);
-  if (n % 3600 === 0) return `${n / 3600}H`;
-  if (n % 60 === 0) return `${n / 60}M`;
-  return `${n}S`;
+  let n = Math.max(0, Math.floor(Number(seconds || 0)));
+  const days = Math.floor(n / 86400); n %= 86400;
+  const hours = Math.floor(n / 3600); n %= 3600;
+  const minutes = Math.floor(n / 60); const secs = n % 60;
+  const parts = []; if (days) parts.push(`${days}d`); if (hours) parts.push(`${hours}h`); if (minutes) parts.push(`${minutes}m`); if (secs || !parts.length) parts.push(`${secs}s`);
+  return parts.join(' ');
 }
 export function permissionKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) {
   return Object.entries(CHAT_PERMISSION_LABELS).map(([key, label]) => ({ key, label: `${permissions[key] ? '🟢' : '🔴'} ${label}` }));
@@ -26,7 +28,7 @@ export function adminUserSummary(user, metrics = {}, extra = {}) {
   const plus = extra.isPlus ? 'پلاس' : 'معمولی';
   return [
     '👤 پنل مدیریت کاربر', '', `نام کاربری تلگرام: ${user.username ? '@' + user.username : 'ثبت نشده'}`,
-    `آیدی عددی: ${user.telegram_id}`, `جنسیت: ${user.gender === 'male' ? 'مرد' : user.gender === 'female' ? 'زن' : 'نامشخص'}`,
+    `آیدی عددی: ${user.telegram_id}`, `راه ارتباطی: ${user.username ? `https://t.me/${user.username.replace(/^@/, '')}` : `tg://user?id=${user.telegram_id}`}`, `جنسیت: ${user.gender === 'male' ? 'مرد' : user.gender === 'female' ? 'زن' : 'نامشخص'}`,
     `نوع حساب: ${plus}`, `میزان کل خرید: ${extra.totalPurchase ?? 0}`, `زمان عضویت: ${extra.membershipTime || '-'}`,
     `مانو کوین فعلی: ${user.coins || 0}`, `مانو پلاس فعلی: ${extra.plusRemaining || 'ندارد'}`,
     `آخرین خرید: ${extra.lastPurchase || 'ندارد'}`, `مدت استفاده: ${durationLabel(metrics.total_chat_seconds || 0)}`,

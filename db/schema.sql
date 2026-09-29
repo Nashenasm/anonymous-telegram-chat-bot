@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
   telegram_id BIGINT PRIMARY KEY,
+  username TEXT,
   status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','waiting','chatting')),
   gender TEXT NULL CHECK (gender IN ('male','female')),
   coins INTEGER NOT NULL DEFAULT 20 CHECK (coins >= 0),
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS match_preference TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_partner_id BIGINT;

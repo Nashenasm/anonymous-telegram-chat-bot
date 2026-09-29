@@ -66,7 +66,7 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("['/user', '/کاربر', '/کنترل', '/کنترل_کاربر', '/controluser'].includes(command)");
     expect(source).toContain("admin:user_control_lookup");
     expect(source).toContain('openAdminUserPanel(id, payload)');
-    expect(source).toContain("(value === '🎛 کنترل کاربر' || value === 'کنترل کاربران') && isAdmin(id) && me.status === 'chatting'");
+    expect(source).toContain("(value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting'");
     expect(source).toContain('adminUserPanel(client, id, Number(me.partner_id))');
     expect(source).toContain("if (publicActionId === 'connect' || value === s.connect_button)");
   });
