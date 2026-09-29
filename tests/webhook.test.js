@@ -63,12 +63,22 @@ describe('anonymous chat public contract', () => {
   });
 
   it('unifies slash user lookup, manpin lookup, and live control on one panel state', () => {
-    expect(source).toContain("['/user', '/کاربر'].includes(command)");
+    expect(source).toContain("['/user', '/کاربر', '/کنترل', '/کنترل_کاربر', '/controluser'].includes(command)");
     expect(source).toContain("admin:user_control_lookup");
     expect(source).toContain('openAdminUserPanel(id, payload)');
-    expect(source).toContain("value === '🎛 کنترل کاربر' && isAdmin(id) && me.status === 'chatting'");
+    expect(source).toContain("(value === '🎛 کنترل کاربر' || value === 'کنترل کاربران') && isAdmin(id) && me.status === 'chatting'");
     expect(source).toContain('adminUserPanel(client, id, Number(me.partner_id))');
     expect(source).toContain("if (publicActionId === 'connect' || value === s.connect_button)");
+  });
+
+  it('keeps entertainment buttons visible despite custom chat appearance and separates global controls', () => {
+    expect(source).toContain("return replyKeyboard([...base, ['بازی', 'ایده صحبت']");
+    expect(source).toContain("me.action_state === 'admin:conversation_control'");
+    expect(source).toContain("admin:user_control_hub");
+    expect(source).toContain("function giftManagementKeyboard()");
+    expect(source).toContain("gift:type:coins");
+    expect(source).toContain("gift:type:plus");
+    expect(source).toContain("1d2h3m40s");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {

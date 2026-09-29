@@ -6,9 +6,12 @@ export const CHAT_PERMISSION_LABELS = {
 };
 export const DEFAULT_CHAT_PERMISSIONS = Object.fromEntries(Object.keys(CHAT_PERMISSION_LABELS).map(k => [k, !['profanity'].includes(k)]));
 export function parseDuration(value) {
-  const m = String(value || '').trim().match(/^(\d+)\s*([SMH])$/i);
-  if (!m || Number(m[1]) < 0) return null;
-  return Number(m[1]) * ({ S: 1, M: 60, H: 3600 }[m[2].toUpperCase()]);
+  const input = String(value || '').trim();
+  if (!input) return null;
+  const matches = [...input.matchAll(/(\d+)\s*([SMHD])/ig)];
+  if (!matches.length || matches.map(m => m[0]).join('') !== input.replace(/\s+/g, '')) return null;
+  const units = { S: 1, M: 60, H: 3600, D: 86400 };
+  return matches.reduce((total, match) => total + Number(match[1]) * units[match[2].toUpperCase()], 0);
 }
 export function durationLabel(seconds) {
   const n = Number(seconds || 0);
