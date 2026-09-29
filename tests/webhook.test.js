@@ -79,6 +79,14 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("gift:type:coins");
     expect(source).toContain("gift:type:plus");
     expect(source).toContain("1d2h3m40s");
+    expect(source).toContain("/^\\/\\d{3,20}$/");
+    expect(source).toContain('permissionInlineKeyboard');
+    expect(source).toContain('plusDirectionInlineKeyboard');
+    expect(source).toContain('admin:user:message');
+    expect(source).toContain('max_uses');
+    expect(source).toContain('redeemGift');
+    expect(source).toContain('daily_coin_command');
+    expect(source).not.toContain("['کنترل مکالمات'], ['کنترل یک کاربر']");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {
