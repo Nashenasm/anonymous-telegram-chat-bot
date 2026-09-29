@@ -20,7 +20,7 @@ export function durationLabel(seconds) {
   return `${n}S`;
 }
 export function permissionKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) {
-  return Object.entries(CHAT_PERMISSION_LABELS).map(([key, label]) => ({ key, label: `${permissions[key] ? '✅' : '❌'} ${label}` }));
+  return Object.entries(CHAT_PERMISSION_LABELS).map(([key, label]) => ({ key, label: `${permissions[key] ? '🟢' : '🔴'} ${label}` }));
 }
 export function adminUserSummary(user, metrics = {}, extra = {}) {
   const plus = extra.isPlus ? 'پلاس' : 'معمولی';

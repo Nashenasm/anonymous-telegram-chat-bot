@@ -93,6 +93,12 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('chat_cost_any');
     expect(source).toContain('chat_cost_male');
     expect(source).toContain('chat_cost_female');
+    expect(source).toContain("editAudienceCallback(callbackQuery, id, 'مجوزهای چت'");
+    expect(source).toContain('bannedListKeyboard');
+    expect(source).toContain('admin:banned_list');
+    expect(source).toContain('کاربر معمولی دختر');
+    expect(source).toContain('کاربران درآمدزا در ۳۰ روز اخیر');
+    expect(source).toContain("state === 'admin:daily_coin:command'");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {
