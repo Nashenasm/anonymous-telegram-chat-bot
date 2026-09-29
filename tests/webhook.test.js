@@ -62,6 +62,15 @@ describe('anonymous chat public contract', () => {
     expect(source).not.toContain('inline_keyboard: [[verify]]');
   });
 
+  it('unifies slash user lookup, manpin lookup, and live control on one panel state', () => {
+    expect(source).toContain("['/user', '/کاربر'].includes(command)");
+    expect(source).toContain("admin:user_control_lookup");
+    expect(source).toContain('openAdminUserPanel(id, payload)');
+    expect(source).toContain("value === '🎛 کنترل کاربر' && isAdmin(id) && me.status === 'chatting'");
+    expect(source).toContain('adminUserPanel(client, id, Number(me.partner_id))');
+    expect(source).toContain("if (publicActionId === 'connect' || value === s.connect_button)");
+  });
+
   it('enforces the 15-second minimum conversation duration', () => {
     expect(STOP_MIN_SECONDS).toBe(15);
   });

@@ -447,6 +447,14 @@ async function adminUserPanel(client, viewerId, targetId) {
   await audit(client, viewerId, targetId, 'view_user_panel');
   return { text: adminUserSummary(u, metrics, { totalPurchase: purchase.rows[0]?.total || 0, lastPurchase: purchase.rows[0]?.last ? iranDate(purchase.rows[0].last) : 'ندارد', membershipTime: iranDate(u.created_at), lastActivity: u.last_action_at ? iranDate(u.last_action_at) : '-', isPlus: isPlus(u, targetId), plusRemaining: isPlus(u, targetId) ? iranDate(u.plus_expires_at) : 'ندارد', blockedByUser: blockedByUser.rows[0]?.n || 0, blockedUser: blockedUser.rows[0]?.n || 0 }), markup: userActionsKeyboard() };
 }
+async function openAdminUserPanel(viewerId, targetId) {
+  const client = await pool.connect();
+  try {
+    const panel = await adminUserPanel(client, viewerId, targetId);
+    await updateAction(client, viewerId, `admin:user_control:${targetId}`);
+    return send(viewerId, panel.text, panel.markup);
+  } finally { client.release(); }
+}
 async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
 async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
 function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
@@ -1668,6 +1676,15 @@ async function processUpdate(update) {
         const client = await pool.connect();
         try { return await sendMandatoryTrackingDetails(client, id, { lookupKey: trackingKey }); }
         finally { client.release(); }
+      }
+      if (['/user', '/کاربر'].includes(command)) {
+        if (!isAdmin(id)) return send(id, 'این دستور فقط برای مدیران و ادمین‌های مجاز فعال است.');
+        if (!payload || !/^\d{3,20}$/.test(payload)) {
+          const client = await pool.connect();
+          try { await updateAction(client, id, 'admin:user_control_lookup'); } finally { client.release(); }
+          return send(id, 'آیدی عددی کاربر را بفرست.', userControlKeyboard());
+        }
+        return openAdminUserPanel(id, payload);
       }
       if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);
       if (command === '/start') return handleStart(id, payload || null);
