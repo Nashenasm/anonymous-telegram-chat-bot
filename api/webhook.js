@@ -45,6 +45,7 @@ async function ensureRuntimeSchema() {
         await client.query('CREATE INDEX IF NOT EXISTS mandatory_source_reports_channel_idx ON mandatory_source_reports(channel_chat_id, updated_at)');
         await client.query('CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique ON users(referral_code) WHERE referral_code IS NOT NULL');
         await client.query("CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+        await client.query('ALTER TABLE plus_purchases DROP CONSTRAINT IF EXISTS plus_purchases_price_check');
         await client.query(`CREATE TABLE IF NOT EXISTS anonymous_blocks (
           user_low BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
           user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
@@ -62,6 +63,12 @@ async function ensureRuntimeSchema() {
         await client.query(`CREATE TABLE IF NOT EXISTS gift_codes (code TEXT PRIMARY KEY, coins INTEGER NOT NULL DEFAULT 0 CHECK (coins >= 0), plus_days INTEGER NOT NULL DEFAULT 0 CHECK (plus_days >= 0), max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ, created_by BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS gift_code_redemptions (code TEXT NOT NULL REFERENCES gift_codes(code) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (code, user_id))`);
         await client.query("ALTER TABLE gift_codes ADD COLUMN IF NOT EXISTS max_uses INTEGER");
+        await client.query("ALTER TABLE gift_codes ADD COLUMN IF NOT EXISTS gift_type TEXT NOT NULL DEFAULT 'reward'");
+        await client.query("ALTER TABLE gift_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0");
+        await client.query("ALTER TABLE gift_codes ADD COLUMN IF NOT EXISTS command_name TEXT");
+        await client.query("CREATE UNIQUE INDEX IF NOT EXISTS gift_codes_command_name_unique ON gift_codes(upper(command_name)) WHERE command_name IS NOT NULL");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_code TEXT");
         await client.query(`CREATE TABLE IF NOT EXISTS daily_coin_claims (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
@@ -193,7 +200,7 @@ function entertainmentAdminKeyboard(settings = {}) { return { reply_markup: { in
 function spamAdminKeyboard() { return replyKeyboard([['تعداد پیام متوالی'], ['تاخیر بین پیام‌ها'], ['بازگشت کنترل مکالمات']], true); }
 function spamInlineKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `تعداد متوالی: ${settings.spam_consecutive_limit || 3}`, callback_data: 'conversation:spam:limit' }, { text: `تاخیر: ${settings.spam_delay || '2S'}`, callback_data: 'conversation:spam:delay' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
 function giftManagementKeyboard() { return replyKeyboard([['ایجاد'], ['دیلی کوین'], ['برگشت']], true); }
-function giftTypeKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'مانو کوین', callback_data: 'gift:type:coins' }, { text: 'مانو پلاس', callback_data: 'gift:type:plus' }]] } }; }
+function giftTypeKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'مانو کوین', callback_data: 'gift:type:coins' }, { text: 'مانو پلاس', callback_data: 'gift:type:plus' }], [{ text: 'تخفیف خرید (%)', callback_data: 'gift:type:discount' }]] } }; }
 function giftPlanKeyboard() { return { reply_markup: { inline_keyboard: [[1, 3, 6, 12].map(months => ({ text: `پلاس ${months} ماهه`, callback_data: `gift:plan:${months}` }))] } }; }
 function giftCodeKeyboard(code) { return { reply_markup: { inline_keyboard: [[{ text: 'افزایش مقدار', callback_data: `gift:increase:${code}` }, { text: 'لغو کد', callback_data: `gift:cancel:${code}` }], [{ text: 'بازگشت به فهرست', callback_data: 'gift:list' }]] } }; }
 function userActionsInlineKeyboard(targetId, banned = false) { return { reply_markup: { inline_keyboard: [[{ text: 'افزایش/کسر مانو کوین', callback_data: `admin:user:coin:${targetId}` }, { text: 'مانو پلاس', callback_data: `admin:user:plus:${targetId}` }], [{ text: banned ? 'رفع بن' : 'بن کاربر', callback_data: `admin:user:ban:${targetId}` }, { text: 'پیام اختصاصی', callback_data: `admin:user:message:${targetId}` }], [{ text: 'بازگشت', callback_data: `admin:user:back:${targetId}` }]] } }; }
@@ -495,7 +502,7 @@ async function openAdminUserPanel(viewerId, targetId) {
 }
 async function giftRows(client) {
   await client.query('DELETE FROM gift_codes WHERE expires_at IS NOT NULL AND expires_at <= NOW()');
-  const result = await client.query("SELECT code,coins,plus_days,uses,max_uses,expires_at,created_at FROM gift_codes ORDER BY created_at DESC LIMIT 50");
+  const result = await client.query("SELECT code,command_name,gift_type,discount_percent,coins,plus_days,uses,max_uses,expires_at,created_at FROM gift_codes ORDER BY created_at DESC LIMIT 50");
   return result.rows;
 }
 function giftStatus(row) {
@@ -505,7 +512,7 @@ function giftStatus(row) {
 }
 function giftListText(rows) {
   if (!rows.length) return 'کد هدیه‌ای ساخته نشده است.';
-  return `کدهای هدیه\n\n${rows.map(row => `🎁 ${row.code}\nوضعیت: ${giftStatus(row)} | کوین: ${row.coins} | پلاس: ${row.plus_days} روز | استفاده: ${row.uses}${row.max_uses ? `/${row.max_uses}` : ''}${row.expires_at ? `\nانقضا: ${iranDate(row.expires_at)}` : ''}`).join('\n\n')}`;
+  return `کدهای هدیه\n\n${rows.map(row => `🎁 /${row.command_name || row.code}\nوضعیت: ${giftStatus(row)} | نوع: ${row.gift_type === 'discount' ? `${row.discount_percent}% تخفیف` : row.coins ? `${row.coins} کوین` : `${row.plus_days} روز پلاس`} | استفاده: ${row.uses}${row.max_uses ? `/${row.max_uses}` : '/∞'}${row.expires_at ? `\nانقضا: ${iranDate(row.expires_at)}` : ''}`).join('\n\n')}`;
 }
 function giftListMarkup(rows) { return { reply_markup: { inline_keyboard: rows.map(row => [{ text: `🎁 ${row.code} — ${giftStatus(row)}`, callback_data: `gift:view:${row.code}` }]) } }; }
 async function sendGiftManagement(client, id) {
@@ -518,12 +525,12 @@ async function redeemGift(client, id, code) {
   const normalized = String(code || '').trim().toUpperCase(); if (!normalized) return send(id, 'کد هدیه را بعد از دستور وارد کن؛ مثال: /gift MG-ABC123.');
   await client.query('BEGIN');
   try {
-    const row = (await client.query('SELECT * FROM gift_codes WHERE code=$1 FOR UPDATE', [normalized])).rows[0];
+    const row = (await client.query('SELECT * FROM gift_codes WHERE upper(code)=upper($1) OR upper(command_name)=upper($1) FOR UPDATE', [normalized])).rows[0];
     if (!row || (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) || (row.max_uses !== null && Number(row.uses) >= Number(row.max_uses))) { await client.query('ROLLBACK'); return send(id, 'این کد هدیه منقضی شده، ظرفیتش تکمیل شده یا وجود ندارد.'); }
-    const already = await client.query('SELECT 1 FROM gift_code_redemptions WHERE code=$1 AND user_id=$2', [normalized, id]); if (already.rowCount) { await client.query('ROLLBACK'); return send(id, 'این کد هدیه را قبلاً استفاده کرده‌ای.'); }
-    await client.query('INSERT INTO gift_code_redemptions(code,user_id) VALUES ($1,$2)', [normalized, id]); await client.query('UPDATE gift_codes SET uses=uses+1 WHERE code=$1', [normalized]);
-    await client.query('UPDATE users SET coins=coins+$2, plus_expires_at=CASE WHEN $3::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($3 || \' days\')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1', [id, row.coins, row.plus_days]); await client.query('COMMIT');
-    return send(id, `کد هدیه با موفقیت استفاده شد.\nمانو کوین: +${row.coins}\nمانو پلاس: +${row.plus_days} روز`);
+    const already = await client.query('SELECT 1 FROM gift_code_redemptions WHERE code=$1 AND user_id=$2', [row.code, id]); if (already.rowCount) { await client.query('ROLLBACK'); return send(id, 'این کد هدیه را قبلاً استفاده کرده‌ای.'); }
+    await client.query('INSERT INTO gift_code_redemptions(code,user_id) VALUES ($1,$2)', [row.code, id]); await client.query('UPDATE gift_codes SET uses=uses+1 WHERE code=$1', [row.code]);
+    await client.query('UPDATE users SET coins=coins+$2, plus_expires_at=CASE WHEN $3::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($3 || \' days\')::interval ELSE plus_expires_at END, discount_percent=CASE WHEN $4::int > 0 THEN $4 ELSE discount_percent END, discount_code=CASE WHEN $4::int > 0 THEN $5 ELSE discount_code END,updated_at=NOW() WHERE telegram_id=$1', [id, row.coins, row.plus_days, row.discount_percent || 0, row.command_name || row.code]); await client.query('COMMIT');
+    return send(id, row.gift_type === 'discount' ? `کد تخفیف فعال شد: ${row.discount_percent}% برای خریدهای بعدی.` : `کد هدیه با موفقیت استفاده شد.\nمانو کوین: +${row.coins}\nمانو پلاس: +${row.plus_days} روز`);
   } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
 async function claimDailyCoins(client, id) {
@@ -714,9 +721,9 @@ async function handlePlusCallback(id, data, client, s) {
   const me = await user(client, id);
   const match = data.match(/^plus:buy:(1|3|6|12)$/);
   if (match) {
-    const months = Number(match[1]); const price = PLUS_PRICES[months];
+    const months = Number(match[1]); const price = PLUS_PRICES[months]; const discount = Math.max(0, Math.min(100, Number(me.discount_percent || 0))); const finalPrice = Math.ceil(price * (100 - discount) / 100);
     await updateAction(client, id, `plus_confirm:${months}`);
-    return send(id, `موجودی مانو کوین: ${Number(me.coins || 0)}\nمحصول: پلاس ${months} ماهه\nقیمت: ${price} مانو کوین\n\nخرید را تایید می‌کنید؟`, plusConfirmKeyboard());
+    return send(id, `موجودی مانو کوین: ${Number(me.coins || 0)}\nمحصول: پلاس ${months} ماهه\nقیمت اصلی: ${price} مانو کوین${discount ? `\nتخفیف: ${discount}%\nقیمت نهایی: ${finalPrice} مانو کوین` : ''}\n\nخرید را تایید می‌کنید؟`, plusConfirmKeyboard());
   }
   if (data === 'plus:cancel') { await updateAction(client, id, null); return sendPlus(id, s); }
   if (data === 'plus:confirm') {
@@ -725,15 +732,15 @@ async function handlePlusCallback(id, data, client, s) {
     const tx = await pool.connect();
     try {
       await tx.query('BEGIN');
-      const locked = await tx.query('SELECT coins, plus_expires_at FROM users WHERE telegram_id=$1 FOR UPDATE', [id]);
-      const row = locked.rows[0];
-      if (!row || Number(row.coins) < price) { await tx.query('ROLLBACK'); await updateAction(client, id, null); return send(id, 'موجودی مانو کوین شما برای این خرید کافی نیست.', plusPurchaseKeyboard()); }
+      const locked = await tx.query('SELECT coins, plus_expires_at, discount_percent, discount_code FROM users WHERE telegram_id=$1 FOR UPDATE', [id]);
+      const row = locked.rows[0]; const discount = Math.max(0, Math.min(100, Number(row?.discount_percent || 0))); const finalPrice = Math.ceil(price * (100 - discount) / 100);
+      if (!row || Number(row.coins) < finalPrice) { await tx.query('ROLLBACK'); await updateAction(client, id, null); return send(id, `موجودی مانو کوین شما برای این خرید کافی نیست. مبلغ لازم: ${finalPrice}`, plusPurchaseKeyboard()); }
       const base = row.plus_expires_at && new Date(row.plus_expires_at).getTime() > Date.now() ? new Date(row.plus_expires_at) : new Date();
       base.setUTCMonth(base.getUTCMonth() + months);
-      await tx.query('UPDATE users SET coins=coins-$2, plus_expires_at=$3, plus_emoji=COALESCE(NULLIF(plus_emoji, \'\'), \'✨\'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1', [id, price, base]);
-      await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, price]);
+      await tx.query('UPDATE users SET coins=coins-$2, plus_expires_at=$3, discount_percent=0, discount_code=NULL, plus_emoji=COALESCE(NULLIF(plus_emoji, \'\'), \'✨\'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1', [id, finalPrice, base]);
+      await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, finalPrice]);
       await tx.query('COMMIT');
-      return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
+      return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
     } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
   }
   return false;
@@ -917,6 +924,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'gift:list' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data === 'gift:type:coins' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:coins'); return send(id, 'مقدار مانو کوین هدیه را بفرست.'); }
     if (data === 'gift:type:plus' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:plus:type'); return send(id, 'پلن مانو پلاس را انتخاب کن:', giftPlanKeyboard()); }
+    if (data === 'gift:type:discount' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:discount:percent'); return send(id, 'درصد تخفیف را بین 1 تا 100 بفرست.'); }
     if (data.startsWith('gift:plan:') && isAdmin(id)) { const plan = Number(data.split(':')[2]); if (![1, 3, 6, 12].includes(plan)) return send(id, 'پلن نامعتبر است.'); await updateAction(sClient, id, `admin:gift:plus:${plan}`); return send(id, `تعداد مانو پلاس ${plan} ماهه را بفرست.`); }
     if (data.startsWith('gift:view:') && isAdmin(id)) { const code = data.slice('gift:view:'.length); const row = (await sClient.query('SELECT * FROM gift_codes WHERE code=$1', [code])).rows[0]; if (!row) return send(id, 'این کد دیگر وجود ندارد.', giftManagementKeyboard()); return send(id, `کد هدیه: ${row.code}\nوضعیت: ${giftStatus(row)}\nمانو کوین: ${row.coins}\nمانو پلاس: ${row.plus_days} روز\nاستفاده: ${row.uses}${row.max_uses ? `/${row.max_uses}` : ''}\nانقضا: ${row.expires_at ? iranDate(row.expires_at) : 'بدون انقضا'}`, giftCodeKeyboard(code)); }
     if (data.startsWith('gift:cancel:') && isAdmin(id)) { const code = data.slice('gift:cancel:'.length); await sClient.query('UPDATE gift_codes SET expires_at=NOW() WHERE code=$1', [code]); await audit(sClient, id, null, 'gift_code_cancel', { code }); await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
@@ -1480,7 +1488,7 @@ async function handleText(id, text) {
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:coin:')) {
       const stateParts = me.action_state.split(':'); const targetId = stateParts[2]; const messageId = stateParts[3]; const amount = Number(value); if (!Number.isInteger(amount) || amount === 0) return send(id, 'مقدار صحیح مثل +100 یا -50 بفرست.');
-      const changed = await client.query('UPDATE users SET coins=GREATEST(0,coins+$2),updated_at=NOW() WHERE telegram_id=$1 RETURNING coins', [targetId, amount]); await audit(client, id, targetId, 'coin_adjustment', { amount, balance: changed.rows[0]?.coins }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return editAdminPanelMessage(id, messageId, panel);
+      const changed = await client.query('UPDATE users SET coins=GREATEST(0,coins+$2),updated_at=NOW() WHERE telegram_id=$1 RETURNING coins', [targetId, amount]); await audit(client, id, targetId, 'coin_adjustment', { amount, balance: changed.rows[0]?.coins }); await send(targetId, `حساب مانو کوین شما توسط مدیریت تغییر کرد.\nتغییر: ${amount > 0 ? '+' : ''}${amount}\nموجودی جدید: ${changed.rows[0]?.coins || 0}`); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return editAdminPanelMessage(id, messageId, panel);
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:message:')) {
       const stateParts = me.action_state.split(':'); const targetId = Number(stateParts[2]); const messageId = stateParts[3]; if (!value) return send(id, 'پیام اختصاصی نمی‌تواند خالی باشد.'); await audit(client, id, targetId, 'private_message', { length: value.length }); await send(targetId, `پیام اختصاصی از مدیریت:\n\n${value}`); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return editAdminPanelMessage(id, messageId, panel);
@@ -1500,25 +1508,34 @@ async function handleText(id, text) {
     }
     if (isAdmin(id) && me.action_state === 'admin:gift:coins') {
       if (!/^\d+$/.test(value) || Number(value) <= 0) return send(id, 'مقدار مانو کوین را به‌صورت عدد مثبت بفرست.');
-      await updateAction(client, id, `admin:gift:capacity:coins:${Number(value)}`); return send(id, 'ظرفیت استفاده را به‌صورت عدد بفرست یا «نامحدود» بنویس.');
+      await updateAction(client, id, `admin:gift:capacity:coins:${Number(value)}`); return send(id, 'ظرفیت استفاده را به‌صورت عدد بفرست یا «نامحدود» بنویس. هر کاربر فقط یک بار می‌تواند استفاده کند.');
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:gift:plus:')) {
       const plan = me.action_state.split(':')[3];
       if (!/^\d+$/.test(value) || Number(value) <= 0) return send(id, 'تعداد مانو پلاس را به‌صورت عدد مثبت بفرست.');
-      await updateAction(client, id, `admin:gift:capacity:plus:${plan}:${Number(value)}`); return send(id, 'ظرفیت استفاده را به‌صورت عدد بفرست یا «نامحدود» بنویس.');
+      await updateAction(client, id, `admin:gift:capacity:plus:${plan}:${Number(value)}`); return send(id, 'ظرفیت استفاده را به‌صورت عدد بفرست یا «نامحدود» بنویس. هر کاربر فقط یک بار می‌تواند استفاده کند.');
+    }
+    if (isAdmin(id) && me.action_state === 'admin:gift:discount:percent') {
+      if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 100) return send(id, 'درصد تخفیف باید عددی بین 1 تا 100 باشد.');
+      await updateAction(client, id, `admin:gift:capacity:discount:${Number(value)}`); return send(id, 'ظرفیت استفاده را به‌صورت عدد بفرست یا «نامحدود» بنویس. هر کاربر فقط یک بار می‌تواند استفاده کند.');
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:gift:capacity:')) {
       const parts = me.action_state.split(':'); const kind = parts[3]; const capacity = value === 'نامحدود' ? null : (/^\d+$/.test(value) && Number(value) > 0 ? Number(value) : undefined); if (capacity === undefined) return send(id, 'ظرفیت نامعتبر است؛ عدد مثبت یا «نامحدود» بفرست.');
-      const next = kind === 'coins' ? `admin:gift:duration:coins:${parts[4]}:${capacity ?? 'null'}` : `admin:gift:duration:plus:${parts[4]}:${parts[5]}:${capacity ?? 'null'}`; await updateAction(client, id, next); return send(id, 'مدت فعال بودن کد را بفرست؛ نمونه: 1d2h3m40s یا 30m.');
+      const next = kind === 'coins' ? `admin:gift:code:coins:${parts[4]}:${capacity ?? 'null'}` : kind === 'plus' ? `admin:gift:code:plus:${parts[4]}:${parts[5]}:${capacity ?? 'null'}` : `admin:gift:code:discount:${parts[4]}:${capacity ?? 'null'}`; await updateAction(client, id, next); return send(id, 'نام کد/دستور را بفرست؛ فقط حروف انگلیسی، عدد، _ یا - و حداقل 3 نویسه. مثل SUMMER20');
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:gift:code:')) {
+      const parts = me.action_state.split(':'); const commandName = value.replace(/^\//, '').toUpperCase(); if (!/^[A-Z0-9_-]{3,32}$/.test(commandName)) return send(id, 'نام کد نامعتبر است؛ مثل SUMMER20 یا PLUS_1405.');
+      const next = parts[3] === 'coins' ? `admin:gift:duration:coins:${parts[4]}:${parts[5]}:${commandName}` : parts[3] === 'plus' ? `admin:gift:duration:plus:${parts[4]}:${parts[5]}:${parts[6]}:${commandName}` : `admin:gift:duration:discount:${parts[4]}:${parts[5]}:${commandName}`;
+      await updateAction(client, id, next); return send(id, 'مدت فعال بودن کد را بفرست؛ نمونه: 1d2h3m40s یا 30m.');
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:gift:duration:')) {
-      const parts = me.action_state.split(':'); const kind = parts[3]; const amount = kind === 'coins' ? Number(parts[4]) : Number(parts[5]); const plusDays = kind === 'plus' ? Number(parts[4]) * amount : 0; const maxUses = parts.at(-1) === 'null' ? null : Number(parts.at(-1));
+      const parts = me.action_state.split(':'); const kind = parts[3]; const amount = kind === 'coins' ? Number(parts[4]) : kind === 'plus' ? Number(parts[5]) : 0; const plusDays = kind === 'plus' ? Number(parts[4]) * amount : 0; const discountPercent = kind === 'discount' ? Number(parts[4]) : 0; const maxUses = kind === 'coins' ? (parts[5] === 'null' ? null : Number(parts[5])) : kind === 'plus' ? (parts[6] === 'null' ? null : Number(parts[6])) : (parts[5] === 'null' ? null : Number(parts[5])); const commandName = kind === 'coins' ? parts[6] : kind === 'plus' ? parts[7] : parts[6];
       const seconds = parseDuration(value); if (seconds === null || seconds <= 0) return send(id, 'مدت نامعتبر است؛ از S، M، H و D استفاده کن؛ نمونه: 1d2h3m40s.');
       const code = `MG-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
-      await client.query('INSERT INTO gift_codes(code,coins,plus_days,max_uses,expires_at,created_by) VALUES ($1,$2,$3,$4,NOW()+($5 || \' seconds\')::interval,$6)', [code, kind === 'coins' ? amount : 0, plusDays, maxUses, String(seconds), id]);
+      await client.query('INSERT INTO gift_codes(code,coins,plus_days,max_uses,expires_at,created_by,gift_type,discount_percent,command_name) VALUES ($1,$2,$3,$4,NOW()+($5 || \' seconds\')::interval,$6,$7,$8,$9)', [code, kind === 'coins' ? amount : 0, plusDays, maxUses, String(seconds), id, kind === 'discount' ? 'discount' : 'reward', discountPercent, commandName]);
       await audit(client, id, null, 'gift_code_create', { code, coins: kind === 'coins' ? amount : 0, plusDays, duration: value });
       await updateAction(client, id, 'admin:gifts');
-      await send(id, `کد هدیه ساخته شد: ${code}\nنوع: ${kind === 'coins' ? `${amount} مانو کوین` : `${amount} عدد پلاس ${parts[4]} ماهه`}\nاعتبار: ${value}`, giftManagementKeyboard());
+      await send(id, `کد هدیه ساخته شد: /${commandName}\nنوع: ${kind === 'coins' ? `${amount} مانو کوین` : kind === 'plus' ? `${amount} عدد پلاس ${parts[4]} ماهه` : `${discountPercent}% تخفیف خرید`}\nظرفیت: ${maxUses ?? 'نامحدود'}\nاعتبار: ${value}`, giftManagementKeyboard());
       return sendGiftManagement(client, id);
     }
     if (isAdmin(id) && me.action_state === 'admin:daily_coin') {

@@ -90,6 +90,13 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('هزینه هر چت');
     expect(source).toContain('chatCostInlineKeyboard');
     expect(source).toContain('chargeSuccessfulConnection');
+    expect(source).toContain('حساب مانو کوین شما توسط مدیریت تغییر کرد');
+    expect(source).toContain("gift:type:discount");
+    expect(source).toContain('command_name');
+    expect(source).toContain('discount_percent');
+    expect(source).toContain('gift_code_redemptions');
+    expect(source).toContain('هر کاربر فقط یک بار');
+    expect(source).toContain('finalPrice');
     expect(source).toContain('chat_cost_any');
     expect(source).toContain('chat_cost_male');
     expect(source).toContain('chat_cost_female');

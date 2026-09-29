@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','waiting','chatting')),
   gender TEXT NULL CHECK (gender IN ('male','female')),
   coins INTEGER NOT NULL DEFAULT 20 CHECK (coins >= 0),
+  discount_percent INTEGER NOT NULL DEFAULT 0,
+  discount_code TEXT,
   plus_expires_at TIMESTAMPTZ NULL,
   plus_emoji TEXT NOT NULL DEFAULT '✨',
   role TEXT NOT NULL DEFAULT 'user',
@@ -22,6 +24,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_code TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS match_preference TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_partner_id BIGINT;
