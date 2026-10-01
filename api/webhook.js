@@ -2141,7 +2141,10 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET; const supplied = req.headers['x-telegram-bot-api-secret-token'];
   if (!expected || supplied !== expected) return res.status(401).json({ ok: false, error: 'unauthorized' });
-  try { await ensureRuntimeSchema(); await processUpdate(req.body || {}); return res.status(200).json({ ok: true }); }
+  // Acknowledge Telegram immediately. Processing may involve Telegram API calls and
+  // must not hold the webhook open long enough for Telegram to retry the update.
+  res.status(200).json({ ok: true });
+  try { await ensureRuntimeSchema(); await processUpdate(req.body || {}); }
   catch (error) {
     console.error('webhook_error', error?.message || error);
     const fromId = req.body?.callback_query?.from?.id || req.body?.message?.from?.id;
@@ -2149,7 +2152,6 @@ export default async function handler(req, res) {
       try { await send(Number(fromId), 'در پردازش درخواست مشکلی پیش آمد؛ لطفاً دوباره تلاش کن.'); }
       catch (sendError) { console.error('webhook_fallback_send_error', sendError?.message || sendError); }
     }
-    return res.status(200).json({ ok: false });
   }
 }
 
