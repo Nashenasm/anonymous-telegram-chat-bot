@@ -1,5 +1,8 @@
 import { Pool } from 'pg';
 import crypto from 'node:crypto';
+import dns from 'node:dns';
+
+dns.setDefaultResultOrder('ipv4first');
 import fs from 'node:fs/promises';
 import { createAnonymousFlow } from '../src/anonymous-flow.js';
 import { decodeTrackingCode, formatMandatorySourceDetails, getMandatorySourceDetails, getMandatorySourceHistory, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, processMandatoryLifecycle, recordMandatorySourceHistory, syncMandatoryReport, trackingCommand } from '../src/mandatory-service.js';
