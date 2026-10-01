@@ -41,6 +41,24 @@ CREATE TABLE IF NOT EXISTS gift_code_redemptions (
   redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (code, user_id)
 );
+CREATE TABLE IF NOT EXISTS contact_messages (
+  id BIGSERIAL PRIMARY KEY,
+  sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (sender_id <> recipient_id)
+);
+CREATE INDEX IF NOT EXISTS contact_messages_recipient_idx ON contact_messages(recipient_id, id DESC);
+CREATE TABLE IF NOT EXISTS chat_gifts (
+  id BIGSERIAL PRIMARY KEY,
+  sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  gift_type TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS daily_coin_claims (
   user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
   claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

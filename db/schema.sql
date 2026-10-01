@@ -122,6 +122,25 @@ UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE ex
 ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days');
 ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL;
 
+CREATE TABLE IF NOT EXISTS contact_messages (
+  id BIGSERIAL PRIMARY KEY,
+  sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (sender_id <> recipient_id)
+);
+CREATE INDEX IF NOT EXISTS contact_messages_recipient_idx ON contact_messages(recipient_id, id DESC);
+CREATE TABLE IF NOT EXISTS chat_gifts (
+  id BIGSERIAL PRIMARY KEY,
+  sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  gift_type TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Optional cleanup job: DELETE FROM processed_updates WHERE processed_at < NOW() - INTERVAL '14 days';
 
 CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());

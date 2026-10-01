@@ -72,7 +72,8 @@ describe('anonymous chat public contract', () => {
   });
 
   it('keeps entertainment buttons visible despite custom chat appearance and separates global controls', () => {
-    expect(source).toContain("return replyKeyboard([...base, ['بازی', 'ایده صحبت']");
+    expect(source).toContain("settings.mid_chat_games_enabled !== 'false'");
+    expect(source).toContain("extras.push('هدیه دادن')");
     expect(source).toContain("me.action_state === 'admin:conversation_control'");
     expect(source).toContain("admin:user_control_hub");
     expect(source).toContain("function giftManagementKeyboard()");
