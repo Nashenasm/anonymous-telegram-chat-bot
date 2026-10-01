@@ -51,9 +51,12 @@ async function ensureRuntimeSchema() {
           user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+          blocker_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
           PRIMARY KEY (user_low, user_high), CHECK (user_low < user_high)
         )`);
         await client.query('ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ');
+        await client.query('ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS blocker_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE');
+        await client.query(`UPDATE anonymous_blocks ab SET blocker_id = r.reporter_id FROM (SELECT DISTINCT ON (LEAST(reporter_id,target_id), GREATEST(reporter_id,target_id)) reporter_id, target_id FROM reports WHERE target_id IS NOT NULL ORDER BY LEAST(reporter_id,target_id), GREATEST(reporter_id,target_id), created_at DESC) r WHERE ab.blocker_id IS NULL AND ab.user_low=LEAST(r.reporter_id,r.target_id) AND ab.user_high=GREATEST(r.reporter_id,r.target_id)`);
         await client.query("UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL");
         await client.query("ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days')");
         await client.query('ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL');
@@ -541,14 +544,14 @@ async function bannedListText(client) {
   const banned = await client.query("SELECT telegram_id,ban_reason,banned_until FROM users WHERE banned_until IS NOT NULL AND banned_until > NOW() ORDER BY banned_until DESC LIMIT 50");
   return `لیست بن‌شده‌ها\n\n${banned.rows.map(x => `${x.telegram_id} — تا ${iranDate(x.banned_until)}${x.ban_reason ? ` — ${x.ban_reason}` : ''}`).join('\n') || 'لیست خالی است.'}`;
 }
-async function blockedListRows(client) {
-  const result = await client.query(`SELECT ab.user_low, ab.user_high, ab.expires_at,
+async function blockedListRows(client, blockerId) {
+  const result = await client.query(`SELECT ab.user_low, ab.user_high, ab.expires_at, ab.blocker_id,
       low.username AS low_username, high.username AS high_username
     FROM anonymous_blocks ab
     JOIN users low ON low.telegram_id=ab.user_low
     JOIN users high ON high.telegram_id=ab.user_high
-    WHERE ab.expires_at > NOW()
-    ORDER BY ab.expires_at DESC LIMIT 100`);
+    WHERE ab.expires_at > NOW() AND ab.blocker_id=$1
+    ORDER BY ab.expires_at DESC LIMIT 100`, [blockerId]);
   return result.rows;
 }
 function blockedListText(rows) {
@@ -561,7 +564,7 @@ function blockedListKeyboard(rows) {
   return { reply_markup: { inline_keyboard: buttons } };
 }
 async function sendBlockedList(client, id, prefix = '') {
-  const rows = await blockedListRows(client);
+  const rows = await blockedListRows(client, id);
   return send(id, `${prefix}${blockedListText(rows)}`, blockedListKeyboard(rows));
 }
 async function audit(client, adminId, targetId, action, details = {}) {
@@ -747,9 +750,9 @@ async function block(id, targetId, reason) {
     const configured = await botSettingValue(client, 'block_duration', '7D');
     const seconds = parseDuration(configured) || 7 * 86400;
     await client.query(
-      `INSERT INTO anonymous_blocks (user_low, user_high, expires_at)
-       VALUES (LEAST($1::bigint,$2::bigint), GREATEST($1::bigint,$2::bigint), NOW() + ($3 || ' seconds')::interval)
-       ON CONFLICT (user_low, user_high) DO UPDATE SET created_at=NOW(), expires_at=NOW() + ($3 || ' seconds')::interval`,
+      `INSERT INTO anonymous_blocks (user_low, user_high, expires_at, blocker_id)
+       VALUES (LEAST($1::bigint,$2::bigint), GREATEST($1::bigint,$2::bigint), NOW() + ($3 || ' seconds')::interval, $1)
+       ON CONFLICT (user_low, user_high) DO UPDATE SET created_at=NOW(), expires_at=NOW() + ($3 || ' seconds')::interval, blocker_id=$1`,
       [id, targetId, String(seconds)]
     );
     await client.query('INSERT INTO reports (reporter_id, target_id, reason) VALUES ($1,$2,$3)', [id, targetId, reason]);
@@ -1018,9 +1021,9 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('admin:block:unblock:')) {
       const parts = data.split(':'); const low = Number(parts[3]); const high = Number(parts[4]);
       if (!low || !high || low >= high) return send(id, 'شناسه بلاک نامعتبر است.');
-      await sClient.query('DELETE FROM anonymous_blocks WHERE user_low=$1 AND user_high=$2', [low, high]);
+      await sClient.query('DELETE FROM anonymous_blocks WHERE user_low=$1 AND user_high=$2 AND blocker_id=$3', [low, high, id]);
       await audit(sClient, id, low, 'unblock_pair', { userLow: low, userHigh: high });
-      const rows = await blockedListRows(sClient); return editAudienceCallback(callbackQuery, id, `رفع بلاک انجام شد.\n\n${blockedListText(rows)}`, blockedListKeyboard(rows));
+      const rows = await blockedListRows(sClient, id); return editAudienceCallback(callbackQuery, id, `رفع بلاک انجام شد.\n\n${blockedListText(rows)}`, blockedListKeyboard(rows));
     }
     if (isAdmin(id) && data.startsWith('admin:user:')) {
       const [, , action, targetRaw, extra] = data.split(':'); const targetId = Number(targetRaw);

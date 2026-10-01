@@ -114,10 +114,12 @@ CREATE TABLE IF NOT EXISTS anonymous_blocks (
   user_high BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+  blocker_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
   PRIMARY KEY (user_low, user_high),
   CHECK (user_low < user_high)
 );
 ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE anonymous_blocks ADD COLUMN IF NOT EXISTS blocker_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE;
 UPDATE anonymous_blocks SET expires_at = created_at + INTERVAL '7 days' WHERE expires_at IS NULL;
 ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '7 days');
 ALTER TABLE anonymous_blocks ALTER COLUMN expires_at SET NOT NULL;
