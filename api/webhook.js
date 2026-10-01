@@ -260,11 +260,11 @@ export function mandatoryStatusKeyboard() { return replyKeyboard([['لیست ز�
 function mandatoryAppearanceKeyboard() { return replyKeyboard([['ویرایش متن جویین', 'نام دکمه عضویت'], ['نام دکمه بررسی', 'چیدمان دکمه‌ها'], ['نمایش/پنهان‌کردن برچسب منبع'], ['بازگشت']], true); }
 function mandatoryAppearanceLayoutKeyboard() { return replyKeyboard([['تک‌ردیفه', 'فشرده'], ['بازگشت']], true); }
 
-async function telegram(method, body, { timeoutMs = 8_000 } = {}) {
+async function telegram(method, body, { timeoutMs = 12_000 } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
   const result = await response.json();
