@@ -109,6 +109,23 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("state === 'admin:daily_coin:command'");
   });
 
+  it('supports private contact usernames and in-place reply/block actions', () => {
+    expect(source).toContain("value.match(/^@([A-Za-z0-9_]{3,32})$/)");
+    expect(source).toContain('lower(username)=lower($2)');
+    expect(source).toContain('contact:block_reason:');
+    expect(source).toContain('editAudienceCallback(callbackQuery, id, row.body, contactMessageKeyboard(messageId))');
+    expect(source).toContain("{ reply_markup: { inline_keyboard: [] } }");
+    expect(source).toContain('await block(id, row.sender_id, reason');
+  });
+
+  it('exposes finance controls and fixed report/template navigation', () => {
+    expect(source).toContain("['کنترل مالی']");
+    expect(source).toContain('function financeKeyboard()');
+    expect(source).toContain('async function financialReport(client)');
+    expect(source).toContain("function reportsKeyboard() { return replyKeyboard");
+    expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
+  });
+
   it('enforces the 15-second minimum conversation duration', () => {
     expect(STOP_MIN_SECONDS).toBe(15);
   });
