@@ -1678,6 +1678,7 @@ async function handleText(id, text, meta = {}) {
       return send(id, 'یکی از گزینه‌های کنترل کاربران را انتخاب کن.', userControlKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:control') {
+      if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
       if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
       return send(id, 'کنترل ربات', controlKeyboard());
