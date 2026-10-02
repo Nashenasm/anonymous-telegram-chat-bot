@@ -431,15 +431,27 @@ function appearanceButtonId(value, section, s) {
   return null;
 }
 function beautySectionsKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'آرایش (Public)', callback_data: 'beauty:section:public' }], [{ text: 'آرایش (Privacy)', callback_data: 'beauty:section:private' }], [{ text: 'بازگشت', callback_data: 'beauty:back' }]] } }; }
-function beautyPathItems(appearance, path = 'root') {
-  if (path === 'root') return (appearance.buttons || []).flatMap((row, rowIndex) => (row || []).map((item, colIndex) => ({ ...item, rowIndex, colIndex })));
-  const screen = appearance.screens?.[path];
-  return (screen?.buttons || []).flatMap((row, rowIndex) => Array.isArray(row) ? row.map((item, colIndex) => ({ ...item, rowIndex, colIndex })) : [{ ...row, rowIndex, colIndex: 0 }]);
+function beautyPathRows(appearance, path = 'root') {
+  if (path === 'root') return Array.isArray(appearance.buttons) ? appearance.buttons : [];
+  const buttons = appearance.screens?.[path]?.buttons || [];
+  return Array.isArray(buttons) && buttons.some(row => Array.isArray(row)) ? buttons : [buttons];
 }
-function beautySelected(appearance, path, itemId) { return beautyPathItems(appearance, path).find(item => item.id === itemId) || null; }
+function beautyPathItems(appearance, path = 'root') {
+  return beautyPathRows(appearance, path).flatMap((row, rowIndex) => (row || []).map((item, colIndex) => ({ ...item, rowIndex, colIndex })));
+}
+function beautyItemRef(appearance, path, itemId) {
+  for (const row of beautyPathRows(appearance, path)) for (const item of row || []) if (item?.id === itemId) return item;
+  return null;
+}
+function beautySelected(appearance, path, itemId) { return beautyItemRef(appearance, path, itemId); }
 function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
-  const items = beautyPathItems(appearance, path).filter(item => item.enabled !== false);
-  if (!selectedId) return { reply_markup: { inline_keyboard: [...items.map(item => [{ text: item.label || item.id, callback_data: `beauty:${section}:pick:${path}:${item.id}` }]), [{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:root` }]] } };
+  const rows = beautyPathRows(appearance, path);
+  const items = rows.flat().filter(item => item?.enabled !== false);
+  if (!selectedId) {
+    const keyboardRows = rows.map(row => (row || []).filter(item => item?.enabled !== false).map(item => ({ text: item.label || item.id, callback_data: `beauty:${section}:pick:${path}:${item.id}` }))).filter(row => row.length);
+    keyboardRows.push([{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:root` }]);
+    return { reply_markup: { inline_keyboard: keyboardRows } };
+  }
   const item = beautySelected(appearance, path, selectedId);
   if (!item) return beautyKeyboard(section, appearance, path);
   const status = item.enabled === false ? 'OFF🔴' : 'ON🟢';
@@ -450,14 +462,14 @@ function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
     [{ text: 'Message❔', callback_data: `beauty:${section}:message:${path}:${item.id}` }, { text: 'Name⭕️', callback_data: `beauty:${section}:name:${path}:${item.id}` }],
     [{ text: 'Enter✔️', callback_data: `beauty:${section}:enter:${path}:${item.id}` }],
     [{ text: status, callback_data: `beauty:${section}:toggle:${path}:${item.id}` }],
-    [{ text: 'بازگشت', callback_data: `beauty:${section}:open:${path === 'root' ? 'root' : 'root'}` }]
+    [{ text: 'بازگشت', callback_data: `beauty:${section}:open:root` }]
   ] } };
 }
 function beautyPathLabel(path) { return path === 'root' ? 'صفحه اصلی' : `صفحه اصلی ← ${path}`; }
 function beautyEditorText(section, appearance, path = 'root', selectedId = null, note = '') {
   const item = selectedId ? beautySelected(appearance, path, selectedId) : null;
   const title = section === 'public' ? 'Public' : 'Privacy';
-  if (!item) return `امور [آرایش زیبایی] — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.`;
+  if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `امور [آرایش زیبایی] — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.` : `امور [آرایش زیبایی] — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های داخل این بخش را انتخاب کن.`; }
   const screen = appearance.screens?.[item.id];
   return `${note ? `${note}\n\n` : ''}دکمه انتخاب‌شده: ${item.label || item.id}\nپیام پاسخ: ${screen?.message || 'پاسخ مستقیمی ثبت نشده است.'}\nنام نمایشی: ${item.label || item.id}\nمسیر: ${beautyPathLabel(path)}\nوضعیت: ${item.enabled === false ? 'خاموش' : 'روشن'}`;
 }
@@ -492,7 +504,7 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   if (action === 'pick') { const item=beautySelected(appearance,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path,itemId),beautyKeyboard(section,appearance,path,itemId)); }
   if (action === 'open') return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path),beautyKeyboard(section,appearance,path));
   if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
-  if (action === 'toggle') { const next=JSON.parse(JSON.stringify(appearance)); const item=beautySelected(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled===false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
+  if (action === 'toggle') { const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
   if (action === 'enter') { const nextPath=appearance.screens?.[itemId]?itemId:path; return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
   if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(appearance.screens?.[itemId]?.message || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
   return false;
@@ -1562,7 +1574,7 @@ async function handleText(id, text, meta = {}) {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
     if (isAdmin(id) && me.action_state?.startsWith('beauty:name:')) {
-      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautySelected(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
+      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     if (isAdmin(id) && me.action_state?.startsWith('beauty:message:')) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const screen = next.screens?.[itemId]; if (!screen || !value) return send(id, 'پیام نمی‌تواند خالی باشد.'); screen.message = value.slice(0, 4000); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
