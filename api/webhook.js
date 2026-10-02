@@ -2311,7 +2311,7 @@ async function processUpdate(update) {
       if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);
       if (command === '/start') return handleStart(id, payload || null);
       if (command === '/help') return handleStart(id);
-    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { const s = await settings(c); return send(id, `${privateAppearance(s).message}\n\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard(s)); } finally { c.release(); } }
+    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { await updateAction(c, id, null); const s = await settings(c); return send(id, `${privateAppearance(s).message}\n\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard(s)); } finally { c.release(); } }
     return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
   }
   return handleText(id, text, { forwardedUserId });
