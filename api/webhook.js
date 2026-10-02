@@ -457,6 +457,22 @@ function beautyParentPath(path) {
   for (const [parent, children] of Object.entries(BEAUTY_FLOW_NEXT)) if (Object.values(children).includes(path)) return parent;
   return 'root';
 }
+function beautyMessageTarget(appearance, path, itemId) {
+  const nextPath = beautyChildPath(path, itemId);
+  if (nextPath && nextPath !== path) {
+    if (nextPath === 'root') return { parent: appearance, key: 'message' };
+    if (appearance.screens?.[nextPath]) return { parent: appearance.screens[nextPath], key: 'message' };
+  }
+  if (path === 'root' && appearance.feedback && Object.prototype.hasOwnProperty.call(appearance.feedback, itemId)) return { parent: appearance.feedback, key: itemId };
+  if (appearance.screens?.[itemId]) return { parent: appearance.screens[itemId], key: 'message' };
+  if (appearance.screens?.[path]) return { parent: appearance.screens[path], key: 'message' };
+  return null;
+}
+function beautyMessageText(appearance, path, itemId) {
+  const target = beautyMessageTarget(appearance, path, itemId);
+  return target?.parent?.[target.key] || '';
+}
+
 function beautyPathRows(appearance, path = 'root') {
   if (path === 'root') return Array.isArray(appearance.buttons) ? appearance.buttons : [];
   const buttons = appearance.screens?.[path]?.buttons || [];
@@ -496,8 +512,8 @@ function beautyEditorText(section, appearance, path = 'root', selectedId = null,
   const item = selectedId ? beautySelected(appearance, path, selectedId) : null;
   const title = section === 'public' ? 'Public' : 'Privacy';
   if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `امور [آرایش زیبایی] — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.` : `امور [آرایش زیبایی] — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های داخل این بخش را انتخاب کن.`; }
-  const screen = appearance.screens?.[item.id];
-  return `${note ? `${note}\n\n` : ''}دکمه انتخاب‌شده: ${item.label || item.id}\nپیام پاسخ: ${screen?.message || 'پاسخ مستقیمی ثبت نشده است.'}\nنام نمایشی: ${item.label || item.id}\nمسیر: ${beautyPathLabel(path)}\nوضعیت: ${item.enabled === false ? 'خاموش' : 'روشن'}`;
+  const response = beautyMessageText(appearance, path, item.id);
+  return `${note ? `${note}\n\n` : ''}دکمه انتخاب‌شده: ${item.label || item.id}\nپیام پاسخ: ${response || 'پاسخ مستقیمی ثبت نشده است.'}\nنام نمایشی: ${item.label || item.id}\nمسیر: ${beautyPathLabel(path)}\nوضعیت: ${item.enabled === false ? 'خاموش' : 'روشن'}`;
 }
 function updateAppearanceSetting(client, section, appearance) { const [key, json] = saveAppearanceQuery(section, appearance); return client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, json]); }
 function moveBeautyItem(appearance, path, itemId, direction) {
@@ -532,7 +548,7 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
   if (action === 'toggle') { const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
   if (action === 'enter') { const nextPath=beautyChildPath(path,itemId); if (!nextPath || nextPath === path) return editBeautyMessage(callbackQuery,id,'این دکمه صفحهٔ داخلی دیگری ندارد.',beautyKeyboard(section,appearance,path,itemId)); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
-  if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(appearance.screens?.[itemId]?.message || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
+  if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(beautyMessageText(appearance,path,itemId) || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
   return false;
 }
 function appearanceEditorKeyboard(section) { return replyKeyboard([['قالب‌های آماده', 'ویرایش آیتم‌ها'], ['چیدمان', 'روشن/خاموش'], ['بازگردانی پیش‌فرض'], ['بازگشت کنترل ربات']], true); }
@@ -1603,7 +1619,7 @@ async function handleText(id, text, meta = {}) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     if (isAdmin(id) && me.action_state?.startsWith('beauty:message:')) {
-      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const screen = next.screens?.[itemId]; if (!screen || !value) return send(id, 'پیام نمی‌تواند خالی باشد.'); screen.message = value.slice(0, 4000); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
+      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const target = beautyMessageTarget(next, path, itemId); if (!target || !value) return send(id, 'پیام پاسخ برای این دکمه پیدا نشد یا خالی است.'); target.parent[target.key] = value.slice(0, 4000); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     const publicActionId = visiblePublicAction(value, s);
     const privateActionId = visiblePrivateAction(value, s);
