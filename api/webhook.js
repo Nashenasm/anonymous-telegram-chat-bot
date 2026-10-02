@@ -1626,8 +1626,8 @@ async function handleText(id, text, meta = {}) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
-    if (isAdmin(id) && me.action_state?.startsWith('beauty:name:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. نام جدید دکمه را به‌صورت متن بفرست.');
-    if (isAdmin(id) && me.action_state?.startsWith('beauty:message:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. متن پاسخ جدید را به‌صورت متن بفرست.');
+    if (isAdmin(id) && (me.action_state?.startsWith('beauty:name:') || me.action_state?.startsWith('beauty:message:')) && isReservedEditorLabel(value, s)) { await updateAction(client, id, null); me.action_state = null; }
+
     if (isAdmin(id) && me.action_state?.startsWith('beauty:name:')) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
@@ -2129,7 +2129,8 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       released = true;
       return handleConnect(id);
     }
-    if (isAdmin(id) && me.action_state?.startsWith('rename:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. نام جدید را به‌صورت متن بفرست.');
+    if (isAdmin(id) && me.action_state?.startsWith('rename:') && isReservedEditorLabel(value, s)) { await updateAction(client, id, null); me.action_state = null; }
+
     if (isAdmin(id) && me.action_state?.startsWith('rename:')) {
       const key = me.action_state.slice('rename:'.length); const renamed = value.slice(0, 64);
       if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
