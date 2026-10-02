@@ -548,7 +548,7 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
   if (action === 'toggle') { const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
   if (action === 'enter') { const nextPath=beautyChildPath(path,itemId); if (!nextPath || nextPath === path) return editBeautyMessage(callbackQuery,id,'این دکمه صفحهٔ داخلی دیگری ندارد.',beautyKeyboard(section,appearance,path,itemId)); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
-  if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(beautyMessageText(appearance,path,itemId) || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
+  if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(beautyMessageText(appearance,path,itemId) || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nبرای ثبت، دستور مخصوص بفرست:\n${action==='name' ? '/name نام جدید' : '/message متن پاسخ'}`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
   return false;
 }
 function appearanceEditorKeyboard(section) { return replyKeyboard([['قالب‌های آماده', 'ویرایش آیتم‌ها'], ['چیدمان', 'روشن/خاموش'], ['بازگردانی پیش‌فرض'], ['بازگشت کنترل ربات']], true); }
@@ -1609,17 +1609,34 @@ function visiblePublicAction(value, s) {
   const legacy = { [s.connect_button]: 'connect', [s.cancel_button]: 'cancel', [s.disconnect_button]: 'disconnect', [s.profile_button]: 'profile', [s.increase_coins_button]: 'coins', [s.free_coins_button]: 'free_coins', [s.plus_button]: 'plus', [s.back_button]: 'back', 'اتصال به مخاطب خاص': 'contact_special' };
   return legacy[text] || null;
 }
+function botKeyboardLabels(s = {}) {
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const addAppearance = appearance => {
+    for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
+    for (const screen of Object.values(appearance?.screens || {})) for (const item of screen?.buttons || []) if (item?.label) labels.add(String(item.label).trim());
+  };
+  addAppearance(publicAppearance(s)); addAppearance(privateAppearance(s));
+  return labels;
+}
+function isReservedEditorLabel(value, s) { return botKeyboardLabels(s).has(String(value || '').trim()); }
+function beautyEditorCommand(value, kind) {
+  const text = String(value || '').trim();
+  const command = kind === 'name' ? /^\/name(?:@\w+)?\s+(.+)$/i : /^\/(?:message|msg)(?:@\w+)?\s+(.+)$/i;
+  return text.match(command)?.[1]?.trim() || null;
+}
 async function handleText(id, text, meta = {}) {
   const client = await pool.connect();
   let released = false;
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    if (isAdmin(id) && me.action_state?.startsWith('beauty:name:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. نام جدید دکمه را به‌صورت متن بفرست.');
+    if (isAdmin(id) && me.action_state?.startsWith('beauty:message:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. متن پاسخ جدید را به‌صورت متن بفرست.');
     if (isAdmin(id) && me.action_state?.startsWith('beauty:name:')) {
-      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
+      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const entered = beautyEditorCommand(value, 'name'); if (!entered) return send(id, 'برای ثبت نام، از دستور استفاده کن: /name نام جدید'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !entered) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = entered.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     if (isAdmin(id) && me.action_state?.startsWith('beauty:message:')) {
-      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const target = beautyMessageTarget(next, path, itemId); if (!target || !value) return send(id, 'پیام پاسخ برای این دکمه پیدا نشد یا خالی است.'); if (['امور [آرایش زیبایی]', 'امور آرایش زیبایی'].includes(value.trim())) return send(id, 'نام دکمهٔ مدیریت نباید به‌عنوان متن پاسخ ذخیره شود؛ متن پاسخ واقعی را بفرست.'); target.parent[target.key] = value.slice(0, 4000); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
+      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const entered = beautyEditorCommand(value, 'message'); if (!entered) return send(id, 'برای ثبت متن پاسخ، از دستور استفاده کن: /message متن پاسخ'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const target = beautyMessageTarget(next, path, itemId); if (!target || !entered) return send(id, 'پیام پاسخ برای این دکمه پیدا نشد یا خالی است.'); target.parent[target.key] = entered.slice(0, 4000); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     const publicActionId = visiblePublicAction(value, s);
     const privateActionId = visiblePrivateAction(value, s);
@@ -2116,6 +2133,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       released = true;
       return handleConnect(id);
     }
+    if (isAdmin(id) && me.action_state?.startsWith('rename:') && isReservedEditorLabel(value, s)) return send(id, 'این پیام از یک دکمهٔ ربات آمده است؛ ذخیره نشد. نام جدید را به‌صورت متن بفرست.');
     if (isAdmin(id) && me.action_state?.startsWith('rename:')) {
       const key = me.action_state.slice('rename:'.length); const renamed = value.slice(0, 64);
       if (!renamed) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
