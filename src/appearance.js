@@ -191,14 +191,14 @@ export function normalizeAppearance(section, value) {
 export function templateAppearance(templateId, section) { const template = APPEARANCE_TEMPLATES[templateId] || APPEARANCE_TEMPLATES.default; const appearance = normalizeAppearance(section, template[section]); if (templateId !== 'default') appearance.feedback = { ...appearance.feedback, ...themeFeedback(templateId, section) }; return appearance; }
 export function appearanceKeyboard(appearance) {
   const rows = Array.isArray(appearance?.buttons) ? appearance.buttons : [];
-  const labels = rows.flat().map(button => String(button.label || button.id || '').slice(0, 64)).filter(Boolean);
+  const labels = rows.flat().filter(button => button?.enabled !== false).map(button => String(button.label || button.id || '').slice(0, 64)).filter(Boolean);
   if (appearance?.layout === 'single') return labels.map(label => [label]);
   if (appearance?.layout === 'columns2') { const result = []; for (let i = 0; i < labels.length; i += 2) result.push(labels.slice(i, i + 2)); return result; }
   return rows.map(row => row.map(button => String(button.label || button.id || '').slice(0, 64)).filter(Boolean)).filter(row => row.length);
 }
 export function appearanceScreen(appearance, id) { return appearance?.screens?.[id] || {}; }
 export function screenText(appearance, id, fallback) { return String(appearanceScreen(appearance, id).message || fallback); }
-export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); return (screen.buttons?.length ? [screen.buttons.map(item => item.label || item.id)] : fallbackRows); }
+export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); return (screen.buttons?.length ? [screen.buttons.filter(item => item?.enabled !== false).map(item => item.label || item.id)] : fallbackRows); }
 export function appearanceButton(appearance, id, fallback) { for (const row of appearance?.buttons || []) for (const item of row || []) if (item.id === id) return item.label || fallback; return fallback; }
 export function appearanceFeedback(appearance, id, fallback) { return String(appearance?.feedback?.[id] || fallback); }
 export function appearanceItems(section, appearance) {
