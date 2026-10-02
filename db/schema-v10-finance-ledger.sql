@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS finance_ledger (
   delta INTEGER NOT NULL CHECK (delta <> 0),
   balance_before INTEGER NOT NULL CHECK (balance_before >= 0),
   balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
-  kind TEXT NOT NULL CHECK (kind IN ('grant','gift','daily','referral','chat_cost','purchase','admin','refund')),
+  kind TEXT NOT NULL CHECK (kind IN ('opening_balance','grant','gift','daily','referral','chat_cost','purchase','admin','refund')),
   idempotency_key TEXT NOT NULL UNIQUE,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -42,6 +42,19 @@ CREATE TABLE IF NOT EXISTS finance_review_queue (
 );
 CREATE INDEX IF NOT EXISTS finance_review_queue_status_idx ON finance_review_queue(status, created_at);
 
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='finance_ledger_kind_check') THEN
+    ALTER TABLE finance_ledger ADD CONSTRAINT finance_ledger_kind_check CHECK (kind IN ('opening_balance','grant','gift','daily','referral','chat_cost','purchase','admin','refund'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='payment_orders_status_check') THEN
+    ALTER TABLE payment_orders ADD CONSTRAINT payment_orders_status_check CHECK (status IN ('pending','paid','failed','cancelled','review'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='finance_review_queue_status_check') THEN
+    ALTER TABLE finance_review_queue ADD CONSTRAINT finance_review_queue_status_check CHECK (status IN ('open','approved','rejected'));
+  END IF;
+END $$;
+
 INSERT INTO bot_settings(key,value) VALUES
   ('finance_enabled','false'),
   ('finance_coin_price',''),
@@ -49,5 +62,12 @@ INSERT INTO bot_settings(key,value) VALUES
   ('finance_wallets',''),
   ('finance_cards','')
 ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO finance_ledger(user_id, delta, balance_before, balance_after, kind, idempotency_key, metadata)
+SELECT u.telegram_id, u.coins, 0, u.coins, 'opening_balance', 'opening-balance:' || u.telegram_id,
+       jsonb_build_object('source','pre_ledger_users_coins','migrated_at',NOW())
+FROM users u
+WHERE u.coins > 0
+  AND NOT EXISTS (SELECT 1 FROM finance_ledger l WHERE l.idempotency_key='opening-balance:' || u.telegram_id);
 
 COMMIT;
