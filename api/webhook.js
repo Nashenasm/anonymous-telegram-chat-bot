@@ -445,6 +445,12 @@ const BEAUTY_FLOW_NEXT = {
   coins: { free_coins: 'root', back: 'root' },
   plus: { back: 'root' },
   anonymous_link: { back: 'root' },
+  control: { public_appearance: 'appearance', private_appearance: 'appearance', templates: 'appearance', toggle: 'root', back: 'root' },
+  appearance: { templates: 'appearance', edit: 'appearance', layout: 'appearance', reset: 'root', back: 'control' },
+  reports: { technical: 'technical', user_reports: 'user_search', report_channels: 'root', back: 'root' },
+  technical: { source: 'technical', database: 'technical', server: 'technical', back: 'reports' },
+  ads: { join: 'root', broadcast: 'root', welcome: 'root', connection_ad: 'root', mid_ad: 'root', back: 'root' },
+  user_search: { back: 'root' },
 };
 function beautyChildPath(path, itemId) { return BEAUTY_FLOW_NEXT[path]?.[itemId] || (path === 'root' && itemId) || null; }
 function beautyParentPath(path) {
