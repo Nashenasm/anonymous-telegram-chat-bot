@@ -11,6 +11,7 @@ import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.
 import { APPEARANCE_SECTIONS, appearanceButton, appearanceFeedback, appearanceItems, appearanceKeyboard, normalizeAppearance, screenKeyboard, screenText, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
+import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -26,6 +27,10 @@ async function ensureRuntimeSchema() {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        await client.query(`CREATE TABLE IF NOT EXISTS finance_ledger (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, delta INTEGER NOT NULL CHECK (delta <> 0), balance_before INTEGER NOT NULL CHECK (balance_before >= 0), balance_after INTEGER NOT NULL CHECK (balance_after >= 0), kind TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await client.query('CREATE INDEX IF NOT EXISTS finance_ledger_user_time_idx ON finance_ledger(user_id, created_at DESC)');
+        await client.query(`CREATE TABLE IF NOT EXISTS payment_orders (order_id TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, product TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), currency TEXT NOT NULL DEFAULT 'coin', provider TEXT NOT NULL DEFAULT 'disabled', provider_reference TEXT UNIQUE, status TEXT NOT NULL DEFAULT 'pending', metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ)`);
+        await client.query(`CREATE TABLE IF NOT EXISTS finance_review_queue (id BIGSERIAL PRIMARY KEY, order_id TEXT NOT NULL REFERENCES payment_orders(order_id) ON DELETE CASCADE, reason TEXT NOT NULL, jev_result JSONB, status TEXT NOT NULL DEFAULT 'open', reviewed_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL, reviewed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 20');
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_expires_at TIMESTAMPTZ");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji TEXT NOT NULL DEFAULT '✨'");
@@ -229,7 +234,7 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
     const coinCost = type === 'coins' ? amount : 0;
     if (!recipient) { await client.query('ROLLBACK'); throw new Error('recipient_missing'); }
     if (type === 'coins' && (!sender || Number(sender.coins) < amount)) { await client.query('ROLLBACK'); throw new Error('insufficient_coins'); }
-    if (type === 'coins') await client.query('UPDATE users SET coins=coins-$2,updated_at=NOW() WHERE telegram_id=$1', [senderId, amount]);
+    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}`), metadata: { recipientId, amount } });
     else await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' months')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1", [recipientId, amount]);
     await client.query('INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4)', [senderId, recipientId, type, amount]); await client.query('COMMIT');
     const label = type === 'coins' ? `${amount} مانو کوین🐝` : `${amount === 12 ? '۱ سال' : `${amount} ماه`} مانو پلاس`;
@@ -435,7 +440,7 @@ const BEAUTY_FLOW_NEXT = {
   root: { connect: 'preference', profile: 'profile', anonymous_link: 'anonymous_link', coins: 'coins', plus: 'plus', ads: 'ads', control: 'control', users: 'user_search', status: 'status', reports: 'reports', admins: 'admins', exit: 'root' },
   preference: { male: 'gender', female: 'gender', any: 'gender' },
   gender: { male: 'waiting', female: 'waiting' },
-  waiting: { cancel: 'root' },
+  waiting: { cancel: 'root', __connected: 'chat' },
   chat: { disconnect: 'confirm_stop' },
   confirm_stop: { confirm: 'after_stop', continue: 'chat' },
   after_stop: { block: 'block_reason', later: 'root' },
@@ -476,7 +481,9 @@ function beautyMessageText(appearance, path, itemId) {
 function beautyPathRows(appearance, path = 'root') {
   if (path === 'root') return Array.isArray(appearance.buttons) ? appearance.buttons : [];
   const buttons = appearance.screens?.[path]?.buttons || [];
-  return Array.isArray(buttons) && buttons.some(row => Array.isArray(row)) ? buttons : [buttons];
+  const rows = Array.isArray(buttons) && buttons.some(row => Array.isArray(row)) ? buttons : [buttons];
+  if (path === 'waiting') return [...rows, [{ id: '__connected', label: 'اتصال برقرار شد ← ورود به مکالمه', virtual: true }]];
+  return rows;
 }
 function beautyPathItems(appearance, path = 'root') {
   return beautyPathRows(appearance, path).flatMap((row, rowIndex) => (row || []).map((item, colIndex) => ({ ...item, rowIndex, colIndex })));
@@ -545,10 +552,10 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   if (action === 'noop') return false;
   if (action === 'pick') { const item=beautySelected(appearance,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path,itemId),beautyKeyboard(section,appearance,path,itemId)); }
   if (action === 'open') return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path),beautyKeyboard(section,appearance,path));
-  if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
-  if (action === 'toggle') { const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
+  if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; if (moveId === '__connected') return editBeautyMessage(callbackQuery,id,'این ورودی مرحله‌ای فقط برای ورود به لایهٔ مکالمه است و قابل جابه‌جایی نیست.',beautyKeyboard(section,appearance,movePath,moveId)); const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
+  if (action === 'toggle') { if (itemId === '__connected') return editBeautyMessage(callbackQuery,id,'این ورودی مرحله‌ای قابل خاموش/روشن‌کردن نیست.',beautyKeyboard(section,appearance,path,itemId)); const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
   if (action === 'enter') { const nextPath=beautyChildPath(path,itemId); if (!nextPath || nextPath === path) return editBeautyMessage(callbackQuery,id,'این دکمه صفحهٔ داخلی دیگری ندارد.',beautyKeyboard(section,appearance,path,itemId)); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
-  if (action === 'name' || action === 'message') { const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(beautyMessageText(appearance,path,itemId) || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را به‌صورت متن بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
+  if (action === 'name' || action === 'message') { if (action === 'name' && itemId === '__connected') return editBeautyMessage(callbackQuery,id,'این ورودی مرحله‌ای نام قابل تغییر ندارد؛ متن مرحلهٔ مکالمه را با Message❔ تغییر بده.',beautyKeyboard(section,appearance,path,itemId)); const msgId=callbackQuery?.message?.message_id || ''; await updateAction(client,id,`beauty:${action}:${section}:${path}:${itemId}:${msgId}`); const item=beautySelected(appearance,path,itemId); const current=action==='name'?item?.label:(beautyMessageText(appearance,path,itemId) || item?.label || ''); return editBeautyMessage(callbackQuery,id,`مقدار فعلی:\n${current}\n\nمقدار جدید را به‌صورت متن بفرست.`,{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:`beauty:${section}:pick:${path}:${itemId}`}]]}}); }
   return false;
 }
 function appearanceEditorKeyboard(section) { return replyKeyboard([['قالب‌های آماده', 'ویرایش آیتم‌ها'], ['چیدمان', 'روشن/خاموش'], ['بازگردانی پیش‌فرض'], ['بازگشت کنترل ربات']], true); }
@@ -743,17 +750,22 @@ async function redeemGift(client, id, code) {
     if (!row || (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) || (row.max_uses !== null && Number(row.uses) >= Number(row.max_uses))) { await client.query('ROLLBACK'); return send(id, 'این کد هدیه منقضی شده، ظرفیتش تکمیل شده یا وجود ندارد.'); }
     const already = await client.query('SELECT 1 FROM gift_code_redemptions WHERE code=$1 AND user_id=$2', [row.code, id]); if (already.rowCount) { await client.query('ROLLBACK'); return send(id, 'این کد هدیه را قبلاً استفاده کرده‌ای.'); }
     await client.query('INSERT INTO gift_code_redemptions(code,user_id) VALUES ($1,$2)', [row.code, id]); await client.query('UPDATE gift_codes SET uses=uses+1 WHERE code=$1', [row.code]);
-    await client.query('UPDATE users SET coins=coins+$2, plus_expires_at=CASE WHEN $3::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($3 || \' days\')::interval ELSE plus_expires_at END, discount_percent=CASE WHEN $4::int > 0 THEN $4 ELSE discount_percent END, discount_code=CASE WHEN $4::int > 0 THEN $5 ELSE discount_code END,updated_at=NOW() WHERE telegram_id=$1', [id, row.coins, row.plus_days, row.discount_percent || 0, row.command_name || row.code]); await client.query('COMMIT');
+    if (Number(row.coins || 0) > 0) await applyCoinDelta(client, { userId: id, delta: Number(row.coins), kind: 'grant', idempotencyKey: `gift:${row.code}:${id}`, metadata: { code: row.code } });
+    await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' days')::interval ELSE plus_expires_at END, discount_percent=CASE WHEN $3::int > 0 THEN $3 ELSE discount_percent END, discount_code=CASE WHEN $3::int > 0 THEN $4 ELSE discount_code END,updated_at=NOW() WHERE telegram_id=$1", [id, row.plus_days, row.discount_percent || 0, row.command_name || row.code]); await client.query('COMMIT');
     return send(id, row.gift_type === 'discount' ? `کد تخفیف فعال شد: ${row.discount_percent}% برای خریدهای بعدی.` : `کد هدیه با موفقیت استفاده شد.\nمانو کوین: +${row.coins}\nمانو پلاس: +${row.plus_days} روز`);
   } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
 async function claimDailyCoins(client, id, callbackQuery = null) {
   const amount = Number(await botSettingValue(client, 'daily_coin_amount', '20')); const reset = parseDuration(await botSettingValue(client, 'daily_coin_reset', '24H')) || 86400;
-  const result = await client.query(`INSERT INTO daily_coin_claims(user_id,claimed_at) VALUES ($1,NOW()) ON CONFLICT (user_id) DO UPDATE SET claimed_at=NOW() WHERE daily_coin_claims.claimed_at <= NOW() - ($2 || ' seconds')::interval RETURNING user_id`, [id, String(reset)]);
-  let text = 'دیلی کوین امروز را قبلاً گرفته‌ای.';
-  if (result.rowCount) { await client.query('UPDATE users SET coins=coins+$2,updated_at=NOW() WHERE telegram_id=$1', [id, amount]); text = `دیلی کوین دریافت شد: +${amount} مانو کوین`; }
-  if (callbackQuery) return editAudienceCallback(callbackQuery, id, text, { reply_markup: { inline_keyboard: [] } });
-  return send(id, text);
+  await client.query('BEGIN');
+  try {
+    const result = await client.query(`INSERT INTO daily_coin_claims(user_id,claimed_at) VALUES ($1,NOW()) ON CONFLICT (user_id) DO UPDATE SET claimed_at=NOW() WHERE daily_coin_claims.claimed_at <= NOW() - ($2 || ' seconds')::interval RETURNING user_id`, [id, String(reset)]);
+    let text = 'دیلی کوین امروز را قبلاً گرفته‌ای.';
+    if (result.rowCount) { await applyCoinDelta(client, { userId: id, delta: amount, kind: 'daily', idempotencyKey: `daily:${id}:${new Date().toISOString().slice(0,10)}`, metadata: { amount } }); text = `دیلی کوین دریافت شد: +${amount} مانو کوین`; }
+    await client.query('COMMIT');
+    if (callbackQuery) return editAudienceCallback(callbackQuery, id, text, { reply_markup: { inline_keyboard: [] } });
+    return send(id, text);
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
 
 async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
@@ -823,7 +835,7 @@ async function chargeSuccessfulConnection(userIds) {
     for (const userId of userIds.filter(Boolean)) {
       if (isAdmin(userId)) continue;
       const row = (await client.query('SELECT match_preference FROM users WHERE telegram_id=$1 FOR UPDATE', [userId])).rows[0]; const cost = costs[`chat_cost_${row?.match_preference || 'any'}`] || 0;
-      if (cost > 0) await client.query('UPDATE users SET coins=GREATEST(0,coins-$2),updated_at=NOW() WHERE telegram_id=$1', [userId, cost]);
+      if (cost > 0) await applyCoinDelta(client, { userId, delta: -cost, kind: 'chat_cost', idempotencyKey: newFinanceIdempotencyKey(`chat-cost:${userId}`), metadata: { cost } });
     }
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -909,9 +921,10 @@ async function rewardFirstEntry(id, ownerId, reward, s) {
     await client.query('BEGIN');
     const first = await client.query('UPDATE users SET start_completed=TRUE WHERE telegram_id=$1 AND start_completed=FALSE RETURNING telegram_id', [id]);
     if (!first.rowCount) { await client.query('COMMIT'); return false; }
-    await client.query('UPDATE users SET coins=coins+20 WHERE telegram_id=$1', [id]);
+    await applyCoinDelta(client, { userId: id, delta: 20, kind: 'grant', idempotencyKey: `referral-entry:${id}`, metadata: { source: 'referral' } });
     if (ownerId && Number(ownerId) !== Number(id)) {
-      const owner = await client.query('UPDATE users SET coins=coins+$2 WHERE telegram_id=$1 RETURNING telegram_id', [ownerId, reward]);
+      const owner = await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [ownerId]);
+      if (owner.rowCount) await applyCoinDelta(client, { userId: ownerId, delta: Number(reward), kind: 'referral', idempotencyKey: `referral-owner:${id}:${ownerId}`, metadata: { newcomerId: id } });
       await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [id, ownerId]);
       await client.query('COMMIT');
       if (owner.rowCount) await send(Number(ownerId), `🎁 یک عضو جدید با لینک شما وارد شد و ${reward} مانو کوین هدیه گرفتی.`, mainKeyboard(s));
@@ -958,7 +971,8 @@ async function handlePlusCallback(id, data, client, s) {
       if (!row || Number(row.coins) < finalPrice) { await tx.query('ROLLBACK'); await updateAction(client, id, null); return send(id, `موجودی مانو کوین شما برای این خرید کافی نیست. مبلغ لازم: ${finalPrice}`, plusPurchaseKeyboard()); }
       const base = row.plus_expires_at && new Date(row.plus_expires_at).getTime() > Date.now() ? new Date(row.plus_expires_at) : new Date();
       base.setUTCMonth(base.getUTCMonth() + months);
-      await tx.query('UPDATE users SET coins=coins-$2, plus_expires_at=$3, discount_percent=0, discount_code=NULL, plus_emoji=COALESCE(NULLIF(plus_emoji, \'\'), \'✨\'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1', [id, finalPrice, base]);
+      await applyCoinDelta(tx, { userId: id, delta: -finalPrice, kind: 'purchase', idempotencyKey: `plus-purchase:${id}:${months}:${base.toISOString()}`, metadata: { product: 'plus', months, finalPrice } });
+      await tx.query("UPDATE users SET plus_expires_at=$2, discount_percent=0, discount_code=NULL, plus_emoji=COALESCE(NULLIF(plus_emoji, ''), '✨'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, base]);
       await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, finalPrice]);
       await tx.query('COMMIT');
       return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
@@ -1820,7 +1834,9 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:coin:')) {
       const stateParts = me.action_state.split(':'); const targetId = stateParts[2]; const messageId = stateParts[3]; const amount = Number(value); if (!Number.isInteger(amount) || amount === 0) return send(id, 'مقدار صحیح مثل +100 یا -50 بفرست.');
-      const changed = await client.query('UPDATE users SET coins=GREATEST(0,coins+$2),updated_at=NOW() WHERE telegram_id=$1 RETURNING coins', [targetId, amount]); await audit(client, id, targetId, 'coin_adjustment', { amount, balance: changed.rows[0]?.coins }); await send(targetId, `حساب مانو کوین شما توسط مدیریت تغییر کرد.\nتغییر: ${amount > 0 ? '+' : ''}${amount}\nموجودی جدید: ${changed.rows[0]?.coins || 0}`); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return editAdminPanelMessage(id, messageId, panel);
+      await client.query('BEGIN');
+      let changed;
+      try { const entry = await applyCoinDelta(client, { userId: targetId, delta: amount, kind: 'admin', idempotencyKey: newFinanceIdempotencyKey(`admin:${id}:${targetId}`), metadata: { adminId: id } }); changed = { rows: [{ coins: entry.balance_after }] }; await audit(client, id, targetId, 'coin_adjustment', { amount, balance: entry.balance_after }); await client.query('COMMIT'); } catch (error) { await client.query('ROLLBACK'); throw error; } await send(targetId, `حساب مانو کوین شما توسط مدیریت تغییر کرد.\nتغییر: ${amount > 0 ? '+' : ''}${amount}\nموجودی جدید: ${changed.rows[0]?.coins || 0}`); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return editAdminPanelMessage(id, messageId, panel);
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:ban_timer:')) {
       const parts = me.action_state.split(':'); const targetId = Number(parts[2]); const messageId = parts[3]; const seconds = parseDuration(value);

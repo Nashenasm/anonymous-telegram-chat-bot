@@ -1,6 +1,7 @@
 import http from 'node:http';
 import webhook from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
+import cryptoJobs from './api/crypto-jobs.js';
 import mandatoryTrack from './api/mandatory-track.js';
 
 const port = Number(process.env.PORT || 3000);
@@ -19,6 +20,16 @@ const server = http.createServer(async (req, res) => {
     };
     try { await mandatoryJobs({ method: req.method, headers: req.headers }, response); }
     catch (error) { console.error('mandatory_jobs_server_error', error?.message || error); if (!res.writableEnded) { res.writeHead(500); res.end(JSON.stringify({ ok: false })); } }
+    return;
+  }
+  if (req.url === '/api/crypto-jobs') {
+    const response = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      json(payload) { res.writeHead(this.statusCode, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); },
+    };
+    try { await cryptoJobs({ method: req.method, headers: req.headers }, response); }
+    catch (error) { console.error('crypto_jobs_server_error', error?.message || error); if (!res.writableEnded) { res.writeHead(500); res.end(JSON.stringify({ ok: false })); } }
     return;
   }
   const requestUrl = new URL(req.url, 'http://localhost');

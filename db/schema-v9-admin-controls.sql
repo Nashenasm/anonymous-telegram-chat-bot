@@ -83,3 +83,96 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS discount_code TEXT;
+
+-- Additive finance tables for wallet, price-source, card, gateway, order, and deposit management.
+CREATE TABLE IF NOT EXISTS crypto_wallets (
+  id BIGSERIAL PRIMARY KEY,
+  asset TEXT NOT NULL CHECK (asset IN ('TRX','USDT_TRC20')),
+  name TEXT NOT NULL,
+  address TEXT NOT NULL,
+  network TEXT NOT NULL DEFAULT 'TRON',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  monitor_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS crypto_price_sources (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  provider_type TEXT NOT NULL DEFAULT 'coingecko',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  priority INTEGER NOT NULL DEFAULT 100,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS fiat_price_sources (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  provider_type TEXT NOT NULL DEFAULT 'custom',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  priority INTEGER NOT NULL DEFAULT 100,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS payment_cards (
+  id BIGSERIAL PRIMARY KEY,
+  card_number TEXT NOT NULL,
+  title TEXT,
+  admin_id BIGINT,
+  admin_label TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS payment_gateways (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS coin_orders (
+  id BIGSERIAL PRIMARY KEY,
+  telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  coins INTEGER NOT NULL CHECK (coins > 0),
+  amount_toman BIGINT NOT NULL CHECK (amount_toman > 0),
+  method TEXT NOT NULL CHECK (method IN ('gateway','card','crypto')),
+  provider TEXT,
+  asset TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed','cancelled')),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  paid_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS crypto_deposits (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT REFERENCES coin_orders(id) ON DELETE SET NULL,
+  telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  wallet_id BIGINT REFERENCES crypto_wallets(id) ON DELETE SET NULL,
+  asset TEXT NOT NULL CHECK (asset IN ('TRX','USDT_TRC20')),
+  txid TEXT NOT NULL UNIQUE,
+  from_address TEXT,
+  to_address TEXT NOT NULL,
+  amount NUMERIC(30,12) NOT NULL CHECK (amount > 0),
+  confirmations INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'detected' CHECK (status IN ('detected','confirmed','credited','rejected')),
+  raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  credited_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS crypto_wallets_asset_enabled_idx ON crypto_wallets(asset, enabled, monitor_enabled);
+CREATE INDEX IF NOT EXISTS crypto_deposits_status_idx ON crypto_deposits(status, detected_at DESC);
+INSERT INTO crypto_price_sources(name,base_url,provider_type,priority)
+VALUES ('CoinGecko','https://api.coingecko.com/api/v3','coingecko',10)
+ON CONFLICT DO NOTHING;
+INSERT INTO bot_settings(key,value) VALUES
+ ('finance_enabled','false'), ('finance_coin_price','1000'), ('finance_card_enabled','false'),
+ ('finance_card_button_name','کارت به کارت'), ('finance_card_admin_name','ارتباط با ادمین'),
+ ('finance_fx_source','https://api.exchangerate.host/latest?base=USD&symbols=IRR')
+ON CONFLICT (key) DO NOTHING;

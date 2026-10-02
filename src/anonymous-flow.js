@@ -7,6 +7,7 @@ import {
   decideAnonymousMessage,
   createAnonymousBlock,
 } from './anonymous-link-service.js';
+import { applyCoinDelta } from './finance-ledger.js';
 
 const CANCEL_WORDS = ['انصراف', 'بازگشت'];
 const MAX_LEN = 4096;
@@ -62,8 +63,9 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       await client.query('BEGIN');
       const first = await client.query('UPDATE users SET start_completed=TRUE WHERE telegram_id=$1 AND start_completed=FALSE RETURNING telegram_id', [uid(newcomerId)]);
       if (!first.rowCount) { await client.query('COMMIT'); return false; }
-      await client.query('UPDATE users SET coins=coins+20 WHERE telegram_id=$1', [uid(newcomerId)]);
-      const owner = await client.query('UPDATE users SET coins=coins+3 WHERE telegram_id=$1 RETURNING telegram_id', [uid(ownerId)]);
+      await applyCoinDelta(client, { userId: uid(newcomerId), delta: 20, kind: 'grant', idempotencyKey: `anonymous-entry:${uid(newcomerId)}`, metadata: { source: 'anonymous_link' } });
+      const owner = await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [uid(ownerId)]);
+      if (owner.rowCount) await applyCoinDelta(client, { userId: uid(ownerId), delta: 3, kind: 'referral', idempotencyKey: `anonymous-referral:${uid(newcomerId)}:${uid(ownerId)}`, metadata: { newcomerId: uid(newcomerId) } });
       await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
       await client.query('COMMIT');
       if (owner.rowCount) await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
