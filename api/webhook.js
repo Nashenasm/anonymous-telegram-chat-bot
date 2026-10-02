@@ -1780,7 +1780,22 @@ async function handleText(id, text, meta = {}) {
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', financeAppearanceKeyboard());
     }
     if (isAdmin(id) && /^admin:finance:(price|gateways|wallets|cards)$/.test(me.action_state || '')) {
-      if (value === 'بازگشت کنترل ربات' || value === 'بازگشت امور مالی' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+      const financeNav = new Set(['وضعیت', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت کنترل ربات', 'بازگشت امور مالی', 'بازگشت']);
+      if (financeNav.has(value)) {
+        await updateAction(client, id, 'admin:finance_panel');
+        if (value === 'وضعیت') return send(id, await financeStatusText(client), botFinanceKeyboard());
+        if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}
+قیمت جدید را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}
+فهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}
+فهرست یا توضیح ولت‌ها را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}
+شماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'کنترل ظاهری') { await updateAction(client, id, 'admin:finance:appearance'); return send(id, `وضعیت پرداختی‌ها: ${await botSettingValue(client, 'finance_enabled', 'false') === 'true' ? 'فعال' : 'غیرفعال'}
+از گزینه زیر برای تغییر وضعیت استفاده کن.`, financeAppearanceKeyboard()); }
+        return send(id, 'امور مالی', botFinanceKeyboard());
+      }
       const key = me.action_state.split(':')[2]; if (!value) return send(id, 'مقدار نمی‌تواند خالی باشد.', botFinanceKeyboard());
       await saveBotSetting(client, `finance_${key === 'price' ? 'coin_price' : key}`, value.slice(0, 1000)); await updateAction(client, id, 'admin:finance_panel'); return send(id, 'تنظیم امور مالی ذخیره شد.', botFinanceKeyboard());
     }
