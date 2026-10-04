@@ -13,6 +13,8 @@ import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeT
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
 import { BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
+import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
+import { ensureCryptoWalletSchema } from '../src/crypto-wallet-service.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2505,7 +2507,17 @@ export default async function handler(req, res) {
   }
 }
 
-export async function runCryptoDepositScan() { return { scanned: 0, processed: 0, note: 'no crypto scan configured' }; }
+export async function runCryptoDepositScan() {
+  await ensureRuntimeSchema();
+  const client = await pool.connect();
+  try {
+    await ensureCryptoWalletSchema(client);
+    return await scanTronUsdtDeposits({
+      pool,
+      getSetting: (key, fallback) => botSettingValue(client, key, fallback),
+    });
+  } finally { client.release(); }
+}
 export async function runMandatoryLifecycle() {
   await ensureRuntimeSchema();
   const client = await pool.connect();
