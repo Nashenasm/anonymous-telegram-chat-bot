@@ -220,12 +220,13 @@ function cardAdminKeyboard(rows=[]) { return { reply_markup: { inline_keyboard: 
 function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }
 function cardAdminPanelKeyboard(card) { return { reply_markup: { inline_keyboard: [[{text:'حذف ادمین',callback_data:`financecard:delete:${card.id}`}],[{text:'تغییر ادمین',callback_data:`financecard:change:${card.id}`}],[{text:`${card.enabled ? '🟢 فعال' : '🔴 غیرفعال'}`,callback_data:`financecard:toggle:${card.id}`}],[{text:`دکمه کارت به کارت ${card.button_enabled ? '🟢' : '🔴'}`,callback_data:`financecard:button:${card.id}`}],[{text:'بازگشت',callback_data:'financecard:list'}]] } }; }
 async function cardPaymentForUser(client,id) { const cards=(await client.query("SELECT * FROM payment_cards WHERE enabled=TRUE AND button_enabled=TRUE ORDER BY id")).rows; if(!cards.length) return send(id,'پرداخت کارت به کارت فعلاً فعال نیست.',{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:'coins:back'}]]}}); const text=await botSettingValue(client,'finance_card_text','متن واریز کارت به کارت تنظیم نشده است.'); const rows=cards.map(c=>[{text:c.admin_label,url:c.admin_username?`https://t.me/${String(c.admin_username).replace(/^@/,'')}`:`tg://user?id=${c.admin_id}`}]); rows.push([{text:'بازگشت',callback_data:'coins:back'}]); return send(id,text,{reply_markup:{inline_keyboard:rows}}); }
+function paymentMethodKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'کارت به کارت', callback_data: 'coins:method:card' }], [{ text: 'بازگشت', callback_data: 'coins:back' }]] } }; }
 function referralAdminKeyboard() { return replyKeyboard([['کوین پله ای'], ['کوین زیرمجموعه'], ['شرایط زیرمجموعه'], ['بازگشت مانوکوین']], true); }
 function referralConditionsKeyboard(c={}) { const labels=[['join','جویین اجباری'],['connect','وصل شدن'],['time','زمان'],['purchase','خرید مانوکوین'],['plus','مانوپلاس'],['referral','زیرمجموعه']]; return {reply_markup:{inline_keyboard:[...labels.map(([k,l])=>[{text:`${c[k]?'🟢':'🔴'} ${l}`,callback_data:`referral:condition:${k}`}]),[{text:'بازگشت',callback_data:'referral:back'}]]}}; }
 async function cardAdmins(client) { return (await client.query('SELECT * FROM payment_cards ORDER BY id')).rows; }
 async function sendCardAdminPanel(client,id) {
   const cards=await cardAdmins(client);
-  const rows=cards.map(c=>[{text:`${c.enabled?'🟢':'🔴'} ${c.admin_label}`,callback_data:`financecard:view:${c.id}`}]);
+  const rows=cards.map(c=>[{text:c.admin_label,callback_data:`financecard:view:${c.id}`}]);
   await send(id, `امور کارت\n\n${cards.length?'ادمین‌های ثبت‌شده را از دکمه‌های شیشه‌ای انتخاب کن.':'هنوز ادمینی ثبت نشده است.'}`, cardAdminKeyboard(rows));
   return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());
 }
@@ -1149,7 +1150,8 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'coins:daily') return claimDailyCoins(sClient, id, callbackQuery);
     if (data === 'coins:free') return sendFreeCoins(id, s);
     if (data === 'coins:gift') { await updateAction(sClient, id, 'coins:gift'); return editAudienceCallback(callbackQuery, id, 'کد هدیه را با یا بدون /gift بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:back' }]] } }); }
-    if (data === 'coins:buy') return cardPaymentForUser(sClient, id);
+    if (data === 'coins:buy') return send(id, 'نحوه واریز مانوکوین را انتخاب کن:', paymentMethodKeyboard());
+    if (data === 'coins:method:card') return cardPaymentForUser(sClient, id);
     if (data === 'coins:back') { await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, publicAppearance(s).message, { reply_markup: { inline_keyboard: [] } }); }
     if (data.startsWith('contact:view:')) return contactPanelFor(sClient, id, Number(data.split(':')[2]), callbackQuery);
     if (data.startsWith('contact:reply:')) { const messageId = Number(data.split(':')[2]); const row = (await sClient.query('SELECT recipient_id FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!row) return send(id, 'این پیام دیگر در دسترس نیست.'); await updateAction(sClient, id, `contact:reply:${messageId}`); return editAudienceCallback(callbackQuery, id, 'پاسخت را بنویس؛ پس از ارسال پیام جدید، اعلان بعدی با دکمه‌های پاسخ و بلاک نمایش داده می‌شود.', { reply_markup: { inline_keyboard: [] } }); }

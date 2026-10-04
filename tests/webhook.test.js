@@ -141,8 +141,13 @@ describe('anonymous chat public contract', () => {
   });
   it('keeps card operations on the bot keyboard and glass buttons display only the admin label', () => {
     expect(source).toContain("function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("text:`${c.enabled?'🟢':'🔴'} ${c.admin_label}`");
+    expect(source).toContain("text:c.admin_label");
     expect(source).toContain("return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());");
+  });
+  it('offers card-to-card as a payment method before showing payment contacts', () => {
+    expect(source).toContain("function paymentMethodKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'کارت به کارت', callback_data: 'coins:method:card' }");
+    expect(source).toContain("if (data === 'coins:buy') return send(id, 'نحوه واریز مانوکوین را انتخاب کن:', paymentMethodKeyboard());");
+    expect(source).toContain("if (data === 'coins:method:card') return cardPaymentForUser(sClient, id);");
   });
 
   it('enforces the 15-second minimum conversation duration', () => {
