@@ -206,10 +206,11 @@ function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboar
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
 function adminKeyboard(enabled) { return adminMainKeyboard(); }
-function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['دریافت وضعیت کاربران'], ['کد هدیه'], ['بازگشت پنل']], true); }
+function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['دریافت وضعیت کاربران'], ['بازگشت پنل']], true); }
 function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['تنظیم دیلی کوین'], ['بازگشت کنترل کاربران']], true); }
 function financeKeyboard() { return userFinanceKeyboard(); }
-function botFinanceKeyboard() { return replyKeyboard([['وضعیت', 'قیمت مانوکوین'], ['درگاه ها', 'ولت ها'], ['شماره کارت ها'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
+function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'ولت ها'], ['شماره کارت ها'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
+function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه'], ['بازگشت امور مالی']], true); }
 function financeAppearanceKeyboard() { return replyKeyboard([['فعال/غیرفعال کردن پرداخت'], ['بازگشت امور مالی']], true); }
 function conversationControlKeyboard() { return replyKeyboard([['مجوز های چت'], ['سرگرمی میان چت'], ['هزینه هر چت'], ['حداقل تایم چت'], ['تایم بلاکی'], ['پیام اسپم'], ['بازگشت کنترل کاربران']], true); }
 function chatCostInlineKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `مهم نیست: ${settings.chat_cost_any || 0}`, callback_data: 'conversation:cost:any' }], [{ text: `پسر: ${settings.chat_cost_male || 0}`, callback_data: 'conversation:cost:male' }], [{ text: `دختر: ${settings.chat_cost_female || 0}`, callback_data: 'conversation:cost:female' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
@@ -245,7 +246,7 @@ function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { retu
 function entertainmentAdminKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `${settings.mid_chat_games_enabled !== 'false' ? '✅' : '❌'} بازی`, callback_data: 'conversation:entertainment:games' }, { text: `${settings.mid_chat_ideas_enabled !== 'false' ? '✅' : '❌'} ایده صحبت`, callback_data: 'conversation:entertainment:ideas' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
 function spamAdminKeyboard() { return replyKeyboard([['تعداد پیام متوالی'], ['تاخیر بین پیام‌ها'], ['بازگشت کنترل مکالمات']], true); }
 function spamInlineKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `تعداد متوالی: ${settings.spam_consecutive_limit || 3}`, callback_data: 'conversation:spam:limit' }, { text: `تاخیر: ${settings.spam_delay || '2S'}`, callback_data: 'conversation:spam:delay' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
-function giftManagementKeyboard() { return replyKeyboard([['ایجاد'], ['دیلی کوین'], ['برگشت']], true); }
+function giftManagementKeyboard() { return replyKeyboard([['ایجاد'], ['دیلی کوین'], ['بازگشت مانوکوین']], true); }
 function giftTypeKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'مانو کوین', callback_data: 'gift:type:coins' }, { text: 'مانو پلاس', callback_data: 'gift:type:plus' }], [{ text: 'تخفیف خرید (%)', callback_data: 'gift:type:discount' }]] } }; }
 function giftPlanKeyboard() { return { reply_markup: { inline_keyboard: [[1, 3, 6, 12].map(months => ({ text: `پلاس ${months} ماهه`, callback_data: `gift:plan:${months}` }))] } }; }
 function giftCodeKeyboard(code) { return { reply_markup: { inline_keyboard: [[{ text: 'افزایش مقدار', callback_data: `gift:increase:${code}` }, { text: 'لغو کد', callback_data: `gift:cancel:${code}` }], [{ text: 'بازگشت به فهرست', callback_data: 'gift:list' }]] } }; }
@@ -1624,7 +1625,7 @@ function visiblePublicAction(value, s) {
   return legacy[text] || null;
 }
 function botKeyboardLabels(s = {}) {
-  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) for (const item of screen?.buttons || []) if (item?.label) labels.add(String(item.label).trim());
@@ -1754,7 +1755,6 @@ async function handleText(id, text, meta = {}) {
       if (value === 'لیست بن شده ها') { await updateAction(client, id, 'admin:banned_list'); return send(id, await bannedListText(client), bannedListKeyboard()); }
       if (value === 'لیست بلاکی ها') { await updateAction(client, id, 'admin:blocked_list'); return sendBlockedList(client, id); }
       if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
-      if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }
       if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
       return send(id, 'یکی از گزینه‌های کنترل کاربران را انتخاب کن.', userControlKeyboard());
     }
@@ -1766,6 +1766,7 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state === 'admin:finance_panel') {
       if (value === 'وضعیت') return send(id, await financeStatusText(client), botFinanceKeyboard());
+      if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }
       if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, botFinanceKeyboard()); }
       if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}\nفهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
       if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}\nفهرست ولت‌ها را بفرست.`, botFinanceKeyboard()); }
@@ -1774,16 +1775,23 @@ async function handleText(id, text, meta = {}) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, 'admin:control'); return send(id, 'کنترل ربات', controlKeyboard()); }
       return send(id, 'یکی از گزینه‌های امور مالی را انتخاب کن.', botFinanceKeyboard());
     }
+    if (isAdmin(id) && me.action_state === 'admin:manocoin') {
+      if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }
+      if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, manoCoinKeyboard()); }
+      if (value === 'بازگشت امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+      return send(id, 'یکی از گزینه‌های مانوکوین را انتخاب کن.', manoCoinKeyboard());
+    }
     if (isAdmin(id) && me.action_state === 'admin:finance:appearance') {
       if (value === 'فعال/غیرفعال کردن پرداخت') { const next = (await botSettingValue(client, 'finance_enabled', 'false')) !== 'true'; await saveBotSetting(client, 'finance_enabled', String(next)); return send(id, `پرداخت‌ها ${next ? 'فعال' : 'غیرفعال'} شد.`, financeAppearanceKeyboard()); }
       if (value === 'بازگشت امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', financeAppearanceKeyboard());
     }
     if (isAdmin(id) && /^admin:finance:(price|gateways|wallets|cards)$/.test(me.action_state || '')) {
-      const financeNav = new Set(['وضعیت', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت کنترل ربات', 'بازگشت امور مالی', 'بازگشت']);
+      const financeNav = new Set(['وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت کنترل ربات', 'بازگشت امور مالی', 'بازگشت']);
       if (financeNav.has(value)) {
         await updateAction(client, id, 'admin:finance_panel');
         if (value === 'وضعیت') return send(id, await financeStatusText(client), botFinanceKeyboard());
+        if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }
         if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}
 قیمت جدید را بفرست.`, botFinanceKeyboard()); }
         if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}
@@ -1797,7 +1805,7 @@ async function handleText(id, text, meta = {}) {
         return send(id, 'امور مالی', botFinanceKeyboard());
       }
       const key = me.action_state.split(':')[2]; if (!value) return send(id, 'مقدار نمی‌تواند خالی باشد.', botFinanceKeyboard());
-      await saveBotSetting(client, `finance_${key === 'price' ? 'coin_price' : key}`, value.slice(0, 1000)); await updateAction(client, id, 'admin:finance_panel'); return send(id, 'تنظیم امور مالی ذخیره شد.', botFinanceKeyboard());
+      await saveBotSetting(client, `finance_${key === 'price' ? 'coin_price' : key}`, value.slice(0, 1000)); const nextFinanceState = me.action_state === 'admin:finance:price' ? 'admin:manocoin' : 'admin:finance_panel'; await updateAction(client, id, nextFinanceState); return send(id, 'تنظیم امور مالی ذخیره شد.', nextFinanceState === 'admin:manocoin' ? manoCoinKeyboard() : botFinanceKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:finance') {
       if (value === 'گزارش مالی') return send(id, await financialReport(client), userFinanceKeyboard());
@@ -1824,7 +1832,6 @@ async function handleText(id, text, meta = {}) {
       if (value === 'لیست بن شده ها') { await updateAction(client, id, 'admin:banned_list'); return send(id, await bannedListText(client), bannedListKeyboard()); }
       if (value === 'لیست بلاکی ها') { await updateAction(client, id, 'admin:blocked_list'); return sendBlockedList(client, id); }
       if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
-      if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }
       if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.', userControlKeyboard());
       const panel = await adminUserPanel(client, id, value); await updateAction(client, id, `admin:user_control:${value}`); return send(id, panel.text, panel.markup);
     }
@@ -1870,7 +1877,7 @@ async function handleText(id, text, meta = {}) {
       const targetId = me.action_state.split(':')[2]; if (value === 'رفع') await client.query('UPDATE users SET banned_until=NULL,ban_reason=NULL,updated_at=NOW() WHERE telegram_id=$1', [targetId]); else { const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب بن نامعتبر است؛ مثل 1H یا 7D. برای 7D عدد روز را بفرست: 168H.'); await adminBanUser(client, targetId, seconds); } await audit(client, id, targetId, value === 'رفع' ? 'unban' : 'ban', { value }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, panel.text, panel.markup);
     }
     if (isAdmin(id) && me.action_state === 'admin:gifts') {
-      if (value === 'برگشت') { await updateAction(client, id, null); return send(id, 'کنترل کاربران', userControlKeyboard()); }
+      if (value === 'برگشت مانوکوین' || value === 'برگشت') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }
       if (value === 'ایجاد') { await updateAction(client, id, 'admin:gift:type'); return send(id, 'نوع هدیه را انتخاب کن:', giftTypeKeyboard()); }
       if (value === 'دیلی کوین') { await updateAction(client, id, 'admin:daily_coin'); return send(id, `تنظیمات دیلی کوین\nمقدار فعلی: ${await botSettingValue(client, 'daily_coin_amount', '20')}\nدستور فعلی: ${await botSettingValue(client, 'daily_coin_command', '/daily')}\nریست فعلی: ${await botSettingValue(client, 'daily_coin_reset', '24H')}`, dailyCoinKeyboard()); }
       return sendGiftManagement(client, id);

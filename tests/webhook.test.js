@@ -126,6 +126,14 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('places gift-code administration under bot finance ManoCoin controls', () => {
+    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }");
+    expect(source).toContain("if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }");
+    expect(source).not.toContain("['دریافت وضعیت کاربران'], ['کد هدیه']");
+    expect(source).toContain("'بازگشت مانوکوین'");
+  });
+
   it('enforces the 15-second minimum conversation duration', () => {
     expect(STOP_MIN_SECONDS).toBe(15);
   });
