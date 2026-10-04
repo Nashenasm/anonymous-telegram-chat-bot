@@ -139,6 +139,11 @@ describe('anonymous chat public contract', () => {
     expect(source).not.toContain("['دریافت وضعیت کاربران'], ['کد هدیه']");
     expect(source).toContain("'بازگشت مانوکوین'");
   });
+  it('keeps card operations on the bot keyboard and glass buttons display only the admin label', () => {
+    expect(source).toContain("function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("text:`${c.enabled?'🟢':'🔴'} ${c.admin_label}`");
+    expect(source).toContain("return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());");
+  });
 
   it('enforces the 15-second minimum conversation duration', () => {
     expect(STOP_MIN_SECONDS).toBe(15);
