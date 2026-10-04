@@ -133,7 +133,7 @@ describe('anonymous chat public contract', () => {
   });
 
   it('places gift-code administration under bot finance ManoCoin controls', () => {
-    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
     expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }");
     expect(source).toContain("if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }");
     expect(source).not.toContain("['دریافت وضعیت کاربران'], ['کد هدیه']");
@@ -141,7 +141,7 @@ describe('anonymous chat public contract', () => {
   });
   it('keeps card operations on the bot keyboard and glass buttons display only the admin label', () => {
     expect(source).toContain("function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("text:c.admin_label");
+    expect(source).toContain('safeCardAdminLabel(c.admin_label)');
     expect(source).toContain("return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());");
   });
   it('offers card-to-card as a payment method before showing payment contacts', () => {
