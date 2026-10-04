@@ -117,6 +117,12 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("{ reply_markup: { inline_keyboard: [] } }");
     expect(source).toContain('await block(id, row.sender_id, reason');
   });
+  it('maps forwarded Telegram message IDs so replies point to the original message', () => {
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS chat_reply_message_map');
+    expect(source).toContain('async function resolveReplyMessageId');
+    expect(source).toContain('await rememberReplyMessage(client, senderId, sourceMessageId, targetId, delivered?.message_id);');
+    expect(source).toContain('replyTargetId = permissions.reply !== false');
+  });
 
   it('exposes finance controls and fixed report/template navigation', () => {
     expect(source).toContain("['کنترل مالی']");

@@ -85,6 +85,8 @@ async function ensureRuntimeSchema() {
         await client.query(`CREATE TABLE IF NOT EXISTS payment_cards (id BIGSERIAL PRIMARY KEY, card_number TEXT NOT NULL DEFAULT '', title TEXT, admin_id BIGINT, admin_label TEXT NOT NULL, admin_username TEXT, enabled BOOLEAN NOT NULL DEFAULT TRUE, button_enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query("ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS admin_username TEXT");
         await client.query("ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS button_enabled BOOLEAN NOT NULL DEFAULT TRUE");
+        await client.query(`CREATE TABLE IF NOT EXISTS chat_reply_message_map (sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, sender_message_id BIGINT NOT NULL, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (sender_id, sender_message_id, recipient_id), UNIQUE (recipient_id, recipient_message_id))`);
+        await client.query('CREATE INDEX IF NOT EXISTS chat_reply_message_map_recipient_idx ON chat_reply_message_map(recipient_id, recipient_message_id)');
         await client.query(`CREATE TABLE IF NOT EXISTS chat_gifts (id BIGSERIAL PRIMARY KEY, sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, gift_type TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS daily_coin_claims (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
@@ -1653,19 +1655,32 @@ function botKeyboardLabels(s = {}) {
 function isReservedEditorLabel(value, s) { return botKeyboardLabels(s).has(String(value || '').trim()); }
 
 function messageMeta(meta) { return meta?.message || null; }
+async function resolveReplyMessageId(client, recipientId, repliedMessageId) {
+  if (!repliedMessageId) return null;
+  const result = await client.query('SELECT sender_message_id FROM chat_reply_message_map WHERE recipient_id=$1 AND recipient_message_id=$2 LIMIT 1', [recipientId, repliedMessageId]);
+  return result.rows[0]?.sender_message_id || null;
+}
+async function rememberReplyMessage(client, senderId, sourceMessageId, recipientId, recipientMessageId) {
+  if (!sourceMessageId || !recipientMessageId) return;
+  await client.query(`INSERT INTO chat_reply_message_map(sender_id,sender_message_id,recipient_id,recipient_message_id) VALUES($1,$2,$3,$4) ON CONFLICT (sender_id,sender_message_id,recipient_id) DO UPDATE SET recipient_message_id=EXCLUDED.recipient_message_id`, [senderId, sourceMessageId, recipientId, recipientMessageId]);
+}
 async function forwardChatMessage(client, senderId, targetId, message, me, settings, text) {
   const permissions = (() => { try { return { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(settings.chat_permissions || '{}') }; } catch { return DEFAULT_CHAT_PERMISSIONS; } })();
   const kind = message?.photo ? 'photo' : message?.video ? 'video' : message?.voice ? 'voice' : message?.audio ? 'music' : message?.document ? 'file' : message?.location ? 'location' : message?.contact ? 'contact' : message?.sticker ? 'sticker' : 'text';
   if (permissions[kind] === false) return send(senderId, 'این نوع پیام طبق مجوزهای چت غیرفعال است.', chatKeyboard(settings, isAdmin(senderId)));
-  const replyTo = permissions.reply !== false && message?.reply_to_message?.message_id ? { message_id: message.reply_to_message.message_id } : undefined;
-  const extra = replyTo ? { reply_parameters: { message_id: message.reply_to_message.message_id, allow_sending_without_reply: true } } : {};
+  const sourceMessageId = message?.message_id;
+  const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
+  const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
+  let delivered;
   if (message && kind !== 'text') {
-    const copied = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: message.message_id, protect_content: true, ...extra });
-    if (kind === 'photo' && permissions.timed_photo === false) return copied;
-    return copied;
+    delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: true, ...extra });
+  } else {
+    delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: true, ...extra });
   }
-  return telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: true, ...extra });
+  await rememberReplyMessage(client, senderId, sourceMessageId, targetId, delivered?.message_id);
+  return delivered;
 }
+
 async function handleText(id, text, meta = {}) {
   const client = await pool.connect();
   let released = false;
