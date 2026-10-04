@@ -134,7 +134,8 @@ describe('anonymous chat public contract', () => {
 
   it('places gift-code administration under bot finance ManoCoin controls', () => {
     expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }");
+    expect(source).toContain("function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['کوین پله ای'], ['دکمه پاور'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }");
     expect(source).toContain("if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }");
     expect(source).not.toContain("['دریافت وضعیت کاربران'], ['کد هدیه']");
     expect(source).toContain("'بازگشت مانوکوین'");
