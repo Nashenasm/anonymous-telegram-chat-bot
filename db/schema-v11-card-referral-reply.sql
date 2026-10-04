@@ -16,6 +16,8 @@ ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS button_enabled BOOLEAN NOT NU
 INSERT INTO bot_settings(key, value) VALUES
   ('finance_card_text', 'متن واریز کارت به کارت تنظیم نشده است.'),
   ('referral_reward_coins', '5'),
+  ('referral_time_seconds', '1800'),
+  ('referral_bonus_coins', '0'),
   ('referral_conditions', '{"join":false,"connect":false,"time":false,"purchase":false,"plus":false,"referral":false}')
 ON CONFLICT (key) DO NOTHING;
 UPDATE bot_settings
