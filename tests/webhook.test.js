@@ -139,6 +139,9 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("admin_activity_report_error");
     expect(source).toContain('اتصال/تغییر کانال');
     expect(source).toContain('ارسال پیام تست');
+    expect(source).toContain("row.role !== 'owner' && Array.isArray(row.permissions)");
+    expect(source).toContain("adminPermissionFromContext(`${item.id || ''} ${item.label || ''}`)");
+    expect(source).toContain('for (let attempt = 0; attempt < 3; attempt += 1)');
   });
   it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
     expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
