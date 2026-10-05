@@ -1388,7 +1388,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
     if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (data.startsWith('admins:')) {
-      if (!isOwner(id)) return send(id, 'فقط مالک اصلی می‌تواند ادمین‌ها را مدیریت کند.');
+      if (!hasAdminPermission(id, 'admins')) return send(id, 'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.');
       const parts = data.split(':'); const action = parts[1]; const targetId = Number(parts[2]);
       if (action === 'back') { await updateAction(sClient, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
       if (action === 'list') { await updateAction(sClient, id, 'admin:admins'); return sendAdminManagement(sClient, id); }
@@ -1947,10 +1947,29 @@ async function rememberReplyMessage(client, senderId, sourceMessageId, recipient
   if (!sourceMessageId || !recipientMessageId) return;
   await client.query(`INSERT INTO chat_reply_message_map(sender_id,sender_message_id,recipient_id,recipient_message_id) VALUES($1,$2,$3,$4) ON CONFLICT (sender_id,sender_message_id,recipient_id) DO UPDATE SET recipient_message_id=EXCLUDED.recipient_message_id`, [senderId, sourceMessageId, recipientId, recipientMessageId]);
 }
+export function chatPermissionViolations(message = {}, text = '') {
+  const content = String(text || message.text || message.caption || '');
+  const kind = message?.photo ? 'photo' : message?.video ? 'video' : message?.voice ? 'voice' : message?.audio ? 'music' : message?.document ? 'file' : message?.location ? 'location' : message?.contact ? 'contact' : message?.sticker ? 'sticker' : 'text';
+  const violations = [kind];
+  if (message?.reply_to_message) violations.push('reply');
+  if (message?.has_spoiler && message?.photo) violations.push('timed_photo');
+  if (message?.document?.mime_type?.startsWith('application/') || /(?:\.apk|\.exe|اپلیکیشن|application)/i.test(content)) violations.push('app');
+  if (content) {
+    if (/(?:https?:\/\/)?(?:t\.me|telegram\.me)\/[A-Za-z0-9_+/?=&.-]+/i.test(content)) violations.push('telegram_link');
+    if (/(^|\s)@[A-Za-z0-9_]{2,64}\b/.test(content)) violations.push('mention');
+    if (/[A-Za-z]/.test(content)) violations.push('english');
+    if (/(?:https?:\/\/|www\.)[^\s]+/i.test(content)) violations.push('website_link');
+    if (/(?:instagram\.com|instagr\.am)/i.test(content)) violations.push('instagram_link');
+    if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(content)) violations.push('emoji');
+    if (/(کسکش|کونی|حرومزاده|fuck|shit|bitch)/i.test(content)) violations.push('profanity');
+  }
+  return [...new Set(violations)];
+}
 async function forwardChatMessage(client, senderId, targetId, message, me, settings, text) {
   const permissions = (() => { try { return { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(settings.chat_permissions || '{}') }; } catch { return DEFAULT_CHAT_PERMISSIONS; } })();
   const kind = message?.photo ? 'photo' : message?.video ? 'video' : message?.voice ? 'voice' : message?.audio ? 'music' : message?.document ? 'file' : message?.location ? 'location' : message?.contact ? 'contact' : message?.sticker ? 'sticker' : 'text';
-  if (permissions[kind] === false) return send(senderId, 'این نوع پیام طبق مجوزهای چت غیرفعال است.', chatKeyboard(settings, isAdmin(senderId)));
+  const blocked = chatPermissionViolations(message, text).find(key => permissions[key] === false);
+  if (blocked) return send(senderId, `ارسال این محتوا طبق مجوزهای چت غیرفعال است: ${CHAT_PERMISSION_LABELS[blocked] || blocked}`, chatKeyboard(settings, isAdmin(senderId)));
   const sourceMessageId = message?.message_id;
   const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
   const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
@@ -1971,10 +1990,10 @@ async function handleText(id, text, meta = {}) {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
-    if (isOwner(id) && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
-    if (isOwner(id) && me.action_state === 'admin:admins' && value === 'افزودن ادمین') { await updateAction(client,id,'admin:admins:add:id'); return send(id,'آیدی عددی کاربر را بفرست. برای لغو «بازگشت» را بفرست.',replyKeyboard([['بازگشت']],true)); }
-    if (isOwner(id) && me.action_state === 'admin:admins' && value === 'بازگشت پنل') { await updateAction(client,id,null); return send(id,'پنل مدیریت',adminMainKeyboard(s)); }
-    if (isOwner(id) && me.action_state === 'admin:admins:add:id') {
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'افزودن ادمین') { await updateAction(client,id,'admin:admins:add:id'); return send(id,'آیدی عددی کاربر را بفرست. برای لغو «بازگشت» را بفرست.',replyKeyboard([['بازگشت']],true)); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'بازگشت پنل') { await updateAction(client,id,null); return send(id,'پنل مدیریت',adminMainKeyboard(s)); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:add:id') {
       if (value === 'بازگشت') { await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
       if (!/^\d{3,20}$/.test(value)) return send(id,'آیدی عددی معتبر بفرست.',replyKeyboard([['بازگشت']],true));
       const targetId=Number(value); const target=(await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1',[targetId])).rows[0]; if(!target) return send(id,'این کاربر هنوز عضو ربات نشده است. ابتدا باید وارد ربات شود.',replyKeyboard([['بازگشت']],true));
@@ -2369,7 +2388,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
     if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
     if (isAdmin(id) && (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی')) { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
-    if (isAdmin(id) && (value === 'امور ادمین' || value === 'افزودن ادمین')) { if (!isOwner(id)) return send(id,'فقط مالک اصلی می‌تواند مدیریت ادمین‌ها را انجام دهد.'); await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
+    if (isAdmin(id) && (value === 'امور ادمین' || value === 'افزودن ادمین')) { if (!hasAdminPermission(id, 'admins')) return send(id,'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.'); await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
     if (isAdmin(id) && value === 'کنترل ربات') { await updateAction(client, id, 'admin:control'); return send(id, 'کنترل ربات', controlKeyboard()); }
     if (isAdmin(id) && (value === 'کنترل کاربر' || value === 'کنترل کاربران')) { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
     if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');

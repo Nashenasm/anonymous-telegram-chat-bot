@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinKeyboard, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, mandatoryScheduleListText, mandatoryStatusKeyboard, mandatoryStatusText, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinKeyboard, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, chatPermissionViolations, mandatoryScheduleListText, mandatoryStatusKeyboard, mandatoryStatusText, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
 import { isMandatoryJobsAuthorized } from '../api/mandatory-jobs.js';
 import { formatMandatorySourceDetails, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, trackingCommand } from '../src/mandatory-service.js';
 import { DEFAULT_MANDATORY_AUDIENCE, MANDATORY_AUDIENCE_OPTIONS, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
@@ -132,12 +132,19 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
+    expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
+    expect(chatPermissionViolations({}, '@example')).toContain('mention');
+    expect(chatPermissionViolations({ photo: [{}], caption: 'https://example.com' }, 'https://example.com')).toEqual(expect.arrayContaining(['photo', 'website_link']));
+    expect(chatPermissionViolations({ document: { mime_type: 'application/pdf' } }, '')).toContain('file');
+    expect(chatPermissionViolations({ reply_to_message: { message_id: 4 } }, 'سلام')).toContain('reply');
+  });
   it('provides owner-controlled admin management with roles and permissions', () => {
     expect(source).toContain('CREATE TABLE IF NOT EXISTS admin_accounts');
     expect(source).toContain('مدیریت جامع ادمین‌ها');
     expect(source).toContain("value === 'امور ادمین'");
     expect(source).toContain('admins:perm:');
-    expect(source).toContain('فقط مالک اصلی می‌تواند ادمین‌ها را مدیریت کند.');
+    expect(source).toContain('مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.');
   });
   it('shows only enabled and monitored wallets in crypto payments', () => {
     expect(source).toContain('WHERE enabled=TRUE AND monitor_enabled=TRUE');
