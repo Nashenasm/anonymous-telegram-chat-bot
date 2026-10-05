@@ -788,14 +788,50 @@ async function sendWalletPanel(client, id) {
 async function walletById(client, id) {
   return (await walletRows(client)).find(row => Number(row.id) === Number(id));
 }
+async function walletMonitorSettings(client) {
+  const rows = (await client.query("SELECT key,value FROM bot_settings WHERE key IN ('crypto_monitor_enabled','crypto_auto_credit','crypto_confirmations','crypto_monitor_started_at')")).rows;
+  return Object.fromEntries(rows.map(row => [row.key, row.value]));
+}
+function walletMonitorKeyboard(rows, settings) {
+  const monitorOn = settings.crypto_monitor_enabled === 'true';
+  const autoOn = settings.crypto_auto_credit === 'true';
+  const buttons = [
+    [{ text: monitorOn ? '🔴 خاموش کردن مانیتورینگ کلی' : '🟢 روشن کردن مانیتورینگ کلی', callback_data: `wallet:monitor:global:${monitorOn ? 'off' : 'on'}` }],
+    [{ text: autoOn ? '🔴 خاموش کردن اعتباردهی خودکار' : '🟢 روشن کردن اعتباردهی خودکار', callback_data: `wallet:monitor:auto:${autoOn ? 'off' : 'on'}` }],
+    [{ text: `تعداد تأییدها: ${settings.crypto_confirmations || '20'}`, callback_data: 'wallet:monitor:confirmations' }, { text: 'ریست شروع مانیتورینگ', callback_data: 'wallet:monitor:reset' }],
+  ];
+  for (const row of rows) buttons.push([{ text: `${row.monitor_enabled ? '🟢' : '🔴'} ${row.name} — ${row.monitor_enabled ? 'مانیتور می‌شود' : 'مانیتور نمی‌شود'}`, callback_data: `wallet:monitor:wallet:${row.id}` }]);
+  buttons.push([{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]);
+  return { reply_markup: { inline_keyboard: buttons } };
+}
+async function sendWalletMonitorPanel(client, id) {
+  await ensureCryptoWalletSchema(client);
+  const rows = await walletRows(client);
+  const settings = await walletMonitorSettings(client);
+  const started = Number(settings.crypto_monitor_started_at || 0);
+  const text = `مانیتورینگ و اعتباردهی خودکار
+
+مانیتورینگ کلی: ${settings.crypto_monitor_enabled === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+اعتباردهی خودکار: ${settings.crypto_auto_credit === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+تعداد تأییدهای لازم: ${settings.crypto_confirmations || '20'}
+شروع بررسی تراکنش‌ها: ${started ? iranDate(started) : 'از اولین اجرای بعدی'}
+
+فقط ولت‌هایی که کنارشان 🟢 است بررسی می‌شوند. با خاموش بودن اعتباردهی خودکار، تراکنش‌ها فقط شناسایی و ثبت می‌شوند و به حساب کاربر اعتبار داده نمی‌شود.`;
+  return send(id, text, walletMonitorKeyboard(rows, settings));
+}
 async function handleWalletCallback(client, id, data) {
   if (!isAdmin(id) || !data.startsWith('wallet:')) return false;
   await ensureCryptoWalletSchema(client);
   if (data === 'wallet:panel') return sendWalletPanel(client, id);
   if (data === 'wallet:add') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
   if (data === 'wallet:asset') { await updateAction(client, id, 'admin:wallet:add:asset'); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
-  if (data === 'wallet:auto:on' || data === 'wallet:auto:off') { const enabled = data.endsWith(':on'); await saveBotSetting(client, 'crypto_auto_credit', String(enabled)); return sendWalletPanel(client, id); }
-  if (data === 'wallet:auto') { const enabled = (await botSettingValue(client, 'crypto_auto_credit', 'false')) === 'true'; return send(id, `تنظیم اعتباردهی خودکار\n\nوضعیت فعلی: ${enabled ? '🟢 فعال' : '🔴 خاموش (ایمن)'}`, { reply_markup: { inline_keyboard: [[{ text: '🟢 فعال کردن', callback_data: 'wallet:auto:on' }, { text: '🔴 خاموش کردن', callback_data: 'wallet:auto:off' }], [{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]] } }); }
+  if (data === 'wallet:auto:on' || data === 'wallet:auto:off') { const enabled = data.endsWith(':on'); await saveBotSetting(client, 'crypto_auto_credit', String(enabled)); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:auto') return sendWalletMonitorPanel(client, id);
+  if (data.startsWith('wallet:monitor:global:')) { await saveBotSetting(client, 'crypto_monitor_enabled', String(data.endsWith(':on'))); return sendWalletMonitorPanel(client, id); }
+  if (data.startsWith('wallet:monitor:auto:')) { await saveBotSetting(client, 'crypto_auto_credit', String(data.endsWith(':on'))); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:monitor:reset') { await saveBotSetting(client, 'crypto_monitor_started_at', String(Date.now())); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:monitor:confirmations') { await updateAction(client, id, 'admin:wallet:confirmations'); return send(id, 'تعداد تأییدهای لازم را به‌صورت عدد بین 1 تا 1000 بفرست.', walletBackReplyKeyboard()); }
+  if (data.startsWith('wallet:monitor:wallet:')) { const walletId = Number(data.slice('wallet:monitor:wallet:'.length)); const row = (await client.query('SELECT monitor_enabled FROM crypto_wallets WHERE id=$1', [walletId])).rows[0]; if (!row) return send(id, 'ولت پیدا نشد.'); await client.query('UPDATE crypto_wallets SET monitor_enabled=NOT monitor_enabled,updated_at=NOW() WHERE id=$1', [walletId]); return sendWalletMonitorPanel(client, id); }
   if (data.startsWith('wallet:asset:')) { const asset = normalizeWalletAsset(data.slice('wallet:asset:'.length)); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است.', walletAssetKeyboard()); const state = (await user(client, id))?.action_state || ''; if (state === 'admin:wallet:add:asset') return send(id, 'ابتدا نام ولت را بفرست.', walletBackReplyKeyboard()); const name = state.startsWith('admin:wallet:add:asset:') ? decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)) : null; if (!name) return send(id, 'فرآیند افزودن ولت منقضی شده است؛ دوباره از «افزودن ولت» شروع کن.', walletManagementReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
   const [, action, rawId] = data.split(':');
   const row = await walletById(client, rawId);
@@ -815,6 +851,7 @@ async function handleWalletText(client, id, value, state) {
   if (state.startsWith('admin:wallet:add:address:')) { const parts = state.split(':'); const asset = parts[4]; const name = decodeURIComponent(parts.slice(5).join(':')); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ باید با T شروع شود و 34 کاراکتر باشد.', walletBackReplyKeyboard()); await client.query('INSERT INTO crypto_wallets(asset,name,address,network) VALUES($1,$2,$3,\'TRON\')', [asset, name, value.trim()]); await updateAction(client, id, 'admin:finance_panel'); return sendWalletPanel(client, id); }
   if (state.startsWith('admin:wallet:address:')) { const walletId = Number(state.split(':').pop()); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ آدرس معتبر بفرست.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET address=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim()]); return sendWalletPanel(client, id); }
   if (state.startsWith('admin:wallet:name:')) { const walletId = Number(state.split(':').pop()); if (!value.trim()) return send(id, 'نام ولت نمی‌تواند خالی باشد.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET name=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim().slice(0,80)]); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:confirmations') { if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 1000) return send(id, 'تعداد تأییدها باید عددی بین 1 تا 1000 باشد.', walletBackReplyKeyboard()); await saveBotSetting(client, 'crypto_confirmations', String(Number(value))); return sendWalletMonitorPanel(client, id); }
   if (state === 'admin:wallet:channel') { await saveBotSetting(client, 'crypto_report_channel_id', value.trim()); return sendWalletPanel(client, id); }
   if (state === 'admin:wallet:usd_source') { await saveBotSetting(client, 'crypto_usd_price_source', value.trim()); return sendWalletPanel(client, id); }
   if (state === 'admin:wallet:asset_source') { await saveBotSetting(client, 'crypto_asset_price_source', value.trim()); return sendWalletPanel(client, id); }
@@ -2061,7 +2098,7 @@ async function handleText(id, text, meta = {}) {
       if (value === '📢 کانال گزارش') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
       if (value === '💵 منبع قیمت دلار') { await updateAction(client, id, 'admin:wallet:usd_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_usd_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
       if (value === '🪙 منبع قیمت ارزدیجیتال') { await updateAction(client, id, 'admin:wallet:asset_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_asset_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
-      if (value === '⚙️ اعتباردهی خودکار') { const enabled = (await botSettingValue(client, 'crypto_auto_credit', 'false')) === 'true'; return send(id, `تنظیم اعتباردهی خودکار\n\nوضعیت فعلی: ${enabled ? '🟢 فعال' : '🔴 خاموش (ایمن)'}`, { reply_markup: { inline_keyboard: [[{ text: '🟢 فعال کردن', callback_data: 'wallet:auto:on' }, { text: '🔴 خاموش کردن', callback_data: 'wallet:auto:off' }], [{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]] } }); }
+      if (value === '⚙️ اعتباردهی خودکار') return sendWalletMonitorPanel(client, id);
       if (value === 'تنظیم کانال') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
       if (value === 'حذف کانال') { await saveBotSetting(client, 'crypto_report_channel_id', ''); return sendWalletPanel(client, id); }
       if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }

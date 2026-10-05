@@ -26,7 +26,7 @@ async function getJson(url, apiKey) {
 }
 
 function isSupportedWallet(wallet) {
-  return wallet.enabled && (wallet.monitor_enabled || wallet.network === 'TRON' || wallet.network === 'TRC20' || wallet.network === 'TRON/TRC20') && (wallet.asset === 'USDT_TRC20' || wallet.asset === 'USDT' || wallet.asset === 'USDT-TRC20');
+  return wallet.enabled && wallet.monitor_enabled === true && (wallet.network === 'TRON' || wallet.network === 'TRC20' || wallet.network === 'TRON/TRC20') && (wallet.asset === 'USDT_TRC20' || wallet.asset === 'USDT' || wallet.asset === 'USDT-TRC20');
 }
 
 async function creditMatchedOrder(client, { transfer, wallet, amount, raw, confirmations }) {
