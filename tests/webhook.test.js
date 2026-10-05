@@ -132,6 +132,12 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('restores the wallet management label and complete auto-credit controls', () => {
+    expect(source).toContain("['درگاه ها', 'مدیریت ولت']");
+    expect(source).toContain("data === 'wallet:auto:on' || data === 'wallet:auto:off'");
+    expect(source).toContain("callback_data: 'wallet:auto:on'");
+    expect(source).toContain("callback_data: 'wallet:auto:off'");
+  });
   it('protects gift-code administration from public users', () => {
     expect(source).toContain("data.startsWith('gift:') && !isAdmin(id)");
     expect(source).toContain("me.action_state?.startsWith('admin:gift') && !isAdmin(id)");

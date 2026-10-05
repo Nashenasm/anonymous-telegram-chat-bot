@@ -220,7 +220,7 @@ function adminKeyboard(enabled) { return adminMainKeyboard(); }
 function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['دریافت وضعیت کاربران'], ['بازگشت پنل']], true); }
 function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['بازگشت کنترل کاربران']], true); }
 function financeKeyboard() { return userFinanceKeyboard(); }
-function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'ولت ها'], ['امور کارت'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
+function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'مدیریت ولت'], ['امور کارت'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
 function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }
 function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }
 function cardAdminKeyboard(rows=[]) { return { reply_markup: { inline_keyboard: rows } }; }
@@ -794,6 +794,8 @@ async function handleWalletCallback(client, id, data) {
   if (data === 'wallet:panel') return sendWalletPanel(client, id);
   if (data === 'wallet:add') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
   if (data === 'wallet:asset') { await updateAction(client, id, 'admin:wallet:add:asset'); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
+  if (data === 'wallet:auto:on' || data === 'wallet:auto:off') { const enabled = data.endsWith(':on'); await saveBotSetting(client, 'crypto_auto_credit', String(enabled)); return sendWalletPanel(client, id); }
+  if (data === 'wallet:auto') { const enabled = (await botSettingValue(client, 'crypto_auto_credit', 'false')) === 'true'; return send(id, `تنظیم اعتباردهی خودکار\n\nوضعیت فعلی: ${enabled ? '🟢 فعال' : '🔴 خاموش (ایمن)'}`, { reply_markup: { inline_keyboard: [[{ text: '🟢 فعال کردن', callback_data: 'wallet:auto:on' }, { text: '🔴 خاموش کردن', callback_data: 'wallet:auto:off' }], [{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]] } }); }
   if (data.startsWith('wallet:asset:')) { const asset = normalizeWalletAsset(data.slice('wallet:asset:'.length)); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است.', walletAssetKeyboard()); const state = (await user(client, id))?.action_state || ''; if (state === 'admin:wallet:add:asset') return send(id, 'ابتدا نام ولت را بفرست.', walletBackReplyKeyboard()); const name = state.startsWith('admin:wallet:add:asset:') ? decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)) : null; if (!name) return send(id, 'فرآیند افزودن ولت منقضی شده است؛ دوباره از «افزودن ولت» شروع کن.', walletManagementReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
   const [, action, rawId] = data.split(':');
   const row = await walletById(client, rawId);
@@ -1833,7 +1835,7 @@ function visiblePublicAction(value, s) {
   return legacy[text] || null;
 }
 function botKeyboardLabels(s = {}) {
-  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'افزودن ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'افزودن ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) for (const item of screen?.buttons || []) if (item?.label) labels.add(String(item.label).trim());
@@ -2005,7 +2007,7 @@ async function handleText(id, text, meta = {}) {
       if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
       if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, botFinanceKeyboard()); }
       if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}\nفهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-      if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
+      if (value === 'مدیریت ولت' || value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
       if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}\nشماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
       if (value === 'کنترل ظاهری') { await updateAction(client, id, 'admin:finance:appearance'); return send(id, `وضعیت پرداختی‌ها: ${await botSettingValue(client, 'finance_enabled', 'false') === 'true' ? 'فعال' : 'غیرفعال'}\nاز گزینه زیر برای تغییر وضعیت استفاده کن.`, financeAppearanceKeyboard()); }
@@ -2064,7 +2066,7 @@ async function handleText(id, text, meta = {}) {
 قیمت جدید را بفرست.`, botFinanceKeyboard()); }
         if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}
 فهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-        if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
+        if (value === 'مدیریت ولت' || value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
         if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}
 شماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
@@ -2081,7 +2083,7 @@ async function handleText(id, text, meta = {}) {
       if (value === '📢 کانال گزارش') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
       if (value === '💵 منبع قیمت دلار') { await updateAction(client, id, 'admin:wallet:usd_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_usd_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
       if (value === '🪙 منبع قیمت ارزدیجیتال') { await updateAction(client, id, 'admin:wallet:asset_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_asset_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
-      if (value === '⚙️ اعتباردهی خودکار') { const next = (await botSettingValue(client, 'crypto_auto_credit', 'false')) !== 'true'; await saveBotSetting(client, 'crypto_auto_credit', String(next)); return sendWalletPanel(client, id); }
+      if (value === '⚙️ اعتباردهی خودکار') { const enabled = (await botSettingValue(client, 'crypto_auto_credit', 'false')) === 'true'; return send(id, `تنظیم اعتباردهی خودکار\n\nوضعیت فعلی: ${enabled ? '🟢 فعال' : '🔴 خاموش (ایمن)'}`, { reply_markup: { inline_keyboard: [[{ text: '🟢 فعال کردن', callback_data: 'wallet:auto:on' }, { text: '🔴 خاموش کردن', callback_data: 'wallet:auto:off' }], [{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]] } }); }
       if (value === 'تنظیم کانال') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
       if (value === 'حذف کانال') { await saveBotSetting(client, 'crypto_report_channel_id', ''); return sendWalletPanel(client, id); }
       if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
