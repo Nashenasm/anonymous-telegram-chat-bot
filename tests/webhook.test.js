@@ -147,7 +147,7 @@ describe('anonymous chat public contract', () => {
   });
   it('offers card-to-card as a payment method before showing payment contacts', () => {
     expect(source).toContain("function paymentMethodKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'کارت به کارت', callback_data: 'coins:method:card' }");
-    expect(source).toContain("if (data === 'coins:buy') return send(id, 'نحوه واریز مانوکوین را انتخاب کن:', paymentMethodKeyboard());");
+    expect(source).toContain("if (data === 'coins:buy') return coinAmountPanel(sClient, id, callbackQuery);");
     expect(source).toContain("if (data === 'coins:method:card') return cardPaymentForUser(sClient, id);");
   });
 

@@ -26,7 +26,7 @@ async function getJson(url, apiKey) {
 }
 
 function isSupportedWallet(wallet) {
-  return wallet.enabled && (wallet.monitor_enabled || wallet.network === 'TRON' || wallet.network === 'TRC20' || wallet.network === 'TRON/TRC20') && (wallet.asset === 'USDT_TRC20' || wallet.asset === 'USDT');
+  return wallet.enabled && (wallet.monitor_enabled || wallet.network === 'TRON' || wallet.network === 'TRC20' || wallet.network === 'TRON/TRC20') && (wallet.asset === 'USDT_TRC20' || wallet.asset === 'USDT' || wallet.asset === 'USDT-TRC20');
 }
 
 async function creditMatchedOrder(client, { transfer, wallet, amount, raw, confirmations }) {
@@ -54,7 +54,7 @@ export async function scanTronUsdtDeposits({ pool, getSetting, report }) {
   const apiKey = process.env.TRONGRID_API_KEY || process.env.TRON_API_KEY || '';
   const monitorStartedAt = Number(await getSetting('crypto_monitor_started_at', '0')) || 0;
   const requiredConfirmations = Number(await getSetting('crypto_confirmations', '20')) || 20;
-  const wallets = (await pool.query("SELECT id,asset,name,address,network,enabled,monitor_enabled FROM crypto_wallets WHERE enabled=TRUE AND asset IN ('USDT_TRC20','USDT') AND network IN ('TRON','TRC20','TRON/TRC20') ORDER BY id")).rows;
+  const wallets = (await pool.query("SELECT id,asset,name,address,network,enabled,monitor_enabled FROM crypto_wallets WHERE enabled=TRUE AND asset IN ('USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20') ORDER BY id")).rows;
   let scanned = 0; let inserted = 0; let credited = 0; const errors = [];
   for (const wallet of wallets.filter(isSupportedWallet)) {
     try {
