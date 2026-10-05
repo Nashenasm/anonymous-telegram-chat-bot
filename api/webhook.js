@@ -1265,6 +1265,7 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (data.startsWith('gift:') && !isAdmin(id)) { await updateAction(sClient, id, null); return send(id, 'این بخش فقط برای مدیریت ربات است.'); }
     if (isAdmin(id) && data.startsWith('beauty:')) return handleBeautyCallback(id, data, callbackQuery, sClient, s);
     if (isAdmin(id) && data === 'bonus:list') { const rows = await bonusRows(sClient); return editAudienceCallback(callbackQuery, id, bonusListText(rows), bonusListKeyboard(rows)); }
     if (isAdmin(id) && data === 'bonus:back_manocoin') { await updateAction(sClient, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
@@ -2100,6 +2101,7 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('admin:ban:')) {
       const targetId = me.action_state.split(':')[2]; if (value === 'رفع') await client.query('UPDATE users SET banned_until=NULL,ban_reason=NULL,updated_at=NOW() WHERE telegram_id=$1', [targetId]); else { const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب بن نامعتبر است؛ مثل 1H یا 7D. برای 7D عدد روز را بفرست: 168H.'); await adminBanUser(client, targetId, seconds); } await audit(client, id, targetId, value === 'رفع' ? 'unban' : 'ban', { value }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, panel.text, panel.markup);
     }
+    if (me.action_state?.startsWith('admin:gift') && !isAdmin(id)) { await updateAction(client, id, null); return send(id, 'این بخش فقط برای مدیریت ربات است.'); }
     if (isAdmin(id) && me.action_state?.startsWith('admin:gift:') && value === 'بازگشت') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }
     if (isAdmin(id) && me.action_state === 'admin:gifts') {
       if (value === 'برگشت مانوکوین' || value === 'برگشت') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }

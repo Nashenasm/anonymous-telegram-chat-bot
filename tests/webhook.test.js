@@ -132,6 +132,11 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('protects gift-code administration from public users', () => {
+    expect(source).toContain("data.startsWith('gift:') && !isAdmin(id)");
+    expect(source).toContain("me.action_state?.startsWith('admin:gift') && !isAdmin(id)");
+    expect(source).toContain('این بخش فقط برای مدیریت ربات است.');
+  });
   it('notifies users about enabled bonuses without exposing referral identities', () => {
     expect(source).toContain('notifyBonus');
     expect(source).toContain('مقدار: +${result.amount} مانوکوین');
