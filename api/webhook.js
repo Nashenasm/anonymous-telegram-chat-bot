@@ -196,7 +196,7 @@ const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
 function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard([...appearanceKeyboard(a), ['اتصال به مخاطب خاص']]); }
 function profileKeyboard(settings, telegramId) { const numericId = String(telegramId); return { reply_markup: { inline_keyboard: [[{ text: numericId, copy_text: { text: numericId } }], [{ text: settings.back_button || 'بازگشت', callback_data: 'profile:back' }]] } }; }
-function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'مانو کوین رایگان🟡', callback_data: 'coins:free' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(2, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
+function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function emojiKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'emoji', [['ریست ایموجی'], [settings.back_button]]), true); }
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
 function plusPurchaseKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پلاس 1 ماهه⭐', callback_data: 'plus:buy:1' }], [{ text: 'پلاس 3 ماهه🌟', callback_data: 'plus:buy:3' }], [{ text: 'پلاس 6 ماهه✨', callback_data: 'plus:buy:6' }], [{ text: 'پلاس 12 ماهه💎', callback_data: 'plus:buy:12' }]] } }; }
@@ -876,15 +876,15 @@ async function findPair(id, preference) {
 async function chargeSuccessfulConnection(userIds) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query('BEGIN'); const referralGrants = [];
     const costs = Object.fromEntries((await client.query("SELECT key,value FROM bot_settings WHERE key IN ('chat_cost_any','chat_cost_male','chat_cost_female')")).rows.map(row => [row.key, Number(row.value) || 0]));
     for (const userId of userIds.filter(Boolean)) {
       if (isAdmin(userId)) continue;
       const row = (await client.query('SELECT match_preference FROM users WHERE telegram_id=$1 FOR UPDATE', [userId])).rows[0]; const cost = costs[`chat_cost_${row?.match_preference || 'any'}`] || 0;
       if (cost > 0) await applyCoinDelta(client, { userId, delta: -cost, kind: 'chat_cost', idempotencyKey: newFinanceIdempotencyKey(`chat-cost:${userId}`), metadata: { cost } });
-      await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } });
+      await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } }); const grant = await completeReferralCondition(client, userId, 'connect'); if (grant.granted) referralGrants.push({ grant, newcomerId: userId });
     }
-    await client.query('COMMIT');
+    await client.query('COMMIT'); for (const item of referralGrants) await notifyReferralGrant(item.grant, item.newcomerId);
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 async function searchByPreference(id, preference, s) {
@@ -1026,7 +1026,9 @@ async function referralCode(client, id) {
   }
   return null;
 }
-async function rewardFirstEntry(id, ownerId, reward, s) {
+async function notifyReferralEntry(ownerId, newcomerId) { try { await send(Number(ownerId), `🔗 کاربر جدید با لینک دعوتت وارد ربات شد.\n\nشناسه کاربر: ${newcomerId}\nپاداش مرحله‌ای پس از تکمیل شرایط فعال، طبق تنظیمات به حسابت اضافه می‌شود.`); } catch {} }
+async function notifyReferralGrant(grant, newcomerId) { if (!grant?.granted || !grant.ownerId) return; const label = REFERRAL_CONDITION_LABELS[grant.conditionKey] || grant.conditionKey; try { await send(Number(grant.ownerId), `🎁 پاداش زیرمجموعه‌گیری دریافت شد\n\nزیرمجموعه‌ات شرط «${label}» را تکمیل کرد.\nمقدار دریافتی: ${grant.granted} مانوکوین\nشناسه زیرمجموعه: ${newcomerId}`); } catch {} }
+async function rewardFirstEntry(id, ownerId, reward, s, { joinReady = true } = {}) {
   reward = Number(s?.referral_reward_coins || reward);
   const client = await pool.connect();
   try {
@@ -1038,9 +1040,9 @@ async function rewardFirstEntry(id, ownerId, reward, s) {
       const owner = await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [ownerId]);
       if (owner.rowCount) {
         await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [id, ownerId]);
-        const grant = await completeReferralCondition(client, id, 'join');
+        const grant = joinReady ? await completeReferralCondition(client, id, 'join') : { granted: 0, ownerId, conditionKey: 'join', reason: 'waiting_for_mandatory_join' };
         await client.query('COMMIT');
-        if (grant.granted) await send(Number(ownerId), `🎁 مرحلهٔ زیرمجموعه تکمیل شد و ${grant.granted} مانو کوین دریافت کردی.`, mainKeyboard(s));
+        if (grant.granted) await notifyReferralGrant(grant, id);
         return true;
       }
       await client.query('COMMIT');
@@ -1050,19 +1052,9 @@ async function rewardFirstEntry(id, ownerId, reward, s) {
     return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
-async function sendIncreaseCoins(id, settings) {
-  return send(id, 'افزایش مانو کوین\n\nخرید مانو کوین در حال حاضر غیرفعال است. برای دریافت رایگان مانو کوین، گزینهٔ زیر را انتخاب کن.', increaseCoinsKeyboard(settings));
-}
-async function sendFreeCoins(id, settings) {
-  const client = await pool.connect();
-  try {
-    const code = await referralCode(client, id); const username = await botUsername();
-    if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings));
-    const url = `https://t.me/${username}?start=ref_${code}`;
-    const text = `🔗 لینک اختصاصی شما:\n${url}\n\n🎁 متن پیشنهادی جذب کاربر:\nبا لینک اختصاصی من وارد ربات چت ناشناس شو و دوست‌های جدید پیدا کن!\n\nاگر کاربر جدیدی که قبلاً از ربات استفاده نکرده از این لینک وارد شود، ۵ مانو کوین رایگان می‌گیری. ورود از لینک ناشناس هم برای صاحب لینک ۳ مانو کوین هدیه دارد.\n\nهر کاربر جدید فقط یک‌بار برای ورود اول، ۲۰ مانو کوین هدیه می‌گیرد.`;
-    return sendLink(id, text, increaseCoinsKeyboard(settings));
-  } finally { client.release(); }
-}
+async function referralUserDescription(client) { const power=await botSettingValue(client,'referral_power_enabled','true')==='true'; if(!power) return '🔴 زیرمجموعه‌گیری در حال حاضر غیرفعال است.'; const staged=await botSettingValue(client,'referral_staged_enabled','false')==='true'; const total=Math.max(0,Number(await botSettingValue(client,'referral_reward_coins','5'))||0); const conditions=await referralConditions(client); const active=REFERRAL_CONDITION_ORDER.filter(k=>conditions[k]); const selected=active.length?active:['join']; const amounts=await referralStageAmounts(client); const hasConfigured=Object.values(amounts).some(n=>n>0); const mandatory=await activeMandatorySources(client); const lines=selected.map((key,index)=>{ const equal=key===selected[selected.length-1]?Math.max(0,total-Math.floor(total/selected.length)*(selected.length-1)):Math.floor(total/selected.length); const amount=staged?(hasConfigured?amounts[key]:equal):0; return `• ${REFERRAL_CONDITION_LABELS[key]}: ${staged?`${amount} مانوکوین پس از تکمیل همین شرط`:'سهم از پاداش نهایی پس از تکمیل همهٔ شرایط'}`; }).join('\n'); const joinNote=mandatory.rows.length?`\n\n📌 شرط جویین اجباری: ابتدا باید در همهٔ منابع اجباری عضو شوی و سپس «بررسی عضویت» را بزنی.`:'\n\n✅ چون منبع جویین اجباری فعال نیست، سهم مرحلهٔ ورود پس از ورود با لینک دعوت به‌صورت خودکار برای دعوت‌کننده ثبت می‌شود.'; return `📋 شرایط و پاداش زیرمجموعه‌گیری\n\n${staged?'در حالت کوین پله‌ای، هر سهم پس از انجام همان شرط پرداخت می‌شود.':`پس از تکمیل همهٔ شرایط فعال، مجموع ${total} مانوکوین یکجا پرداخت می‌شود.`}\n\n${lines}${joinNote}`; }
+async function sendIncreaseCoins(id, settings) { return send(id, 'افزایش مانو کوین\n\nخرید مانو کوین در حال حاضر غیرفعال است.', increaseCoinsKeyboard(settings)); }
+async function sendFreeCoins(id, settings) { const client = await pool.connect(); try { const code = await referralCode(client, id); const username = await botUsername(); if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings)); const url = `https://t.me/${username}?start=ref_${code}`; const description=await referralUserDescription(client); const text = `🔗 لینک اختصاصی شما:\n${url}\n\n${description}\n\n🎁 متن پیشنهادی جذب کاربر:\nبا لینک اختصاصی من وارد ربات چت ناشناس شو و دوست‌های جدید پیدا کن!`; return sendLink(id, text, increaseCoinsKeyboard(settings)); } finally { client.release(); } }
 async function sendPlus(id, settings) {
   const text = `✨ اکانت پلاس\n\nبا اکانت پلاس:\n۱) تبلیغات مزاحم برایت نمایش داده نمی‌شود.\n۲) سریع‌تر به چت وصل می‌شوی.\n۳) نشان مخصوص پلاس در چت نمایش داده می‌شود.\n۴) می‌توانی نشان پلاس را تغییر بدهی.\n۵) از مزایای آیندهٔ کاربران پلاس بهره‌مند می‌شوی.\n\n💰 قیمت‌ها:\nپلاس ۱ ماهه ۱۰۰ مانو کوین\nپلاس ۳ ماهه ۲۵۰ مانو کوین\nپلاس ۶ ماهه ۴۵۰ مانو کوین\nپلاس ۱۲ ماهه ۸۰۰ مانو کوین`;
   return send(id, text, plusPurchaseKeyboard());
@@ -1092,7 +1084,7 @@ async function handlePlusCallback(id, data, client, s) {
       await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, finalPrice]);
       await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
       await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
-      await tx.query('COMMIT');
+      await tx.query('COMMIT'); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
       return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
     } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
   }
@@ -1128,6 +1120,8 @@ async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (payload !== null) await recordMandatoryStart(id, payload, client, me);
+    let referralOwnerId = null;
+    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
     if (!isAdmin(id)) {
       const missing = await mandatoryRequirements(id, client, { profile: me });
       if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
@@ -1136,12 +1130,7 @@ async function handleStart(id, payload = null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
         return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s));
       }
-      if (payload.startsWith('ref_')) {
-        const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]);
-        if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s));
-        const first = await rewardFirstEntry(id, Number(found.rows[0].telegram_id), 5, s);
-        return send(id, first ? '🎁 خوش آمدی! ۲۰ مانو کوین هدیهٔ ورود اول به حسابت اضافه شد.' : 'خوش آمدی!', mainKeyboard(s));
-      }
+      if (payload.startsWith('ref_')) { const first = await rewardFirstEntry(id, referralOwnerId, 5, s, { joinReady: true }); return send(id, first ? '🎁 خوش آمدی! ۲۰ مانو کوین هدیهٔ ورود اول به حسابت اضافه شد.' : 'خوش آمدی!', mainKeyboard(s)); }
       client.release();
       released = true;
       const started = await flowFor(s).handleStartPayload(id, payload);
@@ -1228,7 +1217,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       const displaySettings = await settings(c);
       const missing = await mandatoryRequirements(id, c, { recordJoins: true, profile });
       if (missing.length) return send(id, mandatoryJoinMessage(missing, displaySettings), mandatoryJoinMarkup(missing, displaySettings, id));
-      return send(id, '✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد. حالا می‌توانی از ربات استفاده کنی.', mainKeyboard(displaySettings));
+      let referralNotice = ''; const refreshed = await user(c, id); if (refreshed?.referred_by) { const grant = await completeReferralCondition(c, id, 'join'); if (grant.granted) { await notifyReferralGrant(grant, id); referralNotice = `\n\n🎁 شرط جویین اجباری تکمیل شد و ${grant.granted} مانوکوین برای دعوت‌کننده ثبت شد.`; } } return send(id, `✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد.${referralNotice}\nحالا می‌توانی از ربات استفاده کنی.`, mainKeyboard(displaySettings));
     } finally { c.release(); }
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
@@ -2548,6 +2537,7 @@ export async function runCryptoDepositScan() {
     return await scanTronUsdtDeposits({
       pool,
       getSetting: (key, fallback) => botSettingValue(client, key, fallback),
+      onPurchaseCredited: async ({ userId }) => { const grantClient = await pool.connect(); try { const grant = await completeReferralCondition(grantClient, userId, 'purchase'); if (grant.granted) await notifyReferralGrant(grant, userId); } finally { grantClient.release(); } },
     });
   } finally { client.release(); }
 }

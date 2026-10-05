@@ -47,7 +47,7 @@ async function creditMatchedOrder(client, { transfer, wallet, amount, raw, confi
   } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
 
-export async function scanTronUsdtDeposits({ pool, getSetting, report }) {
+export async function scanTronUsdtDeposits({ pool, getSetting, report, onPurchaseCredited }) {
   const monitorEnabled = await getSetting('crypto_monitor_enabled', 'false');
   if (monitorEnabled !== 'true') return { mode: 'detect-only', scanned: 0, inserted: 0, credited: 0, skipped: 'crypto_monitor_enabled=false' };
   const autoCredit = await getSetting('crypto_auto_credit', 'false') === 'true';
@@ -70,7 +70,7 @@ export async function scanTronUsdtDeposits({ pool, getSetting, report }) {
           const client = await pool.connect();
           let result;
           try { result = await creditMatchedOrder(client, { transfer, wallet, amount, raw, confirmations: requiredConfirmations }); } finally { client.release(); }
-          if (result.matched) { credited += 1; if (report) await report({ type: 'credited', order: result.order, entry: result.entry, transfer, wallet, amount, confirmations: requiredConfirmations, raw }); continue; }
+          if (result.matched) { credited += 1; if (onPurchaseCredited) { try { await onPurchaseCredited({ userId: result.order.user_id, order: result.order, entry: result.entry, transfer, wallet, amount }); } catch (error) { errors.push(`referral:${String(error?.message || error)}`); } } if (report) await report({ type: 'credited', order: result.order, entry: result.entry, transfer, wallet, amount, confirmations: requiredConfirmations, raw }); continue; }
         }
         const result = await pool.query(`INSERT INTO crypto_deposits(wallet_id,asset,txid,from_address,to_address,amount,confirmations,status,raw)
           VALUES ($1,'USDT_TRC20',$2,$3,$4,$5,$6,'detected',$7::jsonb) ON CONFLICT (txid) DO NOTHING RETURNING id`, [wallet.id, txid, transfer.from || null, toAddress, amount, requiredConfirmations, JSON.stringify(raw)]);
