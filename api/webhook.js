@@ -14,7 +14,7 @@ import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, dur
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
 import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
-import { ensureCryptoWalletSchema } from '../src/crypto-wallet-service.js';
+import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -777,6 +777,47 @@ async function openAdminUserPanel(viewerId, targetId) {
     return send(viewerId, panel.text, panel.markup);
   } finally { client.release(); }
 }
+async function sendWalletPanel(client, id) {
+  await ensureCryptoWalletSchema(client);
+  const rows = await walletRows(client);
+  const settingRows = (await client.query("SELECT key,value FROM bot_settings WHERE key IN ('crypto_auto_credit','crypto_monitor_enabled','crypto_report_channel_id','crypto_usd_price_source','crypto_asset_price_source')")).rows;
+  const walletSettings = Object.fromEntries(settingRows.map(row => [row.key, row.value]));
+  await send(id, walletPanelText(rows, walletSettings), walletPanelKeyboard(rows));
+  return send(id, 'عملیات مدیریت ولت را انتخاب کن:', walletManagementReplyKeyboard());
+}
+async function walletById(client, id) {
+  return (await walletRows(client)).find(row => Number(row.id) === Number(id));
+}
+async function handleWalletCallback(client, id, data) {
+  if (!isAdmin(id) || !data.startsWith('wallet:')) return false;
+  await ensureCryptoWalletSchema(client);
+  if (data === 'wallet:panel') return sendWalletPanel(client, id);
+  if (data === 'wallet:add') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
+  if (data === 'wallet:asset') { await updateAction(client, id, 'admin:wallet:add:asset'); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
+  if (data.startsWith('wallet:asset:')) { const asset = normalizeWalletAsset(data.slice('wallet:asset:'.length)); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است.', walletAssetKeyboard()); const state = (await user(client, id))?.action_state || ''; if (state === 'admin:wallet:add:asset') return send(id, 'ابتدا نام ولت را بفرست.', walletBackReplyKeyboard()); const name = state.startsWith('admin:wallet:add:asset:') ? decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)) : null; if (!name) return send(id, 'فرآیند افزودن ولت منقضی شده است؛ دوباره از «افزودن ولت» شروع کن.', walletManagementReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
+  const [, action, rawId] = data.split(':');
+  const row = await walletById(client, rawId);
+  if (!row) return send(id, 'ولت پیدا نشد.', walletManagementReplyKeyboard());
+  if (action === 'view') return send(id, walletDetailsText(row), walletDetailsKeyboard(row));
+  if (action === 'toggle') { await client.query('UPDATE crypto_wallets SET enabled=NOT enabled,updated_at=NOW() WHERE id=$1', [row.id]); return sendWalletPanel(client, id); }
+  if (action === 'delete') { await client.query('DELETE FROM crypto_wallets WHERE id=$1', [row.id]); return sendWalletPanel(client, id); }
+  if (action === 'address' || action === 'name') { await updateAction(client, id, `admin:wallet:${action}:${row.id}`); return send(id, action === 'address' ? 'آدرس جدید ولت TRON را بفرست.' : 'نام جدید ولت را بفرست.', walletBackReplyKeyboard()); }
+  return false;
+}
+async function handleWalletText(client, id, value, state) {
+  if (!isAdmin(id) || !state?.startsWith('admin:wallet')) return false;
+  if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+  if (state === 'admin:wallet:add:name') { if (!value.trim()) return send(id, 'نام ولت نمی‌تواند خالی باشد.', walletBackReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:asset:${encodeURIComponent(value.trim().slice(0, 80))}`); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
+  if (state.startsWith('admin:wallet:add:asset:')) { const asset = normalizeWalletAsset(value); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است؛ TRX یا USDT-TRC20 را انتخاب کن.', walletAssetKeyboard()); const name = decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
+  if (state === 'admin:wallet:add:asset') return false;
+  if (state.startsWith('admin:wallet:add:address:')) { const parts = state.split(':'); const asset = parts[4]; const name = decodeURIComponent(parts.slice(5).join(':')); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ باید با T شروع شود و 34 کاراکتر باشد.', walletBackReplyKeyboard()); await client.query('INSERT INTO crypto_wallets(asset,name,address,network) VALUES($1,$2,$3,\'TRON\')', [asset, name, value.trim()]); await updateAction(client, id, 'admin:finance_panel'); return sendWalletPanel(client, id); }
+  if (state.startsWith('admin:wallet:address:')) { const walletId = Number(state.split(':').pop()); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ آدرس معتبر بفرست.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET address=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim()]); return sendWalletPanel(client, id); }
+  if (state.startsWith('admin:wallet:name:')) { const walletId = Number(state.split(':').pop()); if (!value.trim()) return send(id, 'نام ولت نمی‌تواند خالی باشد.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET name=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim().slice(0,80)]); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:channel') { await saveBotSetting(client, 'crypto_report_channel_id', value.trim()); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:usd_source') { await saveBotSetting(client, 'crypto_usd_price_source', value.trim()); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:asset_source') { await saveBotSetting(client, 'crypto_asset_price_source', value.trim()); return sendWalletPanel(client, id); }
+  return false;
+}
 async function giftRows(client) {
   await client.query('DELETE FROM gift_codes WHERE expires_at IS NOT NULL AND expires_at <= NOW()');
   const result = await client.query("SELECT code,command_name,gift_type,discount_percent,coins,plus_days,uses,max_uses,expires_at,created_at FROM gift_codes ORDER BY created_at DESC LIMIT 50");
@@ -1350,6 +1391,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('referral:condition:')) { const key=data.split(':')[2]; const allowed=['join','connect','time','purchase','plus','referral']; if(!allowed.includes(key)) return send(id,'گزینه نامعتبر است.'); if(key==='time'){ return editAudienceCallback(callbackQuery,id,await referralTimeText(sClient),referralTimeKeyboard((await referralConditions(sClient)).time === true)); } const c=await referralConditions(sClient); c[key]=!c[key]; await saveBotSetting(sClient,'referral_conditions',JSON.stringify(c)); return editAudienceCallback(callbackQuery,id,'شرایط دریافت کوین زیرمجموعه:',referralConditionsKeyboard(c)); }
     if (isAdmin(id) && data === 'referral:back') { await updateAction(sClient,id,'admin:referral'); return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard()); }
     if (isAdmin(id) && data.startsWith('financecard:')) { const parts=data.split(':'); const action=parts[1]; const cardId=Number(parts[2]); if(action==='back'||action==='list'){await updateAction(sClient,id,'admin:finance:cards');return sendCardAdminPanel(sClient,id);} if(action==='add'){await updateAction(sClient,id,'admin:finance:card:add:name');return send(id,'نام نمایشی ادمین کارت به کارت را بفرست.',replyKeyboard([['بازگشت']],true));} if(action==='text'){await updateAction(sClient,id,'admin:finance:card:text');return send(id,`متن فعلی:\n${await botSettingValue(sClient,'finance_card_text','تنظیم نشده')}\n\nمتن جدید را بفرست.`,replyKeyboard([['بازگشت']],true));} const row=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; if(!row) return send(id,'ادمین پیدا نشد.'); if(action==='view') return send(id,`ادمین: ${safeCardAdminLabel(row.admin_label)}\nآیدی ثبت‌شده: ${row.admin_id || row.admin_username || 'ثبت نشده'}\nوضعیت: ${row.enabled?'فعال':'غیرفعال'}\nنمایش دکمه: ${row.button_enabled?'فعال':'غیرفعال'}`,cardAdminPanelKeyboard(row)); if(action==='toggle'||action==='button'){await sClient.query(`UPDATE payment_cards SET ${action==='toggle'?'enabled':'button_enabled'}=NOT ${action==='toggle'?'enabled':'button_enabled'},updated_at=NOW() WHERE id=$1`,[cardId]); const updated=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; return send(id,`ادمین: ${safeCardAdminLabel(updated.admin_label)}`,cardAdminPanelKeyboard(updated));} if(action==='delete') return send(id,'از حذف این ادمین مطمئنی؟',{reply_markup:{inline_keyboard:[[{text:'تایید حذف',callback_data:`financecard:delete_confirm:${cardId}`},{text:'انصراف',callback_data:`financecard:view:${cardId}`}]]}}); if(action==='delete_confirm'){await sClient.query('DELETE FROM payment_cards WHERE id=$1',[cardId]);return sendCardAdminPanel(sClient,id);} if(action==='change'){await updateAction(sClient,id,`admin:finance:card:change:${cardId}`);return send(id,'آیدی عددی ادمین جدید را بفرست.');} }
+    if (data.startsWith('wallet:')) { const handled = await handleWalletCallback(sClient, id, data); if (handled !== false) return handled; }
     if (data === 'gift:list' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data === 'gift:type:coins' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:coins'); return send(id, 'مقدار مانو کوین هدیه را بفرست.'); }
     if (data === 'gift:type:plus' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:plus:type'); return send(id, 'پلن مانو پلاس را انتخاب کن:', giftPlanKeyboard()); }
@@ -1963,7 +2005,7 @@ async function handleText(id, text, meta = {}) {
       if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
       if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, botFinanceKeyboard()); }
       if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}\nفهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-      if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}\nفهرست ولت‌ها را بفرست.`, botFinanceKeyboard()); }
+      if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
       if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}\nشماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
       if (value === 'کنترل ظاهری') { await updateAction(client, id, 'admin:finance:appearance'); return send(id, `وضعیت پرداختی‌ها: ${await botSettingValue(client, 'finance_enabled', 'false') === 'true' ? 'فعال' : 'غیرفعال'}\nاز گزینه زیر برای تغییر وضعیت استفاده کن.`, financeAppearanceKeyboard()); }
@@ -2011,6 +2053,7 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('admin:finance:card:add:confirm:')) { const raw=me.action_state.slice('admin:finance:card:add:confirm:'); const split=raw.lastIndexOf(':'); const name=decodeURIComponent(raw.slice(0,split)); const identity=decodeURIComponent(raw.slice(split+1)); if(value==='بازگشت'){await updateAction(client,id,'admin:finance:cards');return sendCardAdminPanel(client,id);} if(value!=='تایید') return send(id,'برای ثبت نهایی «تایید» را بفرست.',replyKeyboard([['تایید'],['بازگشت']],true)); const adminId=/^\d+$/.test(identity)?Number(identity):null; const adminRow=adminId?(await client.query('SELECT username FROM users WHERE telegram_id=$1',[adminId])).rows[0]:null; const username=adminId?(adminRow?.username||null):identity; await client.query('INSERT INTO payment_cards(card_number,admin_id,admin_label,admin_username,enabled,button_enabled) VALUES($1,$2,$3,$4,TRUE,TRUE)',['',adminId,name,username]); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
     if (isAdmin(id) && me.action_state?.startsWith('admin:finance:card:change:')) { const identity=value.replace(/^@/,''); if(!/^\d{3,20}$/.test(identity) && !/^[A-Za-z0-9_]{3,32}$/.test(identity)) return send(id,'آیدی عددی یا @username معتبر بفرست.'); const cardId=Number(me.action_state.split(':').pop()); const adminId=/^\d+$/.test(identity)?Number(identity):null; const adminRow=adminId?(await client.query('SELECT username FROM users WHERE telegram_id=$1',[adminId])).rows[0]:null; await client.query('UPDATE payment_cards SET admin_id=$2,admin_username=$3,updated_at=NOW() WHERE id=$1',[cardId,adminId,adminId?(adminRow?.username||null):identity]); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
     if (isAdmin(id) && me.action_state === 'admin:finance:card:text') { if(value==='بازگشت'){await updateAction(client,id,'admin:finance:cards');return sendCardAdminPanel(client,id);} await saveBotSetting(client,'finance_card_text',value.slice(0,4000)); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
+    if (me.action_state?.startsWith('admin:wallet')) { const handled = await handleWalletText(client, id, value, me.action_state); if (handled !== false) return handled; }
     if (isAdmin(id) && /^admin:finance:(price|gateways|wallets|cards)$/.test(me.action_state || '')) {
       const financeNav = new Set(['وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت کنترل ربات', 'بازگشت امور مالی', 'بازگشت']);
       if (financeNav.has(value)) {
@@ -2021,8 +2064,7 @@ async function handleText(id, text, meta = {}) {
 قیمت جدید را بفرست.`, botFinanceKeyboard()); }
         if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}
 فهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-        if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}
-فهرست یا توضیح ولت‌ها را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
         if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}
 شماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
@@ -2032,6 +2074,17 @@ async function handleText(id, text, meta = {}) {
       }
       const key = me.action_state.split(':')[2]; if (!value) return send(id, 'مقدار نمی‌تواند خالی باشد.', botFinanceKeyboard());
       await saveBotSetting(client, `finance_${key === 'price' ? 'coin_price' : key}`, value.slice(0, 1000)); const nextFinanceState = me.action_state === 'admin:finance:price' ? 'admin:manocoin' : 'admin:finance_panel'; await updateAction(client, id, nextFinanceState); return send(id, 'تنظیم امور مالی ذخیره شد.', nextFinanceState === 'admin:manocoin' ? manoCoinKeyboard() : botFinanceKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'admin:finance_panel' && value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
+    if (isAdmin(id) && (me.action_state === 'admin:finance:wallets' || me.action_state === 'admin:finance_panel')) {
+      if (value === '➕ افزودن ولت') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
+      if (value === '📢 کانال گزارش') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
+      if (value === '💵 منبع قیمت دلار') { await updateAction(client, id, 'admin:wallet:usd_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_usd_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
+      if (value === '🪙 منبع قیمت ارزدیجیتال') { await updateAction(client, id, 'admin:wallet:asset_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_asset_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
+      if (value === '⚙️ اعتباردهی خودکار') { const next = (await botSettingValue(client, 'crypto_auto_credit', 'false')) !== 'true'; await saveBotSetting(client, 'crypto_auto_credit', String(next)); return sendWalletPanel(client, id); }
+      if (value === 'تنظیم کانال') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
+      if (value === 'حذف کانال') { await saveBotSetting(client, 'crypto_report_channel_id', ''); return sendWalletPanel(client, id); }
+      if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
     }
     if (isAdmin(id) && me.action_state === 'admin:finance') {
       if (value === 'گزارش مالی') return send(id, await financialReport(client), userFinanceKeyboard());
