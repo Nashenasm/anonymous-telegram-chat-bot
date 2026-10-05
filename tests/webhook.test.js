@@ -132,6 +132,16 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('supports timed referral rewards, public explanation, safe gift back navigation, and removes duplicate daily coin control', () => {
+    expect(source).toContain('referral_started_at');
+    expect(source).toContain('runReferralTimeRewards');
+    expect(source).toContain('referral:time:toggle');
+    expect(source).toContain('conditions.time=true');
+    expect(source).toContain('شرط زمانی');
+    expect(source).toContain("me.action_state?.startsWith('admin:gift:') && value === 'بازگشت'");
+    expect(source).toContain("function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['بازگشت کنترل کاربران']], true); }");
+    expect(source).not.toContain("if (value === 'تنظیم دیلی کوین') { await updateAction(client, id, 'admin:daily_coin');");
+  });
   it('places gift-code administration under bot finance ManoCoin controls', () => {
     expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
     expect(source).toContain("function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
