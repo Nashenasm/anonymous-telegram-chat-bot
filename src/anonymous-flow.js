@@ -107,8 +107,8 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     },
   });
   const mainKb = (chatting = false) =>
-    kb([[connectButton, LINK_LABEL], ...(chatting ? [[disconnectButton]] : [])]);
-  const composeKb = () => kb([[connectButton, LINK_LABEL], ['انصراف']]);
+    kb([[LINK_LABEL], ...(chatting ? [[disconnectButton]] : [])]);
+  const composeKb = () => kb([[LINK_LABEL], ['انصراف']]);
 
   const isChatting = async (id) => {
     try {
