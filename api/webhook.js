@@ -1323,6 +1323,9 @@ async function handlePremiumRoleCommand(viewerId, command) {
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    // /start always returns the user to the public context; never retain a stale admin-panel state.
+    await updateAction(client, id, null);
+    me.action_state = null;
     if (payload !== null) await recordMandatoryStart(id, payload, client, me);
     let referralOwnerId = null;
     if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
@@ -2041,8 +2044,9 @@ async function handleText(id, text, meta = {}) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
-    // This public button must win over any stale admin action_state, especially for admins using the public menu.
-    if (value === ANONYMOUS_LINK_BUTTON) { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
+    // This public action must win over any stale admin action_state, especially for admins using the public menu.
+    const firstPublicAction = visiblePublicAction(value, s);
+    if (value === ANONYMOUS_LINK_BUTTON || firstPublicAction === 'anonymous_link') { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
     const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
     if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');

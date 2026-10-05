@@ -145,7 +145,9 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('admin_button_click');
     expect(source).toContain('admin_text_action');
     expect(source).toContain('value === ANONYMOUS_LINK_BUTTON');
-    expect(source).toContain('public button must win over any stale admin action_state');
+    expect(source).toContain('public action must win over any stale admin action_state');
+    expect(source).toContain("firstPublicAction === 'anonymous_link'");
+    expect(source).toContain('never retain a stale admin-panel state');
     expect(source).toContain('ADMIN_ACTIVITY_LABELS');
     expect(source).toContain("/^mandatory:/.test(String(data || ''))");
     expect(source).toContain('CREATE TABLE IF NOT EXISTS admin_activity_posts');
