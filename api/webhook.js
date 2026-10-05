@@ -813,6 +813,7 @@ async function sendBlockedList(client, id, prefix = '') {
   const rows = await blockedListRows(client, id);
   return send(id, `${prefix}${blockedListText(rows)}`, blockedListKeyboard(rows));
 }
+const ADMIN_ACTIVITY_LABELS = { admin_button_click: 'کلیک روی دکمه شیشه‌ای پنل', admin_text_action: 'عملیات متنی در پنل', admin_add: 'افزودن ادمین', admin_delete: 'حذف ادمین', admin_toggle: 'تغییر وضعیت ادمین', admin_permission_change: 'تغییر مجوز ادمین', admin_role_change: 'تغییر نقش ادمین', admin_activity_report_channel_connected: 'اتصال کانال گزارش فعالیت' };
 async function audit(client, adminId, targetId, action, details = {}) {
   await client.query('INSERT INTO admin_audit_log(admin_id,target_user_id,action,details) VALUES ($1,$2,$3,$4)', [adminId, targetId || null, action, JSON.stringify(details)]);
   try {
@@ -820,7 +821,7 @@ async function audit(client, adminId, targetId, action, details = {}) {
     const values = Object.fromEntries(rows.map(row => [row.key, row.value]));
     if (values.admin_activity_report_enabled !== 'true' || !values.admin_activity_report_channel_id) return;
     const detailsText = Object.keys(details || {}).length ? `\nجزئیات: ${JSON.stringify(details)}` : '';
-    await telegram('sendMessage', { chat_id: values.admin_activity_report_channel_id, text: `🛡 گزارش فعالیت ادمین\n\nادمین: ${adminId}\nعملیات: ${action}\n${targetId ? `کاربر هدف: ${targetId}\n` : ''}زمان: ${iranDate(new Date())}${detailsText}`, protect_content: true });
+    await telegram('sendMessage', { chat_id: values.admin_activity_report_channel_id, text: `🛡 گزارش فعالیت ادمین\n\nادمین: ${adminId}\nعملیات: ${ADMIN_ACTIVITY_LABELS[action] || action}\n${targetId ? `کاربر هدف: ${targetId}\n` : ''}زمان: ${iranDate(new Date())}${detailsText}`, protect_content: true });
   } catch (error) { console.error('admin_activity_report_error', String(error?.message || error).slice(0, 200)); }
 }
 async function adminUserPanel(client, viewerId, targetId) {
@@ -1389,7 +1390,10 @@ async function handleMandatoryTrackingCallback(id, data) {
   } finally { client.release(); }
 }
 
+function isAdminActivityCallback(data) { return /^(admins|admin|bonus|conversation|referral|financecard|wallet|gift|beauty|mandatory):/.test(String(data || '')); }
+function adminTextActivityDetails(state, value) { const sensitive = String(state || '').includes('admin:message'); return { state: String(state || 'پنل اصلی').slice(0, 180), text: sensitive ? `[متن پیام خصوصی، ${String(value || '').length} نویسه]` : String(value || '').slice(0, 300) }; }
 async function handleCallback(id, data, callbackQuery = null) {
+  if (isAdmin(id) && /^mandatory:/.test(String(data || ''))) { const activityClient = await pool.connect(); try { await audit(activityClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: 'mandatory', messageId: callbackQuery?.message?.message_id || null }); } finally { activityClient.release(); } }
   if (data.startsWith('mandatory:audience:')) return handleMandatoryAudienceCallback(id, data, callbackQuery);
   if (data === 'mandatory:verify') {
     const c = await pool.connect();
@@ -1411,6 +1415,7 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
     if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (data.startsWith('admins:')) {
       if (!hasAdminPermission(id, 'admins')) return send(id, 'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.');
@@ -2014,6 +2019,8 @@ async function handleText(id, text, meta = {}) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    const adminTextAction = isAdmin(id) && (String(me.action_state || '').startsWith('admin') || ['امور ادمین','افزودن ادمین','وضعیت ربات','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی'].includes(value));
+    if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
     if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'افزودن ادمین') { await updateAction(client,id,'admin:admins:add:id'); return send(id,'آیدی عددی کاربر را بفرست. برای لغو «بازگشت» را بفرست.',replyKeyboard([['بازگشت']],true)); }

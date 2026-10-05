@@ -142,6 +142,10 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("row.role !== 'owner' && Array.isArray(row.permissions)");
     expect(source).toContain("adminPermissionFromContext(`${item.id || ''} ${item.label || ''}`)");
     expect(source).toContain('for (let attempt = 0; attempt < 3; attempt += 1)');
+    expect(source).toContain('admin_button_click');
+    expect(source).toContain('admin_text_action');
+    expect(source).toContain('ADMIN_ACTIVITY_LABELS');
+    expect(source).toContain("/^mandatory:/.test(String(data || ''))");
   });
   it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
     expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
