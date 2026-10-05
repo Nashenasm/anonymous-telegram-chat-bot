@@ -8,7 +8,7 @@ import {
   createAnonymousBlock,
 } from './anonymous-link-service.js';
 import { applyCoinDelta } from './finance-ledger.js';
-import { claimBonus } from './bonus-service.js';
+import { BONUS_DEFINITIONS, claimBonus } from './bonus-service.js';
 
 const CANCEL_WORDS = ['انصراف', 'بازگشت'];
 const MAX_LEN = 4096;
@@ -68,11 +68,15 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       const owner = await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [uid(ownerId)]);
       if (owner.rowCount) {
         await applyCoinDelta(client, { userId: uid(ownerId), delta: 3, kind: 'referral', idempotencyKey: `anonymous-referral:${uid(newcomerId)}:${uid(ownerId)}`, metadata: { newcomerId: uid(newcomerId) } });
-        await claimBonus(client, { bonusKey: 'first_referral', userId: uid(ownerId), metadata: { newcomerId: uid(newcomerId) } });
+        const bonus = await claimBonus(client, { bonusKey: 'first_referral', userId: uid(ownerId), metadata: { source: 'anonymous_link' } });
+        await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
+        await client.query('COMMIT');
+        await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
+        if (bonus.granted) { const definition = BONUS_DEFINITIONS.first_referral; await send(uid(ownerId), `🎁 بونوس دریافت کردی\n\nمقدار: +${bonus.amount} مانوکوین\nدلیل: ${definition.title}\n${definition.description}`); }
+        return true;
       }
       await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
       await client.query('COMMIT');
-      if (owner.rowCount) await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
       return true;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   };

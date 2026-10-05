@@ -132,6 +132,14 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('notifies users about enabled bonuses without exposing referral identities', () => {
+    expect(source).toContain('notifyBonus');
+    expect(source).toContain('مقدار: +${result.amount} مانوکوین');
+    expect(source).toContain('دلیل: ${definition.title}');
+    expect(source).toContain('یک کاربر جدید با لینک دعوتت وارد ربات شد.');
+    expect(source).not.toContain('شناسه کاربر: ${newcomerId}');
+    expect(source).not.toContain('شناسه زیرمجموعه: ${newcomerId}');
+  });
   it('supports timed referral rewards, public explanation, safe gift back navigation, and removes duplicate daily coin control', () => {
     expect(source).toContain('referral_started_at');
     expect(source).toContain('runReferralTimeRewards');

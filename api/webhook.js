@@ -12,7 +12,7 @@ import { APPEARANCE_SECTIONS, appearanceButton, appearanceFeedback, appearanceIt
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
-import { BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
+import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
 import { ensureCryptoWalletSchema } from '../src/crypto-wallet-service.js';
 
@@ -622,9 +622,15 @@ function technicalKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(
 function sourceFormatKeyboard() { return replyKeyboard([['ZIP'], ['TAR.GZ'], ['بازگشت']], true); }
 function databaseFormatKeyboard() { return replyKeyboard([['ZIP چندفرمتی'], ['SQL'], ['JSON'], ['CSV (ZIP)'], ['بازگشت']], true); }
 
+async function notifyBonus(userId, bonusKey, result) {
+  if (!result?.granted || !result.amount) return;
+  const definition = BONUS_DEFINITIONS[bonusKey];
+  if (!definition) return;
+  try { await send(Number(userId), `🎁 بونوس دریافت کردی\n\nمقدار: +${result.amount} مانوکوین\nدلیل: ${definition.title}\n${definition.description}`); } catch {}
+}
 async function ensureUser(client, id) {
   const created = await client.query("INSERT INTO users (telegram_id, coins, start_completed) VALUES ($1, 20, FALSE) ON CONFLICT (telegram_id) DO NOTHING RETURNING telegram_id", [id]);
-  if (created.rowCount) await claimBonus(client, { bonusKey: 'new_user', userId: id, metadata: { source: 'first_bot_entry' } });
+  if (created.rowCount) { const bonus = await claimBonus(client, { bonusKey: 'new_user', userId: id, metadata: { source: 'first_bot_entry' } }); await notifyBonus(id, 'new_user', bonus); }
   else await client.query('UPDATE users SET updated_at=NOW() WHERE telegram_id=$1', [id]);
   const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]);
   return result.rows[0];
@@ -880,15 +886,15 @@ async function findPair(id, preference) {
 async function chargeSuccessfulConnection(userIds) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN'); const referralGrants = [];
+    await client.query('BEGIN'); const referralGrants = []; const bonusNotices = [];
     const costs = Object.fromEntries((await client.query("SELECT key,value FROM bot_settings WHERE key IN ('chat_cost_any','chat_cost_male','chat_cost_female')")).rows.map(row => [row.key, Number(row.value) || 0]));
     for (const userId of userIds.filter(Boolean)) {
       if (isAdmin(userId)) continue;
       const row = (await client.query('SELECT match_preference FROM users WHERE telegram_id=$1 FOR UPDATE', [userId])).rows[0]; const cost = costs[`chat_cost_${row?.match_preference || 'any'}`] || 0;
       if (cost > 0) await applyCoinDelta(client, { userId, delta: -cost, kind: 'chat_cost', idempotencyKey: newFinanceIdempotencyKey(`chat-cost:${userId}`), metadata: { cost } });
-      await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } }); const grant = await completeReferralCondition(client, userId, 'connect'); if (grant.granted) referralGrants.push({ grant, newcomerId: userId });
+      const bonus = await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } }); if (bonus.granted) bonusNotices.push({ userId, bonusKey: 'first_connection', result: bonus }); const grant = await completeReferralCondition(client, userId, 'connect'); if (grant.granted) referralGrants.push({ grant, newcomerId: userId });
     }
-    await client.query('COMMIT'); for (const item of referralGrants) await notifyReferralGrant(item.grant, item.newcomerId);
+    await client.query('COMMIT'); for (const notice of bonusNotices) await notifyBonus(notice.userId, notice.bonusKey, notice.result); for (const item of referralGrants) await notifyReferralGrant(item.grant, item.newcomerId);
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 async function searchByPreference(id, preference, s) {
@@ -1030,8 +1036,8 @@ async function referralCode(client, id) {
   }
   return null;
 }
-async function notifyReferralEntry(ownerId, newcomerId) { try { await send(Number(ownerId), `🔗 کاربر جدید با لینک دعوتت وارد ربات شد.\n\nشناسه کاربر: ${newcomerId}\nپاداش مرحله‌ای پس از تکمیل شرایط فعال، طبق تنظیمات به حسابت اضافه می‌شود.`); } catch {} }
-async function notifyReferralGrant(grant, newcomerId) { if (!grant?.granted || !grant.ownerId) return; const label = REFERRAL_CONDITION_LABELS[grant.conditionKey] || grant.conditionKey; try { await send(Number(grant.ownerId), `🎁 پاداش زیرمجموعه‌گیری دریافت شد\n\nزیرمجموعه‌ات شرط «${label}» را تکمیل کرد.\nمقدار دریافتی: ${grant.granted} مانوکوین\nشناسه زیرمجموعه: ${newcomerId}`); } catch {} }
+async function notifyReferralEntry(ownerId, newcomerId) { try { await send(Number(ownerId), '🔗 یک کاربر جدید با لینک دعوتت وارد ربات شد.\n\nپاداش مرحله‌ای پس از تکمیل شرایط فعال، طبق تنظیمات به حسابت اضافه می‌شود.'); } catch {} }
+async function notifyReferralGrant(grant, newcomerId) { if (!grant?.granted || !grant.ownerId) return; const label = REFERRAL_CONDITION_LABELS[grant.conditionKey] || grant.conditionKey; try { await send(Number(grant.ownerId), `🎁 پاداش زیرمجموعه‌گیری دریافت شد\n\nیک کاربر معرفی‌شده شرط «${label}» را تکمیل کرد.\nمقدار دریافتی: ${grant.granted} مانوکوین`); } catch {} }
 async function rewardFirstEntry(id, ownerId, reward, s, { joinReady = true } = {}) {
   reward = Number(s?.referral_reward_coins || reward);
   const client = await pool.connect();
@@ -1111,9 +1117,9 @@ async function handlePlusCallback(id, data, client, s) {
       await applyCoinDelta(tx, { userId: id, delta: -finalPrice, kind: 'purchase', idempotencyKey: `plus-purchase:${id}:${months}:${base.toISOString()}`, metadata: { product: 'plus', months, finalPrice } });
       await tx.query("UPDATE users SET plus_expires_at=$2, discount_percent=0, discount_code=NULL, plus_emoji=COALESCE(NULLIF(plus_emoji, ''), '✨'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, base]);
       await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, finalPrice]);
-      await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
-      await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
-      await tx.query('COMMIT'); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
+      const purchaseBonus = await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
+      const plusBonus = await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
+      await tx.query('COMMIT'); await notifyBonus(id, 'first_purchase', purchaseBonus); await notifyBonus(id, 'first_plus', plusBonus); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
       return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
     } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
   }
@@ -1150,7 +1156,7 @@ async function handleStart(id, payload = null) {
     const me = await ensureUser(client, id); const s = await settings(client);
     if (payload !== null) await recordMandatoryStart(id, payload, client, me);
     let referralOwnerId = null;
-    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
+    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
     if (!isAdmin(id)) {
       const missing = await mandatoryRequirements(id, client, { profile: me });
       if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
