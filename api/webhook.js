@@ -980,8 +980,8 @@ async function completeReferralCondition(client, newcomerId, conditionKey) {
   const owner = (await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [ownerId])).rows[0]; if (!owner) return { granted: 0, reason: 'owner_missing' };
   const total = Math.max(0, Number(await botSettingValue(client, 'referral_reward_coins', '5')) || 0);
   const conditions = await referralConditions(client);
-  const enabled = REFERRAL_CONDITION_ORDER.filter(k => conditions[k]);
-  const active = enabled.length ? enabled : ['join'];
+  const active = REFERRAL_CONDITION_ORDER.filter(k => conditions[k]);
+  if (!active.length || !conditions[conditionKey]) return { granted: 0, reason: 'condition_disabled' };
   const staged = (await botSettingValue(client, 'referral_staged_enabled', 'false')) === 'true';
   const configured = await referralStageAmounts(client);
   const hasConfigured = Object.values(configured).some(n => n > 0);
@@ -1052,9 +1052,33 @@ async function rewardFirstEntry(id, ownerId, reward, s, { joinReady = true } = {
     return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
-async function referralUserDescription(client) { const power=await botSettingValue(client,'referral_power_enabled','true')==='true'; if(!power) return '🔴 زیرمجموعه‌گیری در حال حاضر غیرفعال است.'; const staged=await botSettingValue(client,'referral_staged_enabled','false')==='true'; const total=Math.max(0,Number(await botSettingValue(client,'referral_reward_coins','5'))||0); const conditions=await referralConditions(client); const active=REFERRAL_CONDITION_ORDER.filter(k=>conditions[k]); const selected=active.length?active:['join']; const amounts=await referralStageAmounts(client); const hasConfigured=Object.values(amounts).some(n=>n>0); const mandatory=await activeMandatorySources(client); const lines=selected.map((key,index)=>{ const equal=key===selected[selected.length-1]?Math.max(0,total-Math.floor(total/selected.length)*(selected.length-1)):Math.floor(total/selected.length); const amount=staged?(hasConfigured?amounts[key]:equal):0; return `• ${REFERRAL_CONDITION_LABELS[key]}: ${staged?`${amount} مانوکوین پس از تکمیل همین شرط`:'سهم از پاداش نهایی پس از تکمیل همهٔ شرایط'}`; }).join('\n'); const joinNote=mandatory.rows.length?`\n\n📌 شرط جویین اجباری: ابتدا باید در همهٔ منابع اجباری عضو شوی و سپس «بررسی عضویت» را بزنی.`:'\n\n✅ چون منبع جویین اجباری فعال نیست، سهم مرحلهٔ ورود پس از ورود با لینک دعوت به‌صورت خودکار برای دعوت‌کننده ثبت می‌شود.'; return `📋 شرایط و پاداش زیرمجموعه‌گیری\n\n${staged?'در حالت کوین پله‌ای، هر سهم پس از انجام همان شرط پرداخت می‌شود.':`پس از تکمیل همهٔ شرایط فعال، مجموع ${total} مانوکوین یکجا پرداخت می‌شود.`}\n\n${lines}${joinNote}`; }
+async function referralUserDescription(client) {
+  const power = await botSettingValue(client, 'referral_power_enabled', 'true') === 'true';
+  if (!power) return 'در حال حاضر امکان زیرمجموعه‌گیری فعال نیست.';
+  const staged = await botSettingValue(client, 'referral_staged_enabled', 'false') === 'true';
+  const total = Math.max(0, Number(await botSettingValue(client, 'referral_reward_coins', '5')) || 0);
+  const conditions = await referralConditions(client);
+  const active = REFERRAL_CONDITION_ORDER.filter(k => conditions[k]);
+  if (!active.length) return 'با دعوت دوستانت به ربات، در صورت فعال شدن شرایط دریافت پاداش، سهم مربوط به دعوت‌ها برایت ثبت می‌شود.';
+  const amounts = await referralStageAmounts(client);
+  const hasConfigured = Object.values(amounts).some(n => n > 0);
+  const mandatory = await activeMandatorySources(client);
+  const lines = active.map((key, index) => {
+    const equal = key === active[active.length - 1]
+      ? Math.max(0, total - Math.floor(total / active.length) * (active.length - 1))
+      : Math.floor(total / active.length);
+    const amount = staged ? (hasConfigured ? amounts[key] : equal) : 0;
+    return staged
+      ? `• ${REFERRAL_CONDITION_LABELS[key]}: ${amount} مانوکوین`
+      : `• ${REFERRAL_CONDITION_LABELS[key]}: بخشی از پاداش نهایی`;
+  }).join('\n');
+  const joinNote = mandatory.rows.length
+    ? '\n\nبرای تکمیل مرحلهٔ عضویت، ابتدا در منابع اعلام‌شده عضو شو و سپس «بررسی عضویت» را بزن.'
+    : '';
+  return `🎁 با دعوت دوستانت، مانوکوین دریافت کن\n\n${staged ? 'با انجام هر مرحله، پاداش همان مرحله برایت ثبت می‌شود.' : `پس از تکمیل مراحل، مجموع ${total} مانوکوین برایت ثبت می‌شود.`}\n\n${lines}${joinNote}\n\nلینک دعوتت را برای دوستانت بفرست و از دعوت آن‌ها لذت ببر.`;
+}
 async function sendIncreaseCoins(id, settings) { return send(id, 'افزایش مانو کوین\n\nخرید مانو کوین در حال حاضر غیرفعال است.', increaseCoinsKeyboard(settings)); }
-async function sendFreeCoins(id, settings) { const client = await pool.connect(); try { const code = await referralCode(client, id); const username = await botUsername(); if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings)); const url = `https://t.me/${username}?start=ref_${code}`; const description=await referralUserDescription(client); const text = `🔗 لینک اختصاصی شما:\n${url}\n\n${description}\n\n🎁 متن پیشنهادی جذب کاربر:\nبا لینک اختصاصی من وارد ربات چت ناشناس شو و دوست‌های جدید پیدا کن!`; return sendLink(id, text, increaseCoinsKeyboard(settings)); } finally { client.release(); } }
+async function sendFreeCoins(id, settings) { const client = await pool.connect(); try { const code = await referralCode(client, id); const username = await botUsername(); if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings)); const url = `https://t.me/${username}?start=ref_${code}`; const description=await referralUserDescription(client); const text = `🔗 لینک دعوت شما:\n${url}\n\n${description}\n\n📨 متن پیشنهادی برای ارسال:\nبا لینک من وارد ربات شو و دوستان جدید پیدا کن:\n${url}`; return sendLink(id, text, increaseCoinsKeyboard(settings)); } finally { client.release(); } }
 async function sendPlus(id, settings) {
   const text = `✨ اکانت پلاس\n\nبا اکانت پلاس:\n۱) تبلیغات مزاحم برایت نمایش داده نمی‌شود.\n۲) سریع‌تر به چت وصل می‌شوی.\n۳) نشان مخصوص پلاس در چت نمایش داده می‌شود.\n۴) می‌توانی نشان پلاس را تغییر بدهی.\n۵) از مزایای آیندهٔ کاربران پلاس بهره‌مند می‌شوی.\n\n💰 قیمت‌ها:\nپلاس ۱ ماهه ۱۰۰ مانو کوین\nپلاس ۳ ماهه ۲۵۰ مانو کوین\nپلاس ۶ ماهه ۴۵۰ مانو کوین\nپلاس ۱۲ ماهه ۸۰۰ مانو کوین`;
   return send(id, text, plusPurchaseKeyboard());
