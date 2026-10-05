@@ -146,6 +146,10 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('admin_text_action');
     expect(source).toContain('ADMIN_ACTIVITY_LABELS');
     expect(source).toContain("/^mandatory:/.test(String(data || ''))");
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS admin_activity_posts');
+    expect(source).toContain('Number(post.activity_count)>=50');
+    expect(source).toContain('adminActivityPostKeyboard');
+    expect(source).toContain('admins:role:${adminId}');
   });
   it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
     expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
