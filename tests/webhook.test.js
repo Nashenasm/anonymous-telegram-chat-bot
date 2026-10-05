@@ -132,6 +132,10 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('shows only enabled and monitored wallets in crypto payments', () => {
+    expect(source).toContain('WHERE enabled=TRUE AND monitor_enabled=TRUE');
+    expect(source).toContain('این ولت دیگر فعال نیست؛ لطفاً دوباره انتخاب کن.');
+  });
   it('provides global and per-wallet monitoring controls', () => {
     expect(source).toContain("wallet:monitor:global:");
     expect(source).toContain("wallet:monitor:auto:");
