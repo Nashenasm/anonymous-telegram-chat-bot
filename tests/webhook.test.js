@@ -132,6 +132,14 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('exposes an admin activity report channel and sends audit events when enabled', () => {
+    expect(source).toContain('کانال گزارش فعالیت ادمین‌ها');
+    expect(source).toContain('admin_activity_report_channel_id');
+    expect(source).toContain('admin_activity_report_enabled');
+    expect(source).toContain("admin_activity_report_error");
+    expect(source).toContain('اتصال/تغییر کانال');
+    expect(source).toContain('ارسال پیام تست');
+  });
   it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
     expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
     expect(chatPermissionViolations({}, '@example')).toContain('mention');

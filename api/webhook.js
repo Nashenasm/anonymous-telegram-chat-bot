@@ -32,7 +32,15 @@ function adminPermissionFromContext(value, state = '') { const text = `${value |
 function hasAdminPermission(id, key) { if (isOwner(id)) return true; const row = runtimeAdmins.get(String(id)); return Boolean(row && row.enabled !== false && (row.role === 'admin' || row.role === 'owner' || (Array.isArray(row.permissions) && row.permissions.includes(key)))); }
 function adminRoleLabel(role) { return ({ owner: 'مالک اصلی', admin: 'مدیر کامل', operator: 'اپراتور', support: 'پشتیبانی', finance: 'امور مالی' }[role] || role || 'نامشخص'); }
 function adminPermissionLabel(key) { return ({ dashboard:'داشبورد', users:'کاربران و مکالمات', finance:'امور مالی عمومی', wallets:'ولت و مانیتورینگ', bonuses:'بونوس‌ها', referrals:'زیرمجموعه‌ها', gifts:'کدهای هدیه', appearance:'ظاهر و پیام‌ها', broadcast:'تبلیغات و پیام همگانی', reports:'گزارش‌ها', admins:'مدیریت ادمین‌ها' }[key] || key); }
-function adminManagementKeyboard() { return replyKeyboard([['فهرست ادمین‌ها'], ['افزودن ادمین'], ['بازگشت پنل']], true); }
+function adminManagementKeyboard() { return replyKeyboard([['فهرست ادمین‌ها'], ['افزودن ادمین'], ['کانال گزارش فعالیت ادمین‌ها'], ['بازگشت پنل']], true); }
+function adminActivityReportKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['روشن/خاموش گزارش‌ها'], ['ارسال پیام تست'], ['قطع اتصال کانال'], ['بازگشت امور ادمین']], true); }
+async function adminActivityReportText(client) { const rows=(await client.query("SELECT key,value FROM bot_settings WHERE key IN ('admin_activity_report_channel_id','admin_activity_report_enabled','admin_activity_report_private')")).rows; const values=Object.fromEntries(rows.map(row=>[row.key,row.value])); return `کانال گزارش فعالیت ادمین‌ها
+
+وضعیت گزارش‌دهی: ${values.admin_activity_report_enabled === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+کانال: ${values.admin_activity_report_channel_id || 'تنظیم نشده'}
+نوع: ${values.admin_activity_report_private === 'true' ? 'خصوصی' : values.admin_activity_report_channel_id ? 'عمومی' : 'نامشخص'}
+
+در صورت فعال بودن، فعالیت‌های مدیریتی مانند تغییر مجوز، ورود به پنل، تغییرات مالی و مدیریت کاربران در این کانال ثبت می‌شود.`; }
 function adminAccountKeyboard(row) { const buttons = ADMIN_PERMISSION_KEYS.map(key => [{ text: `${Array.isArray(row.permissions) && row.permissions.includes(key) ? '🟢' : '🔴'} ${adminPermissionLabel(key)}`, callback_data: `admins:perm:${row.telegram_id}:${key}` }]); return { reply_markup: { inline_keyboard: [[{ text: `نقش: ${adminRoleLabel(row.role)}`, callback_data: `admins:role:${row.telegram_id}` }], [{ text: row.enabled ? '🔴 غیرفعال کردن' : '🟢 فعال کردن', callback_data: `admins:toggle:${row.telegram_id}` }], ...buttons, [{ text: '🗑 حذف ادمین', callback_data: `admins:delete:${row.telegram_id}` }], [{ text: 'بازگشت به فهرست', callback_data: 'admins:list' }]] } }; }
 async function adminRows(client) { return (await client.query("SELECT a.*,u.username,u.role AS user_role FROM admin_accounts a LEFT JOIN users u ON u.telegram_id=a.telegram_id ORDER BY CASE WHEN a.role='owner' THEN 0 ELSE 1 END,a.created_at")).rows; }
 async function sendAdminManagement(client,id) { const rows=await adminRows(client); const text=`مدیریت جامع ادمین‌ها\n\nتعداد: ${rows.length}\n\n${rows.map((r,i)=>`${i+1}. ${r.enabled?'🟢':'🔴'} ${r.username?`@${r.username}`:'بدون نام کاربری'}\nآیدی: ${r.telegram_id} | نقش: ${adminRoleLabel(r.role)}`).join('\n\n')||'ادمینی ثبت نشده است.'}`; const markup={reply_markup:{inline_keyboard:rows.map(r=>[{text:`${r.enabled?'🟢':'🔴'} ${r.username?`@${r.username}`:r.telegram_id} — ${adminRoleLabel(r.role)}`,callback_data:`admins:view:${r.telegram_id}`}]).concat([[{text:'بازگشت پنل',callback_data:'admins:back'}]])}}; await send(id,text,markup); return send(id,'عملیات مدیریت ادمین:',adminManagementKeyboard()); }
@@ -797,6 +805,13 @@ async function sendBlockedList(client, id, prefix = '') {
 }
 async function audit(client, adminId, targetId, action, details = {}) {
   await client.query('INSERT INTO admin_audit_log(admin_id,target_user_id,action,details) VALUES ($1,$2,$3,$4)', [adminId, targetId || null, action, JSON.stringify(details)]);
+  try {
+    const rows = (await client.query("SELECT key,value FROM bot_settings WHERE key IN ('admin_activity_report_channel_id','admin_activity_report_enabled')")).rows;
+    const values = Object.fromEntries(rows.map(row => [row.key, row.value]));
+    if (values.admin_activity_report_enabled !== 'true' || !values.admin_activity_report_channel_id) return;
+    const detailsText = Object.keys(details || {}).length ? `\nجزئیات: ${JSON.stringify(details)}` : '';
+    await telegram('sendMessage', { chat_id: values.admin_activity_report_channel_id, text: `🛡 گزارش فعالیت ادمین\n\nادمین: ${adminId}\nعملیات: ${action}\n${targetId ? `کاربر هدف: ${targetId}\n` : ''}زمان: ${iranDate(new Date())}${detailsText}`, protect_content: true });
+  } catch (error) { console.error('admin_activity_report_error', String(error?.message || error).slice(0, 200)); }
 }
 async function adminUserPanel(client, viewerId, targetId) {
   const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [targetId]);
@@ -1998,6 +2013,22 @@ async function handleText(id, text, meta = {}) {
       if (!/^\d{3,20}$/.test(value)) return send(id,'آیدی عددی معتبر بفرست.',replyKeyboard([['بازگشت']],true));
       const targetId=Number(value); const target=(await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1',[targetId])).rows[0]; if(!target) return send(id,'این کاربر هنوز عضو ربات نشده است. ابتدا باید وارد ربات شود.',replyKeyboard([['بازگشت']],true));
       await client.query("INSERT INTO admin_accounts(telegram_id,role,permissions,added_by) VALUES($1,'admin',$2::jsonb,$3) ON CONFLICT (telegram_id) DO UPDATE SET enabled=TRUE,updated_at=NOW()", [targetId,JSON.stringify(ADMIN_ROLE_DEFAULTS.admin),id]); await refreshAdminCache(client); await audit(client,id,targetId,'admin_add',{role:'admin'}); await updateAction(client,id,'admin:admins'); return sendAdminAccount(client,id,targetId);
+    }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'کانال گزارش فعالیت ادمین‌ها') { await updateAction(client,id,'admin:admins:activity_report'); return send(id, await adminActivityReportText(client), adminActivityReportKeyboard()); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:activity_report') {
+      if (value === 'بازگشت امور ادمین') { await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
+      if (value === 'اتصال/تغییر کانال') { await updateAction(client,id,'admin:admins:activity_report:channel'); return send(id,'آیدی عددی یا @نام‌کاربری کانال را بفرست. ربات باید ادمین کانال و دارای دسترسی ارسال پیام باشد.',replyKeyboard([['بازگشت']],true)); }
+      if (value === 'روشن/خاموش گزارش‌ها') { const next=(await botSettingValue(client,'admin_activity_report_enabled','false')) !== 'true'; await saveBotSetting(client,'admin_activity_report_enabled',String(next)); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      if (value === 'قطع اتصال کانال') { await saveBotSetting(client,'admin_activity_report_channel_id',''); await saveBotSetting(client,'admin_activity_report_enabled','false'); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      if (value === 'ارسال پیام تست') { const channel=await botSettingValue(client,'admin_activity_report_channel_id',''); if(!channel) return send(id,'ابتدا کانال گزارش را متصل کن.',adminActivityReportKeyboard()); try { await telegram('sendMessage',{chat_id:channel,text:`✅ پیام تست کانال گزارش فعالیت ادمین‌ها\nادمین آزمایشی: ${id}\nزمان: ${iranDate(new Date())}`,protect_content:true}); return send(id,'پیام تست با موفقیت ارسال شد.',adminActivityReportKeyboard()); } catch { return send(id,'ارسال پیام تست ناموفق بود؛ دسترسی ربات و آیدی کانال را بررسی کن.',adminActivityReportKeyboard()); } }
+      return send(id,await adminActivityReportText(client),adminActivityReportKeyboard());
+    }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:activity_report:channel') {
+      if (value === 'بازگشت') { await updateAction(client,id,'admin:admins:activity_report'); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      const channel=await validateMandatoryReportChannel(value);
+      if (channel === false) return send(id,'دریافت اطلاعات کانال از تلگرام انجام نشد؛ دوباره تلاش کن.',replyKeyboard([['بازگشت']],true));
+      if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
+      await saveBotSetting(client,'admin_activity_report_channel_id',channel.id); await saveBotSetting(client,'admin_activity_report_private',String(channel.isPrivate)); await saveBotSetting(client,'admin_activity_report_enabled','true'); await updateAction(client,id,'admin:admins:activity_report'); await audit(client,id,channel.id,'admin_activity_report_channel_connected',{title:channel.title}); return send(id,`کانال «${channel.title}» متصل شد و گزارش‌ها فعال شدند.`,adminActivityReportKeyboard());
     }
     if (isAdmin(id) && (me.action_state?.startsWith('beauty:name:') || me.action_state?.startsWith('beauty:message:')) && isReservedEditorLabel(value, s)) { await updateAction(client, id, null); me.action_state = null; }
 
