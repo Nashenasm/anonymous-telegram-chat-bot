@@ -1014,7 +1014,7 @@ async function broadcastCampaign(client, id, message) {
   return row;
 }
 async function broadcastDraftText(client, id, suffix = '') {
-  const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1 AND created_by=$2', [id, id])).rows[0];
+  const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [id])).rows[0];
   if (!row) return 'پیام آماده ارسال پیدا نشد.';
   const audience = normalizeBroadcastAudience(row.audience);
   const count = await broadcastTargetCount(client, audience);
