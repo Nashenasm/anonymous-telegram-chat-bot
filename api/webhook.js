@@ -1661,7 +1661,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (action === 'confirm') {
         const count = await prepareBroadcastTargets(sClient, campaignId, audience, campaign.target_limit);
         const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
-        await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,status=CASE WHEN scheduled_at > NOW() THEN 'scheduled' ELSE 'running' END,started_at=CASE WHEN scheduled_at <= NOW() THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1", [campaignId, count, reportChannel || null]);
+        await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,admin_chat_id=$4,admin_message_id=$5,status=CASE WHEN scheduled_at > NOW() THEN 'scheduled' ELSE 'running' END,started_at=CASE WHEN scheduled_at <= NOW() THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1", [campaignId, count, reportChannel || null, id, callbackQuery?.message?.message_id || null]);
         await updateAction(sClient, id, null);
         if (campaign.scheduled_at && new Date(campaign.scheduled_at).getTime() > Date.now()) return editAudienceCallback(callbackQuery, id, `✅ کمپین زمان‌بندی شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
         void runBroadcastJobs({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_start_error', error));

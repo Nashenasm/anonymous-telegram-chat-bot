@@ -78,6 +78,7 @@ export async function ensureBroadcastSchema(client) {
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
+  await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS admin_chat_id BIGINT');
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_campaigns_schedule_idx ON broadcast_campaigns(status, scheduled_at)');
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_deliveries_status_idx ON broadcast_deliveries(campaign_id, status)');
 }
@@ -176,13 +177,20 @@ export function broadcastProgressText(campaign, extra = '') {
 async function publishBroadcastReport(client, telegramCall, campaignId) {
   const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
   if (!row?.report_channel_id) return;
-  const text = broadcastProgressText(row, `نوع پیام: ${row.message_kind}\nزمان: ${iranDate(row.finished_at || row.updated_at)}`);
-  const markup = { inline_keyboard: [[{ text: 'جزئیات کمپین', callback_data: `broadcast:campaign:${row.id}` }]] };
+  const counts = (await client.query(`SELECT COUNT(*) FILTER (WHERE status='pending')::int AS pending, COUNT(*) FILTER (WHERE status='deleted')::int AS deleted FROM broadcast_deliveries WHERE campaign_id=$1`, [row.id])).rows[0] || {};
+  const details = `نوع پیام: ${row.message_kind}\nمخاطب: ${broadcastAudienceLabel(row.audience)}\nزمان ایران: ${iranDate(row.finished_at || row.updated_at)}\nدر انتظار: ${Number(counts.pending || 0)}\nحذف‌شده: ${Number(counts.deleted || 0)}\nمشاهده: در پیام خصوصی تلگرام قابل اندازه‌گیری نیست`;
+  const text = broadcastProgressText(row, details);
+  const markup = { inline_keyboard: [[{ text: 'جزئیات ارسال', callback_data: `broadcast:campaign:${row.id}` }]] };
   try {
-    if (row.report_message_id) await telegramCall('editMessageText', { chat_id: row.report_channel_id, message_id: row.report_message_id, text, reply_markup: markup });
-    else {
-      const sent = await telegramCall('sendMessage', { chat_id: row.report_channel_id, text, reply_markup: markup, protect_content: true });
-      await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,updated_at=NOW() WHERE id=$1', [row.id, sent.message_id]);
+    if (row.report_channel_id) {
+      if (row.report_message_id) await telegramCall('editMessageText', { chat_id: row.report_channel_id, message_id: row.report_message_id, text, reply_markup: markup });
+      else {
+        const sent = await telegramCall('sendMessage', { chat_id: row.report_channel_id, text, reply_markup: markup, protect_content: true });
+        await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,updated_at=NOW() WHERE id=$1', [row.id, sent.message_id]);
+      }
+    }
+    if (row.admin_chat_id && row.admin_message_id) {
+      await telegramCall('editMessageText', { chat_id: row.admin_chat_id, message_id: row.admin_message_id, text, reply_markup: markup });
     }
   } catch (error) { console.error('broadcast_report_error', String(error?.message || error).slice(0, 300)); }
 }
@@ -192,6 +200,8 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
   const result = { started: 0, sent: 0, failed: 0, deleted: 0, completed: 0 };
   try {
     await ensureBroadcastSchema(client);
+    const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns WHERE report_channel_id IS NOT NULL AND report_message_id IS NULL AND status IN ('scheduled','running') ORDER BY id LIMIT 20`);
+    for (const report of waitingReports.rows) await publishBroadcastReport(client, telegramCall, report.id);
     const due = await client.query(`SELECT * FROM broadcast_campaigns WHERE status='scheduled' AND scheduled_at <= NOW() ORDER BY scheduled_at,id LIMIT 10`);
     for (const row of due.rows) {
       await client.query("UPDATE broadcast_campaigns SET status='running',started_at=COALESCE(started_at,NOW()),updated_at=NOW() WHERE id=$1 AND status='scheduled'", [row.id]);
