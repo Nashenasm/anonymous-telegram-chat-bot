@@ -2603,6 +2603,7 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && privateActionId === 'back') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
 if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی')) return handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
     const privateAction = isAdmin(id) ? visiblePrivateAction(value, s) : null;
+    if (isAdmin(id) && value === 'ارسال پیام🔺') { await updateAction(client, id, 'admin:broadcast:message'); return send(id, 'پیام همگانی را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true)); }
     if (privateAction === 'ads') return broadcastStatsPanel(client, id);
     if (isAdmin(id) && value === 'کمپین‌های قبلی') return broadcastCampaignsPanel(client, id);
     if (isAdmin(id) && value === 'پیام آمادهⓂ️') return broadcastTemplatesPanel(client, id);
