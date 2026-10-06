@@ -176,7 +176,8 @@ function broadcastReportKeyboard(row) {
   if (row.status === 'scheduled') return { inline_keyboard: [[{ text: 'ارسال الان | Send NOW‼️', callback_data: `broadcast:report:send_now:${id}` }], [{ text: 'کنسل | Cancel⭕️', callback_data: `broadcast:report:cancel:${id}` }]] };
   if (row.status === 'running') return { inline_keyboard: [[{ text: 'کنسل | Cancel⭕️', callback_data: `broadcast:report:cancel:${id}` }]] };
   if (row.status === 'deleting') return { inline_keyboard: [[{ text: 'در حال حذف...', callback_data: `broadcast:report:noop:${id}` }]] };
-  if (row.status === 'completed' || row.status === 'deleted' || row.status === 'failed' || row.status === 'cancelled') return { inline_keyboard: [[{ text: row.status === 'deleted' ? 'ارسال دوباره | Again♻️' : 'حذف پیام | Delete❌', callback_data: `broadcast:report:${row.status === 'deleted' ? 'resend' : 'delete'}:${id}` }, { text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
+  if (row.status === 'deleted') return { inline_keyboard: [[{ text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
+  if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') return { inline_keyboard: [[{ text: 'حذف پیام | Delete❌', callback_data: `broadcast:report:delete:${id}` }, { text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
   return { inline_keyboard: [] };
 }
 
