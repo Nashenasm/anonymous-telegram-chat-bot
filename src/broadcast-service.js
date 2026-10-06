@@ -229,7 +229,7 @@ async function publishBroadcastReport(client, telegramCall, campaignId) {
     if (row.admin_chat_id && row.admin_message_id) {
       await telegramCall('editMessageText', { chat_id: row.admin_chat_id, message_id: row.admin_message_id, text, reply_markup: markup });
     }
-  } catch (error) { console.error('broadcast_report_error', String(error?.message || error).slice(0, 300)); }
+  } catch (error) { if (!/message is not modified/i.test(String(error?.message || error))) console.error('broadcast_report_error', String(error?.message || error).slice(0, 300)); }
 }
 
 export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSize = 100 } = {}) {
