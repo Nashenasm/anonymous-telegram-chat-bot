@@ -1598,9 +1598,10 @@ async function handleCallback(id, data, callbackQuery = null) {
         await updateAction(sClient, id, `admin:broadcast:segments:${copy.id}`);
         return editAudienceCallback(callbackQuery, id, 'پیام آماده انتخاب شد؛ مخاطبان را تأیید یا تغییر بده.', broadcastAudienceSegmentsKeyboard(copy.id, copy.audience));
       }
+      if (action === 'back' && !parts[2]) { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
       const campaignId = Number(parts[2]);
       const campaign = (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
-      if (!campaign || !isAdmin(id)) return send(id, 'کمپین پیدا نشد.');
+      if (!campaign || !isAdmin(id)) return send(id, 'ارسال پیدا نشد؛ برای ارسال جدید دوباره «ارسال پیام🔺» را بزن.');
       const audience = normalizeBroadcastAudience(campaign.audience);
       if (action === 'campaign') return editAudienceCallback(callbackQuery, id, broadcastProgressText(campaign, `نوع پیام: ${campaign.message_kind}`), broadcastCampaignKeyboard(campaign));
       if (action === 'continue') { await sClient.query("UPDATE broadcast_campaigns SET status='running',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','failed','cancelled')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_continue_error', error)); return editAudienceCallback(callbackQuery, id, 'ادامهٔ ارسال کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
@@ -2305,6 +2306,7 @@ async function handleText(id, text, meta = {}) {
       return send(id, 'پیام با موفقیت ذخیره شد.', adminMainKeyboard({},id));
     }
     if (isAdmin(id) && (me.action_state === 'admin:broadcast' || me.action_state === 'admin:broadcast:message')) {
+      if (value === 'برگشت') { await updateAction(client, id, null); return broadcastStatsPanel(client, id); }
       const incoming = meta?.message;
       if (!incoming?.message_id) return send(id, 'لطفاً خود پیام را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true));
       const draft = await broadcastCampaign(client, id, incoming);
