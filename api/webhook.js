@@ -334,11 +334,17 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
     const coinCost = type === 'coins' ? amount : 0;
     if (!recipient) { await client.query('ROLLBACK'); throw new Error('recipient_missing'); }
     if (type === 'coins' && (!sender || Number(sender.coins) < amount)) { await client.query('ROLLBACK'); throw new Error('insufficient_coins'); }
-    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}`), metadata: { recipientId, amount } });
+    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}:${type}:${amount}:${Date.now()}`), metadata: { recipientId, amount } });
     else await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' months')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1", [recipientId, amount]);
     await client.query('INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4)', [senderId, recipientId, type, amount]); await client.query('COMMIT');
     const label = type === 'coins' ? `${amount} مانو کوین🐝` : `${amount === 12 ? '۱ سال' : `${amount} ماه`} مانو پلاس`;
-    await send(recipientId, `🎁 طرف مکالمه‌ات برایت ${label} هدیه فرستاد. مبارکت باشد!`);
+    try {
+      await send(recipientId, `🎁 طرف مکالمه‌ات برایت ${label} هدیه فرستاد. مبارکت باشد!`);
+      return { delivered: true };
+    } catch (deliveryError) {
+      console.error('chat_gift_delivery_error', { senderId, recipientId, type, amount, error: String(deliveryError?.message || deliveryError).slice(0, 240) });
+      return { delivered: false };
+    }
   } catch (error) { if (error.message !== 'recipient_missing' && error.message !== 'insufficient_coins') await client.query('ROLLBACK'); if (error.message === 'insufficient_coins') throw error; if (error.message === 'recipient_missing') throw error; throw error; }
 }
 function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { return { reply_markup: { inline_keyboard: permissionKeyboard(permissions).map(item => [{ text: item.label, callback_data: `conversation:permission:${item.key}` }]).concat([[{ text: 'بازگشت', callback_data: 'conversation:back' }]]) } }; }
@@ -998,7 +1004,7 @@ async function claimDailyCoins(client, id, callbackQuery = null) {
 async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
 async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
 function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
-function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️', 'کمپین‌های قبلی'], ['برگشت']], true); }
+function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️'], ['برگشت']], true); }
 function broadcastReportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال'], ['بازگشت پیام همگانی']], true); }
 async function broadcastReportChannelText(client) { const channel=await botSettingValue(client,'broadcast_report_channel_id',''); const privateFlag=await botSettingValue(client,'broadcast_report_channel_private','false'); return `کانال گزارش پیام‌های همگانی\n\nوضعیت: ${channel ? '🟢 متصل' : '🔴 تنظیم نشده'}\nکانال: ${channel || 'تنظیم نشده'}\nنوع: ${channel ? (privateFlag === 'true' ? 'خصوصی' : 'عمومی') : 'نامشخص'}\n\nاین کانال فقط برای گزارش کمپین‌های پیام همگانی استفاده می‌شود و با کانال‌های گزارش دیگر مستقل است.`; }
 function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
@@ -1039,6 +1045,32 @@ ${rows.map((r, i) => `${i + 1}. #${r.id} | ${r.status} | موفق: ${r.sent_coun
   const markup = { reply_markup: { inline_keyboard: rows.map(r => [{ text: `#${r.id} — ${r.status}`, callback_data: `broadcast:campaign:${r.id}` }]).concat([[{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }]]) } };
   return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
 }
+function broadcastTemplateKeyboard(templateId, row) {
+  return { reply_markup: { inline_keyboard: [
+    [{ text: 'ارسال الان', callback_data: `broadcast:template:${templateId}:send` }],
+    [{ text: 'تغییر تفکیک', callback_data: `broadcast:template:${templateId}:segments` }],
+    [{ text: 'تغییر نحوه ارسال', callback_data: `broadcast:template:${templateId}:scope` }],
+    [{ text: 'افزودن زمان‌بندی', callback_data: `broadcast:template:${templateId}:schedule` }],
+    [{ text: 'تغییر تعداد', callback_data: `broadcast:template:${templateId}:count` }],
+    [{ text: 'برداشتن ذخیره | Unsaved☑️', callback_data: `broadcast:template:${templateId}:unsave` }],
+    [{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }],
+  ] } };
+}
+async function broadcastTemplatePanel(client, id, templateId, callbackQuery = null) {
+  const row = (await client.query('SELECT t.id AS template_id,t.title,c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
+  if (!row) return send(id, 'پیام آماده پیدا نشد.');
+  const audience = normalizeBroadcastAudience(row.audience);
+  const count = await broadcastTargetCount(client, audience);
+  const text = `Ⓜ️ ${row.title}
+
+نوع پیام: ${row.message_kind}
+تفکیک: ${broadcastAudienceLabel(audience)}
+تعداد فعلی مخاطبان: ${count}
+زمان‌بندی: ${row.scheduled_at ? iranDate(row.scheduled_at) : 'بدون زمان‌بندی'}
+تعداد ارسال: ${row.target_limit || 'همه'}`;
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, broadcastTemplateKeyboard(templateId, row)) : send(id, text, broadcastTemplateKeyboard(templateId, row));
+}
+
 async function broadcastTemplatesPanel(client, id, callbackQuery = null) {
   const rows = (await client.query('SELECT t.*,c.message_kind,c.audience FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.owner_id=$1 ORDER BY t.id DESC LIMIT 30', [id])).rows;
   const text = `Ⓜ️ پیام‌های آماده
@@ -1528,8 +1560,8 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'chatgift:back') { await updateAction(sClient, id, null); return send(id, 'مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
     if (data === 'chatgift:noop') return false;
     if (data.startsWith('chatgift:coin:')) { const delta = data.split(':')[2]; if (delta === 'custom') { await updateAction(sClient, id, 'chatgift:coin_custom'); return send(id, 'مقدار دلخواه را به‌صورت عدد مثبت بفرست.'); } const current = Number(String(me.action_state || '').split(':')[2]) || 10; const next = Math.max(1, current + Number(delta)); await updateAction(sClient, id, `chatgift:coins:${next}`); return editAudienceCallback(callbackQuery, id, 'چه مقدار مانو کوین می‌خواهی هدیه بدهی؟', chatGiftCoinKeyboard(next)); }
-    if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); try { await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, `هدیهٔ ${amount} مانو کوین ارسال شد.`, { reply_markup: { inline_keyboard: [] } }); }
-    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); try { await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.`, { reply_markup: { inline_keyboard: [] } }); }
+    if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${amount} مانو کوین ارسال شد.` : `هدیهٔ ${amount} مانو کوین ثبت شد، اما اعلان آن به طرف مقابل نرسید و برای جلوگیری از ارسال دوباره، عملیات بسته شد.`, { reply_markup: { inline_keyboard: [] } }); }
+    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.` : 'هدیه ثبت شد، اما اعلان آن به طرف مقابل نرسید و عملیات بسته شد.', { reply_markup: { inline_keyboard: [] } }); }
     if (isAdmin(id) && data === 'conversation:back') { await updateAction(sClient, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
     if (isAdmin(id) && data.startsWith('conversation:permission:')) {
       const key = data.slice('conversation:permission:'.length); const current = JSON.parse(await botSettingValue(sClient, 'chat_permissions', JSON.stringify(DEFAULT_CHAT_PERMISSIONS)) || '{}');
@@ -1592,15 +1624,28 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (action === 'back_menu') { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
       if (action === 'template') {
         const templateId = Number(parts[2]);
-        const row = (await sClient.query('SELECT c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
+        if (!parts[3]) return broadcastTemplatePanel(sClient, id, templateId, callbackQuery);
+        const templateAction = parts[3];
+        const row = (await sClient.query('SELECT t.id AS template_id,t.campaign_id,c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
         if (!row) return send(id, 'پیام آماده پیدا نشد.');
-        const copy = (await sClient.query(`INSERT INTO broadcast_campaigns(created_by,source_chat_id,source_message_id,message_kind,audience) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING *`, [id, row.source_chat_id, row.source_message_id, row.message_kind, JSON.stringify(row.audience)])).rows[0];
-        await updateAction(sClient, id, `admin:broadcast:segments:${copy.id}`);
-        return editAudienceCallback(callbackQuery, id, 'پیام آماده انتخاب شد؛ مخاطبان را تأیید یا تغییر بده.', broadcastAudienceSegmentsKeyboard(copy.id, copy.audience));
+        if (templateAction === 'unsave') { await sClient.query('DELETE FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id]); return broadcastTemplatesPanel(sClient, id, callbackQuery); }
+        if (templateAction === 'segments') { await updateAction(sClient, id, `admin:broadcast:template_segments:${templateId}`); return editAudienceCallback(callbackQuery, id, 'تفکیک ذخیره‌شده را تغییر بده:', broadcastAudienceSegmentsKeyboard(row.campaign_id, row.audience)); }
+        if (templateAction === 'scope') { await updateAction(sClient, id, `admin:broadcast:template_scope:${templateId}`); return editAudienceCallback(callbackQuery, id, 'نحوه ارسال را انتخاب کن:', broadcastScopeKeyboard(row.campaign_id, row.audience)); }
+        if (templateAction === 'schedule') { await updateAction(sClient, id, `admin:broadcast:template_schedule:${templateId}`); return editAudienceCallback(callbackQuery, id, 'زمان شروع را با قالب 1405/7/10-20:00 بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'حذف زمان‌بندی', callback_data: `broadcast:template:${templateId}:clear_schedule` }], [{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
+        if (templateAction === 'count') { await updateAction(sClient, id, `admin:broadcast:template_count:${templateId}`); return editAudienceCallback(callbackQuery, id, 'تعداد گیرندگان را به‌صورت عدد بفرست؛ برای همه کلمه «همه» را بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
+        if (templateAction === 'send') {
+          await sClient.query('DELETE FROM broadcast_deliveries WHERE campaign_id=$1', [row.campaign_id]);
+          const audience = normalizeBroadcastAudience(row.audience); const count = await prepareBroadcastTargets(sClient, row.campaign_id, audience, row.target_limit);
+          const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
+          await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,admin_chat_id=$4,admin_message_id=$5,status='running',scheduled_at=NOW(),started_at=NOW(),finished_at=NULL,sent_count=0,failed_count=0,deleted_count=0,updated_at=NOW() WHERE id=$1", [row.campaign_id, count, reportChannel || null, id, callbackQuery?.message?.message_id || null]);
+          void runBroadcastJobs({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_template_send_error', error));
+          return editAudienceCallback(callbackQuery, id, '✅ ارسال پیام آماده شروع شد؛ وضعیت همین پیام به‌روزرسانی می‌شود.', broadcastTemplateKeyboard(templateId, { ...row, status: 'running' }));
+        }
+        if (templateAction === 'clear_schedule') { await sClient.query('UPDATE broadcast_campaigns SET scheduled_at=NULL,updated_at=NOW() WHERE id=$1', [row.campaign_id]); return broadcastTemplatePanel(sClient, id, templateId, callbackQuery); }
       }
       if (action === 'back' && !parts[2]) { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
       const campaignId = Number(action === 'report' ? parts[3] : parts[2]);
-      const campaign = (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
+      const campaign = action === 'template' ? { id: campaignId } : (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
       if (!campaign || !isAdmin(id)) return send(id, 'ارسال پیدا نشد؛ برای ارسال جدید دوباره «ارسال پیام🔺» را بزن.');
       const audience = normalizeBroadcastAudience(campaign.audience);
       if (action === 'report') {
@@ -2347,6 +2392,19 @@ async function handleText(id, text, meta = {}) {
       await client.query('UPDATE broadcast_campaigns SET saved=TRUE,updated_at=NOW() WHERE id=$1 AND created_by=$2', [campaignId, id]);
       await updateAction(client, id, null);
       return send(id, 'پیام آماده ذخیره شد.', broadcastStatsKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_schedule:')) {
+      const templateId = Number(me.action_state.split(':').pop()); const date = parseJalaliDateTime(value);
+      if (!date) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/7/10-20:00.');
+      const row = (await client.query('SELECT campaign_id FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id])).rows[0];
+      if (!row) return send(id, 'پیام آماده پیدا نشد.');
+      await client.query('UPDATE broadcast_campaigns SET scheduled_at=$2,updated_at=NOW() WHERE id=$1', [row.campaign_id, date]); await updateAction(client, id, null); return broadcastTemplatePanel(client, id, templateId);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_count:')) {
+      const templateId = Number(me.action_state.split(':').pop()); const row = (await client.query('SELECT campaign_id FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id])).rows[0];
+      if (!row) return send(id, 'پیام آماده پیدا نشد.');
+      if (value === 'همه') await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1', [row.campaign_id]); else if (/^\d+$/.test(value) && Number(value) > 0) await client.query('UPDATE broadcast_campaigns SET target_limit=$2,updated_at=NOW() WHERE id=$1', [row.campaign_id, Number(value)]); else return send(id, 'تعداد نامعتبر است؛ عدد مثبت یا «همه» بفرست.');
+      await updateAction(client, id, null); return broadcastTemplatePanel(client, id, templateId);
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:schedule:')) {
       const idRaw = me.action_state.split(':').pop(); const date = parseJalaliDateTime(value);

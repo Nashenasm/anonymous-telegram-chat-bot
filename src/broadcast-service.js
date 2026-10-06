@@ -189,10 +189,34 @@ export function broadcastProgressText(campaign, extra = '') {
 }
 async function publishBroadcastReport(client, telegramCall, campaignId) {
   const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
-  if (!row?.report_channel_id) return;
-  const counts = (await client.query(`SELECT COUNT(*) FILTER (WHERE status='pending')::int AS pending, COUNT(*) FILTER (WHERE status='deleted')::int AS deleted FROM broadcast_deliveries WHERE campaign_id=$1`, [row.id])).rows[0] || {};
-  const details = `نوع پیام: ${row.message_kind}\nمخاطب: ${broadcastAudienceLabel(row.audience)}\nزمان ایران: ${iranDate(row.finished_at || row.updated_at)}\nدر انتظار: ${Number(counts.pending || 0)}\nحذف‌شده: ${Number(counts.deleted || 0)}\nمشاهده: در پیام خصوصی تلگرام قابل اندازه‌گیری نیست`;
-  const text = broadcastProgressText(row, details);
+  if (!row) return;
+  const counts = (await client.query(`SELECT
+    COUNT(*)::int AS total,
+    COUNT(*) FILTER (WHERE d.status='sent')::int AS sent,
+    COUNT(*) FILTER (WHERE d.status='failed')::int AS failed,
+    COUNT(*) FILTER (WHERE d.status='pending')::int AS pending,
+    COUNT(*) FILTER (WHERE d.status='deleted')::int AS deleted,
+    COUNT(*) FILTER (WHERE u.gender='male' AND u.plus_expires_at > NOW())::int AS plus_male,
+    COUNT(*) FILTER (WHERE u.gender='male' AND u.plus_expires_at > NOW() AND d.status='sent')::int AS plus_male_sent,
+    COUNT(*) FILTER (WHERE u.gender='female' AND u.plus_expires_at > NOW())::int AS plus_female,
+    COUNT(*) FILTER (WHERE u.gender='female' AND u.plus_expires_at > NOW() AND d.status='sent')::int AS plus_female_sent,
+    COUNT(*) FILTER (WHERE u.gender='male' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW())::int AS regular_male,
+    COUNT(*) FILTER (WHERE u.gender='male' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status='sent')::int AS regular_male_sent,
+    COUNT(*) FILTER (WHERE u.gender='female' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW())::int AS regular_female,
+    COUNT(*) FILTER (WHERE u.gender='female' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status='sent')::int AS regular_female_sent,
+    COUNT(*) FILTER (WHERE u.created_at >= NOW()-INTERVAL '48 hours')::int AS recent,
+    COUNT(*) FILTER (WHERE u.created_at >= NOW()-INTERVAL '48 hours' AND d.status='sent')::int AS recent_sent,
+    COUNT(*) FILTER (WHERE u.status IN ('waiting','chatting'))::int AS online,
+    COUNT(*) FILTER (WHERE u.status IN ('waiting','chatting') AND d.status='sent')::int AS online_sent,
+    COUNT(*) FILTER (WHERE u.status NOT IN ('waiting','chatting'))::int AS offline,
+    COUNT(*) FILTER (WHERE u.status NOT IN ('waiting','chatting') AND d.status='sent')::int AS offline_sent,
+    COUNT(*) FILTER (WHERE u.banned_until IS NOT NULL AND u.banned_until > NOW())::int AS blocked
+    FROM broadcast_deliveries d JOIN users u ON u.telegram_id=d.user_id WHERE d.campaign_id=$1`, [row.id])).rows[0] || {};
+  const pair = (sent, total) => `${Number(sent || 0)}/${Number(total || 0)}`;
+  const elapsedSeconds = Math.max(1, (Date.now() - new Date(row.started_at || row.created_at || Date.now()).getTime()) / 1000);
+  const speed = `${(Number(counts.sent || 0) / elapsedSeconds).toFixed(2)} پیام/ثانیه`;
+  const details = `کاربران پلاس(پسر): ${pair(counts.plus_male_sent, counts.plus_male)}\nکاربران پلاس(دختر): ${pair(counts.plus_female_sent, counts.plus_female)}\nکاربران معمولی(پسر): ${pair(counts.regular_male_sent, counts.regular_male)}\nکاربران معمولی(دختر): ${pair(counts.regular_female_sent, counts.regular_female)}\nکاربران جدید(48h): ${pair(counts.recent_sent, counts.recent)}\nکاربران آنلاین(ON): ${pair(counts.online_sent, counts.online)}\nکاربران آفلاین(OFF): ${pair(counts.offline_sent, counts.offline)}\nکاربران بلاک ربات(BLOCK): ${Number(counts.blocked || 0)}\nکاربران کل(ALL): ${pair(counts.sent, counts.total)}\n\nمیزان ارسال موفق🟢: ${pair(counts.sent, counts.total)}\nمیزان ارسال ناموفق🔴: ${Number(counts.failed || 0)}/${Number(counts.total || 0)}\nسرعت ارسال: ${speed}\nمیزان مشاهده: قابل اندازه‌گیری توسط Bot API تلگرام نیست\nدر انتظار: ${Number(counts.pending || 0)} | حذف‌شده: ${Number(counts.deleted || 0)}\nزمان ایران: ${iranDate(row.finished_at || row.updated_at)}`;
+  const text = broadcastProgressText({ ...row, total_targets: counts.total || row.total_targets, sent_count: counts.sent, failed_count: counts.failed }, details);
   const markup = broadcastReportKeyboard(row);
   try {
     if (row.report_channel_id) {
