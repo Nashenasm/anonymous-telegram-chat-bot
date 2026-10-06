@@ -1475,15 +1475,6 @@ async function handleCallback(id, data, callbackQuery = null) {
     } finally { c.release(); }
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
-  if (data.startsWith('chatreact:')) {
-    const [, emoji] = data.split(':');
-    const permissions = (() => { try { return { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(s.chat_permissions || '{}') }; } catch { return DEFAULT_CHAT_PERMISSIONS; } })();
-    if (permissions.reaction === false) return send(id, 'ری‌اکشن در مجوزهای مکالمه غیرفعال است.');
-    const allowed = ['👍','❤️','😂','😢','🔥','👏'];
-    if (!allowed.includes(emoji) || !callbackQuery?.message?.message_id) return send(id, 'ری‌اکشن نامعتبر است.');
-    try { await telegram('setMessageReaction', { chat_id: id, message_id: callbackQuery.message.message_id, reaction: [{ type: 'emoji', emoji }], is_big: false }); } catch { return send(id, 'ثبت ری‌اکشن ممکن نشد؛ دوباره تلاش کن.'); }
-    return;
-  }
   if (data.startsWith('anon:')) {
     const c = await pool.connect();
     let s;
@@ -2163,11 +2154,7 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
   if (blocked) return send(senderId, `ارسال این محتوا طبق مجوزهای چت غیرفعال است: ${CHAT_PERMISSION_LABELS[blocked] || blocked}`, chatKeyboard(settings, isAdmin(senderId)));
   const sourceMessageId = message?.message_id;
   const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
-  const reactionMarkup = permissions.reaction === false ? null : { inline_keyboard: [[
-    ...['👍','❤️','😂'].map(emoji => ({ text: emoji, callback_data: `chatreact:${emoji}` })),
-    ...['😢','🔥','👏'].map(emoji => ({ text: emoji, callback_data: `chatreact:${emoji}` })),
-  ]] };
-  const extra = { ...(replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {}), ...(reactionMarkup ? { reply_markup: reactionMarkup } : {}) };
+  const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
   let delivered;
   if (message && kind !== 'text') {
     delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: true, ...extra });
@@ -2949,6 +2936,23 @@ async function activeBanFor(id) {
 }
 function bannedMessage(row) { return `حساب شما توسط مدیریت بن شده است.\nبن تا: ${iranDate(row.banned_until)}\nدر این مدت امکان استفاده از ربات را نداری.`; }
 
+async function processNativeReaction(update) {
+  const reaction = update?.message_reaction;
+  if (!reaction?.chat?.id || !reaction?.user?.id || !reaction?.message_id) return false;
+  const actorId = Number(reaction.user.id);
+  const client = await pool.connect();
+  try {
+    const setting = await client.query("SELECT value FROM bot_settings WHERE key='chat_permissions'");
+    let permissions = DEFAULT_CHAT_PERMISSIONS;
+    try { permissions = { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(setting.rows[0]?.value || '{}') }; } catch {}
+    const mapped = (await client.query('SELECT sender_id,sender_message_id FROM chat_reply_message_map WHERE recipient_id=$1 AND recipient_message_id=$2 LIMIT 1', [actorId, reaction.message_id])).rows[0];
+    if (!mapped || permissions.reaction === false) return true;
+    const next = Array.isArray(reaction.new_reaction) ? reaction.new_reaction : [];
+    try { await telegram('setMessageReaction', { chat_id: mapped.sender_id, message_id: mapped.sender_message_id, reaction: next, is_big: false }); } catch (error) { console.error('native_reaction_mirror_error', String(error?.message || error).slice(0, 180)); }
+    return true;
+  } finally { client.release(); }
+}
+
 async function processUpdate(update) {
   const inserted = await pool.query('INSERT INTO processed_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING update_id', [update.update_id]);
   if (!inserted.rowCount) return;
@@ -2963,6 +2967,7 @@ async function processUpdate(update) {
     if (!isAdmin(callbackId)) { const ban = await activeBanFor(callbackId); if (ban) { await send(callbackId, bannedMessage(ban)); return; } }
     await handleCallback(Number(callback.from.id), callbackData, callback); return;
   }
+  if (update.message_reaction) { await processNativeReaction(update); return; }
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
   const id = Number(message.from.id); const text = String(message.text || message.caption || '').trim(); const forwardedUserId = contactTargetIdFromMessage(message); if (!text && !forwardedUserId && !message.photo && !message.video && !message.voice && !message.audio && !message.document && !message.sticker) return;
