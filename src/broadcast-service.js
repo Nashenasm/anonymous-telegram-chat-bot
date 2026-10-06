@@ -213,7 +213,7 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
   const result = { started: 0, sent: 0, failed: 0, deleted: 0, completed: 0 };
   try {
     await ensureBroadcastSchema(client);
-    const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns WHERE report_channel_id IS NOT NULL AND report_message_id IS NULL AND status IN ('scheduled','running') ORDER BY id LIMIT 20`);
+    const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns WHERE report_channel_id IS NOT NULL AND status IN ('scheduled','running','cancelled','completed','deleting','deleted') ORDER BY updated_at DESC,id DESC LIMIT 50`);
     for (const report of waitingReports.rows) await publishBroadcastReport(client, telegramCall, report.id);
     const due = await client.query(`SELECT * FROM broadcast_campaigns WHERE status='scheduled' AND scheduled_at <= NOW() ORDER BY scheduled_at,id LIMIT 10`);
     for (const row of due.rows) {
