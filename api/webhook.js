@@ -14,6 +14,7 @@ import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, dur
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
 import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
+import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
 import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 
 const pool = new Pool({
@@ -52,6 +53,7 @@ async function ensureRuntimeSchema() {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        await ensureBroadcastSchema(client);
         await client.query(`CREATE TABLE IF NOT EXISTS finance_ledger (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, delta INTEGER NOT NULL CHECK (delta <> 0), balance_before INTEGER NOT NULL CHECK (balance_before >= 0), balance_after INTEGER NOT NULL CHECK (balance_after >= 0), kind TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('CREATE INDEX IF NOT EXISTS finance_ledger_user_time_idx ON finance_ledger(user_id, created_at DESC)');
         await client.query(`CREATE TABLE IF NOT EXISTS payment_orders (order_id TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, product TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), currency TEXT NOT NULL DEFAULT 'coin', provider TEXT NOT NULL DEFAULT 'disabled', provider_reference TEXT UNIQUE, status TEXT NOT NULL DEFAULT 'pending', metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ)`);
@@ -996,14 +998,54 @@ async function claimDailyCoins(client, id, callbackQuery = null) {
 async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
 async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
 function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
-async function broadcastText(client, text, senderId) {
-  const users = await client.query('SELECT telegram_id FROM users');
-  let sent = 0;
-  for (const row of users.rows) {
-    try { await send(row.telegram_id, text); sent += 1; } catch { /* حساب‌های مسدودشده رد می‌شوند */ }
-  }
-  await send(senderId, `ارسال همگانی تمام شد.\nموفق: ${sent}\nکل هدف‌ها: ${users.rowCount}`, adminMainKeyboard({},senderId));
+function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️', 'کمپین‌های قبلی'], ['برگشت']], true); }
+function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
+function broadcastScopeKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const labels=[['online','فقط آنلاین‌ها (All online🏃🏻‍➡️)'],['recent','کاربران جدید (48h-Recently🤳🏼)'],['all','تمامی کاربران (All👌)']]; return { reply_markup:{inline_keyboard:labels.map(([key,text])=>[{text:`${a.scope===key?'🟢':'⚪'} ${text}`,callback_data:`broadcast:scope:${campaignId}:${key}`}]).concat([[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]] )} }; }
+function broadcastDeleteKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'خیر',callback_data:`broadcast:delete_no:${campaignId}`},{text:'بله',callback_data:`broadcast:delete_yes:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]]} }; }
+function broadcastTimeKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'الان | NOW🥸❗️',callback_data:`broadcast:now:${campaignId}`}],[{text:'زمان‌بندی | SetTime⏰',callback_data:`broadcast:schedule:${campaignId}`}],[{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
+function broadcastConfirmKeyboard(campaignId, saved=false) { return { reply_markup:{inline_keyboard:[[{text:'ذخیره | Save✅',callback_data:`broadcast:save:${campaignId}`}],[{text:'تایید❗️',callback_data:`broadcast:confirm:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:back:${campaignId}`}]]} }; }
+async function broadcastStatsPanel(client,id) { const stats=await broadcastStats(client); return send(id, broadcastStatsText(stats), broadcastStatsKeyboard()); }
+async function broadcastCampaign(client, id, message) {
+  const kind = broadcastMessageKind(message);
+  const row = (await client.query(`INSERT INTO broadcast_campaigns(created_by,source_chat_id,source_message_id,message_kind,audience)
+    VALUES($1,$1,$2,$3,$4::jsonb) RETURNING *`, [id, message.message_id, kind, JSON.stringify({ regular_male:false, regular_female:false, plus_male:false, plus_female:false, scope:null })])).rows[0];
+  return row;
 }
+async function broadcastDraftText(client, id, suffix = '') {
+  const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1 AND created_by=$2', [id, id])).rows[0];
+  if (!row) return 'کمپین پیدا نشد.';
+  const audience = normalizeBroadcastAudience(row.audience);
+  const count = await broadcastTargetCount(client, audience);
+  return `📢 ساخت پیام همگانی
+
+نوع پیام: ${row.message_kind}
+مخاطبان: ${broadcastAudienceLabel(audience)}
+تعداد برآوردی مخاطبان: ${count}
+زمان شروع: ${row.scheduled_at ? iranDate(row.scheduled_at) : 'همین حالا'}
+حذف خودکار: ${row.delete_after_seconds ? durationLabel(row.delete_after_seconds) : 'خیر'}${row.target_limit ? `
+تعداد ارسال: ${row.target_limit}` : ''}${suffix ? `
+
+${suffix}` : ''}`;
+}
+function broadcastCountKeyboard() { return replyKeyboard([['همه'], ['تعداد دلخواه'], ['برگشت']], true); }
+function broadcastCampaignKeyboard(row) { return { reply_markup: { inline_keyboard: [[{ text: 'ادامه ارسال ▶️', callback_data: `broadcast:continue:${row.id}` }, { text: 'ارسال مجدد 🔁', callback_data: `broadcast:resend:${row.id}` }], [{ text: 'لغو کمپین 🛑', callback_data: `broadcast:cancel:${row.id}` }], [{ text: 'بازگشت', callback_data: 'broadcast:campaigns' }]] } }; }
+async function broadcastCampaignsPanel(client, id, callbackQuery = null) {
+  const rows = (await client.query("SELECT * FROM broadcast_campaigns WHERE created_by=$1 ORDER BY id DESC LIMIT 30", [id])).rows;
+  const text = `📚 کمپین‌های قبلی
+
+${rows.map((r, i) => `${i + 1}. #${r.id} | ${r.status} | موفق: ${r.sent_count}/${r.total_targets} | ناموفق: ${r.failed_count}`).join('\n') || 'هنوز کمپینی ثبت نشده است.'}`;
+  const markup = { reply_markup: { inline_keyboard: rows.map(r => [{ text: `#${r.id} — ${r.status}`, callback_data: `broadcast:campaign:${r.id}` }]).concat([[{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }]]) } };
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function broadcastTemplatesPanel(client, id, callbackQuery = null) {
+  const rows = (await client.query('SELECT t.*,c.message_kind,c.audience FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.owner_id=$1 ORDER BY t.id DESC LIMIT 30', [id])).rows;
+  const text = `Ⓜ️ پیام‌های آماده
+
+${rows.map((r, i) => `${i + 1}. ${r.title} (${r.message_kind})`).join('\n') || 'هنوز پیام آماده‌ای ذخیره نشده است.'}`;
+  const markup = { reply_markup: { inline_keyboard: rows.map(r => [{ text: r.title, callback_data: `broadcast:template:${r.id}` }]).concat([[{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }]]) } };
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function broadcastText(client, text, senderId) { return send(senderId, 'برای ارسال همگانی، پیام را در مرحلهٔ بعد بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', broadcastStatsKeyboard()); }
 
 async function updateAction(client, id, action) { await client.query('UPDATE users SET action_state=$2, updated_at=NOW() WHERE telegram_id=$1', [id, action]); }
 
@@ -1540,6 +1582,88 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('referral:condition:')) { const key=data.split(':')[2]; const allowed=['join','connect','time','purchase','plus','referral']; if(!allowed.includes(key)) return send(id,'گزینه نامعتبر است.'); if(key==='time'){ return editAudienceCallback(callbackQuery,id,await referralTimeText(sClient),referralTimeKeyboard((await referralConditions(sClient)).time === true)); } const c=await referralConditions(sClient); c[key]=!c[key]; await saveBotSetting(sClient,'referral_conditions',JSON.stringify(c)); return editAudienceCallback(callbackQuery,id,'شرایط دریافت کوین زیرمجموعه:',referralConditionsKeyboard(c)); }
     if (isAdmin(id) && data === 'referral:back') { await updateAction(sClient,id,'admin:referral'); return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard()); }
     if (isAdmin(id) && data.startsWith('financecard:')) { const parts=data.split(':'); const action=parts[1]; const cardId=Number(parts[2]); if(action==='back'||action==='list'){await updateAction(sClient,id,'admin:finance:cards');return sendCardAdminPanel(sClient,id);} if(action==='add'){await updateAction(sClient,id,'admin:finance:card:add:name');return send(id,'نام نمایشی ادمین کارت به کارت را بفرست.',replyKeyboard([['بازگشت']],true));} if(action==='text'){await updateAction(sClient,id,'admin:finance:card:text');return send(id,`متن فعلی:\n${await botSettingValue(sClient,'finance_card_text','تنظیم نشده')}\n\nمتن جدید را بفرست.`,replyKeyboard([['بازگشت']],true));} const row=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; if(!row) return send(id,'ادمین پیدا نشد.'); if(action==='view') return send(id,`ادمین: ${safeCardAdminLabel(row.admin_label)}\nآیدی ثبت‌شده: ${row.admin_id || row.admin_username || 'ثبت نشده'}\nوضعیت: ${row.enabled?'فعال':'غیرفعال'}\nنمایش دکمه: ${row.button_enabled?'فعال':'غیرفعال'}`,cardAdminPanelKeyboard(row)); if(action==='toggle'||action==='button'){await sClient.query(`UPDATE payment_cards SET ${action==='toggle'?'enabled':'button_enabled'}=NOT ${action==='toggle'?'enabled':'button_enabled'},updated_at=NOW() WHERE id=$1`,[cardId]); const updated=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; return send(id,`ادمین: ${safeCardAdminLabel(updated.admin_label)}`,cardAdminPanelKeyboard(updated));} if(action==='delete') return send(id,'از حذف این ادمین مطمئنی؟',{reply_markup:{inline_keyboard:[[{text:'تایید حذف',callback_data:`financecard:delete_confirm:${cardId}`},{text:'انصراف',callback_data:`financecard:view:${cardId}`}]]}}); if(action==='delete_confirm'){await sClient.query('DELETE FROM payment_cards WHERE id=$1',[cardId]);return sendCardAdminPanel(sClient,id);} if(action==='change'){await updateAction(sClient,id,`admin:finance:card:change:${cardId}`);return send(id,'آیدی عددی ادمین جدید را بفرست.');} }
+    if (isAdmin(id) && data.startsWith('broadcast:')) {
+      const parts = data.split(':');
+      const action = parts[1];
+      if (action === 'campaigns') return broadcastCampaignsPanel(sClient, id, callbackQuery);
+      if (action === 'templates') return broadcastTemplatesPanel(sClient, id, callbackQuery);
+      if (action === 'back_menu') { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
+      if (action === 'template') {
+        const templateId = Number(parts[2]);
+        const row = (await sClient.query('SELECT c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
+        if (!row) return send(id, 'پیام آماده پیدا نشد.');
+        const copy = (await sClient.query(`INSERT INTO broadcast_campaigns(created_by,source_chat_id,source_message_id,message_kind,audience) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING *`, [id, row.source_chat_id, row.source_message_id, row.message_kind, JSON.stringify(row.audience)])).rows[0];
+        await updateAction(sClient, id, `admin:broadcast:segments:${copy.id}`);
+        return editAudienceCallback(callbackQuery, id, 'پیام آماده انتخاب شد؛ مخاطبان را تأیید یا تغییر بده.', broadcastAudienceSegmentsKeyboard(copy.id, copy.audience));
+      }
+      const campaignId = Number(parts[2]);
+      const campaign = (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
+      if (!campaign || !isAdmin(id)) return send(id, 'کمپین پیدا نشد.');
+      const audience = normalizeBroadcastAudience(campaign.audience);
+      if (action === 'campaign') return editAudienceCallback(callbackQuery, id, broadcastProgressText(campaign, `نوع پیام: ${campaign.message_kind}`), broadcastCampaignKeyboard(campaign));
+      if (action === 'continue') { await sClient.query("UPDATE broadcast_campaigns SET status='running',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','failed','cancelled')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_continue_error', error)); return editAudienceCallback(callbackQuery, id, 'ادامهٔ ارسال کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
+      if (action === 'resend') { await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL WHERE campaign_id=$1 AND status IN ('failed','sent')", [campaignId]); await sClient.query("UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,updated_at=NOW() WHERE id=$1", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_resend_error', error)); return editAudienceCallback(callbackQuery, id, 'ارسال مجدد کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
+      if (action === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','deleted')", [campaignId]); return editAudienceCallback(callbackQuery, id, 'کمپین لغو شد.', broadcastCampaignKeyboard({ ...campaign, status: 'cancelled' })); }
+      if (action === 'segment') {
+        const key = parts[3];
+        if (!['regular_male','regular_female','plus_male','plus_female'].includes(key)) return send(id, 'گروه نامعتبر است.');
+        audience[key] = !audience[key];
+        await sClient.query('UPDATE broadcast_campaigns SET audience=$2::jsonb,updated_at=NOW() WHERE id=$1', [campaignId, JSON.stringify(audience)]);
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+      }
+      if (action === 'segments_next') {
+        if (!['regular_male','regular_female','plus_male','plus_female'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۴ را فعال کن.');
+        await updateAction(sClient, id, `admin:broadcast:scope:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'حالا فقط یکی از روش‌های زیر را برای محدودکردن ارسال انتخاب کن:', broadcastScopeKeyboard(campaignId, audience));
+      }
+      if (action === 'scope') {
+        const scope = parts[3];
+        if (!['online','recent','all'].includes(scope)) return send(id, 'روش ارسال نامعتبر است.');
+        audience.scope = scope;
+        await sClient.query('UPDATE broadcast_campaigns SET audience=$2::jsonb,updated_at=NOW() WHERE id=$1', [campaignId, JSON.stringify(audience)]);
+        await updateAction(sClient, id, `admin:broadcast:time:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'مرحله سوم: پیام همگانی چه زمانی شروع شود؟', broadcastTimeKeyboard(campaignId));
+      }
+      if (action === 'now') {
+        await sClient.query('UPDATE broadcast_campaigns SET scheduled_at=NOW(),updated_at=NOW() WHERE id=$1', [campaignId]);
+        await updateAction(sClient, id, `admin:broadcast:delete:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'آیا تایم حذف خودکار به این پیام اضافه شود؟', broadcastDeleteKeyboard(campaignId));
+      }
+      if (action === 'schedule') {
+        await updateAction(sClient, id, `admin:broadcast:schedule:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'تاریخ و ساعت شروع را با قالب شمسی بفرست؛ نمونه: 1405/7/10-20:00', { reply_markup: { inline_keyboard: [[{ text: 'برگشت', callback_data: `broadcast:time:${campaignId}` }]] } });
+      }
+      if (action === 'delete_no') {
+        await sClient.query('UPDATE broadcast_campaigns SET delete_after_seconds=NULL,updated_at=NOW() WHERE id=$1', [campaignId]);
+        await updateAction(sClient, id, `admin:broadcast:count:${campaignId}`);
+        return send(id, 'به چند نفر ارسال شود؟ «همه» یا «تعداد دلخواه» را انتخاب کن.', broadcastCountKeyboard());
+      }
+      if (action === 'delete_yes') {
+        await updateAction(sClient, id, `admin:broadcast:delete_time:${campaignId}`);
+        return send(id, 'زمان حذف را با قالب روز/ساعت/دقیقه بفرست؛ نمونه: 1d3h45m.', replyKeyboard([['برگشت']], true));
+      }
+      if (action === 'save') {
+        await updateAction(sClient, id, `admin:broadcast:template_title:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'برای این پیام آماده یک نام بفرست؛ مثال: پیام تخفیف تابستانی.', { reply_markup: { inline_keyboard: [[{ text: 'برگشت', callback_data: `broadcast:back:${campaignId}` }]] } });
+      }
+      if (action === 'confirm') {
+        const count = await prepareBroadcastTargets(sClient, campaignId, audience, campaign.target_limit);
+        const reportChannel = await botSettingValue(sClient, 'mandatory_report_channel_id', '');
+        await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,status=CASE WHEN scheduled_at > NOW() THEN 'scheduled' ELSE 'running' END,started_at=CASE WHEN scheduled_at <= NOW() THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1", [campaignId, count, reportChannel || null]);
+        await updateAction(sClient, id, null);
+        if (campaign.scheduled_at && new Date(campaign.scheduled_at).getTime() > Date.now()) return editAudienceCallback(callbackQuery, id, `✅ کمپین زمان‌بندی شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
+        void runBroadcastJobs({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_start_error', error));
+        return editAudienceCallback(callbackQuery, id, `✅ ارسال شروع شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
+      }
+      if (action === 'back' || action === 'segments') {
+        await updateAction(sClient, id, `admin:broadcast:segments:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+      }
+      if (action === 'time') {
+        await updateAction(sClient, id, `admin:broadcast:time:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'مرحله سوم: پیام همگانی چه زمانی شروع شود؟', broadcastTimeKeyboard(campaignId));
+      }
+    }
     if (data.startsWith('wallet:')) { const handled = await handleWalletCallback(sClient, id, data); if (handled !== false) return handled; }
     if (data === 'gift:list' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data === 'gift:type:coins' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:coins'); return send(id, 'مقدار مانو کوین هدیه را بفرست.'); }
@@ -2178,10 +2302,45 @@ async function handleText(id, text, meta = {}) {
       await updateAction(client, id, null);
       return send(id, 'پیام با موفقیت ذخیره شد.', adminMainKeyboard({},id));
     }
-    if (isAdmin(id) && me.action_state === 'admin:broadcast') {
-      if (!value) return send(id, 'متن پیام همگانی نمی‌تواند خالی باشد.');
+    if (isAdmin(id) && (me.action_state === 'admin:broadcast' || me.action_state === 'admin:broadcast:message')) {
+      const incoming = meta?.message;
+      if (!incoming?.message_id) return send(id, 'لطفاً خود پیام را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true));
+      const draft = await broadcastCampaign(client, id, incoming);
+      await updateAction(client, id, `admin:broadcast:segments:${draft.id}`);
+      return send(id, `پیام دریافت شد.
+
+حالا گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ را می‌توانی همزمان انتخاب کنی.
+🟢 فعال  🔴 غیرفعال`, broadcastAudienceSegmentsKeyboard(draft.id, draft.audience));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_title:')) {
+      const campaignId = Number(me.action_state.split(':').pop());
+      if (!value || value.length > 80) return send(id, 'نام پیام آماده باید بین ۱ تا ۸۰ نویسه باشد.');
+      await client.query('INSERT INTO broadcast_templates(owner_id,title,campaign_id) VALUES($1,$2,$3)', [id, value, campaignId]);
+      await client.query('UPDATE broadcast_campaigns SET saved=TRUE,updated_at=NOW() WHERE id=$1 AND created_by=$2', [campaignId, id]);
       await updateAction(client, id, null);
-      return broadcastText(client, value, id);
+      return send(id, 'پیام آماده ذخیره شد.', broadcastStatsKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:schedule:')) {
+      const idRaw = me.action_state.split(':').pop(); const date = parseJalaliDateTime(value);
+      if (!date) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/7/10-20:00.');
+      await client.query('UPDATE broadcast_campaigns SET scheduled_at=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2', [Number(idRaw), id, date]);
+      await updateAction(client, id, `admin:broadcast:delete:${idRaw}`);
+      return send(id, 'آیا تایم حذف خودکار به این پیام اضافه شود؟', broadcastDeleteKeyboard(Number(idRaw)));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:delete_time:')) {
+      const idRaw = me.action_state.split(':').pop(); const seconds = parseDuration(value);
+      if (!seconds || seconds <= 0) return send(id, 'زمان نامعتبر است؛ نمونه: 1d3h45m.');
+      await client.query('UPDATE broadcast_campaigns SET delete_after_seconds=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2', [Number(idRaw), id, seconds]);
+      await updateAction(client, id, `admin:broadcast:count:${idRaw}`);
+      return send(id, 'به چند نفر ارسال شود؟ «همه» یا «تعداد دلخواه» را انتخاب کن.', broadcastCountKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:count:')) {
+      const idRaw = me.action_state.split(':').pop();
+      if (value === 'برگشت') { await updateAction(client,id,`admin:broadcast:delete:${idRaw}`); return send(id,'آیا تایم حذف خودکار به این پیام اضافه شود؟',broadcastDeleteKeyboard(Number(idRaw))); }
+      if (value === 'همه') { await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات آماده است؛ برای شروع ارسال «تایید» را بزن.'),broadcastConfirmKeyboard(Number(idRaw))); }
+      if (value === 'تعداد دلخواه') return send(id,'تعداد موردنظر را به‌صورت عدد صحیح بفرست.',replyKeyboard([['برگشت']],true));
+      if (!/^\d+$/.test(value) || Number(value) < 1) return send(id,'تعداد نامعتبر است؛ یک عدد مثبت بفرست.',broadcastCountKeyboard());
+      await client.query('UPDATE broadcast_campaigns SET target_limit=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id,Number(value)]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات آماده است؛ برای شروع ارسال «تایید» را بزن.'),broadcastConfirmKeyboard(Number(idRaw)));
     }
     if (isAdmin(id) && me.action_state === 'admin:user_control_hub') {
       if (value === 'کنترل مکالمات') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
@@ -2444,7 +2603,10 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && privateActionId === 'back') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
 if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی')) return handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
     const privateAction = isAdmin(id) ? visiblePrivateAction(value, s) : null;
-    if (privateAction === 'ads') return send(id, appearanceFeedback(privateAppearance(s), 'ads', 'مدیریت تبلیغات'), adsKeyboard(s));
+    if (privateAction === 'ads') return broadcastStatsPanel(client, id);
+    if (isAdmin(id) && value === 'کمپین‌های قبلی') return broadcastCampaignsPanel(client, id);
+    if (isAdmin(id) && value === 'پیام آمادهⓂ️') return broadcastTemplatesPanel(client, id);
+    if (isAdmin(id) && value === 'کانال گزارش👁‍🗨') { const channel = await botSettingValue(client, 'mandatory_report_channel_id', ''); return send(id, `کانال گزارش کمپین‌ها از کانال گزارش‌دهی عمومی استفاده می‌کند.\n\nکانال فعلی: ${channel || 'تنظیم نشده'}\nبرای اتصال یا تغییر کانال، از بخش «کانال های گزارش دهی» در پنل گزارش‌ها استفاده کن.`, broadcastStatsKeyboard()); }
     if (privateAction === 'control') { await updateAction(client, id, 'admin:control'); return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard(s)); }
     if (value === 'کنترل کاربر' || value === 'کنترل کاربران') { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
     if (privateAction === 'users') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, appearanceFeedback(privateAppearance(s), 'users', 'آیدی عددی کاربر را بفرست.')); }
@@ -2462,7 +2624,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s,id));
     if (publicAction === 'plus') return sendPlus(id, s);
     if (isAdmin(id) && value === s.profile_button) return sendProfile(id, s);
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
-    if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
+    if (isAdmin(id) && value === 'تبلیغات') return broadcastStatsPanel(client, id);
     if (isAdmin(id) && (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی')) { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
     if (isAdmin(id) && (value === 'امور ادمین' || value === 'افزودن ادمین')) { if (!hasAdminPermission(id, 'admins')) return send(id,'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.'); await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
     if (isAdmin(id) && value === 'کنترل ربات') { await updateAction(client, id, 'admin:control'); return send(id, 'کنترل ربات', controlKeyboard()); }
@@ -2613,7 +2775,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s,id));
     }
     if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard({},id)); }
 
-    if (isAdmin(id) && (privateActionId === 'broadcast' || value === 'پیام همگانی')) { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
+    if (isAdmin(id) && (privateActionId === 'broadcast' || value === 'پیام همگانی')) { await updateAction(client, id, 'admin:broadcast:message'); return send(id, 'پیام همگانی را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true)); }
     if (isAdmin(id) && (privateActionId === 'welcome' || value === 'پیام خوش‌آمد')) { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
     if (isAdmin(id) && (privateActionId === 'connection_ad' || value === 'تبلیغ اتصال')) { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
     if (isAdmin(id) && (privateActionId === 'mid_ad' || value === 'تبلیغ میان مکالمه')) return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard(s));
@@ -2760,7 +2922,9 @@ async function processUpdate(update) {
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
-  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl)) {
+  const reportChannelId = callback?.message?.chat?.id ? await pool.query("SELECT value FROM bot_settings WHERE key='mandatory_report_channel_id'").then(r => r.rows[0]?.value || '') : '';
+  const broadcastReportControl = Boolean(reportChannelId && String(callback?.message?.chat?.id) === String(reportChannelId) && callbackData.startsWith('broadcast:'));
+  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl || broadcastReportControl)) {
     await answerCallback(callback.id);
     const callbackId = Number(callback.from.id);
     if (!isAdmin(callbackId)) { const ban = await activeBanFor(callbackId); if (ban) { await send(callbackId, bannedMessage(ban)); return; } }
@@ -2833,6 +2997,10 @@ export async function runCryptoDepositScan() {
       onPurchaseCredited: async ({ userId }) => { const grantClient = await pool.connect(); try { const grant = await completeReferralCondition(grantClient, userId, 'purchase'); if (grant.granted) await notifyReferralGrant(grant, userId); } finally { grantClient.release(); } },
     });
   } finally { client.release(); }
+}
+export async function runBroadcastJobs() {
+  await ensureRuntimeSchema();
+  return runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send });
 }
 export async function runReferralTimeRewards() {
   await ensureRuntimeSchema();

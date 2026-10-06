@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { runMandatoryLifecycle, runReferralTimeRewards } from './webhook.js';
+import { runMandatoryLifecycle, runReferralTimeRewards, runBroadcastJobs } from './webhook.js';
 
 function authorized(req, secret) {
   const supplied = String(req.headers?.authorization || '');
@@ -18,7 +18,8 @@ export default async function handler(req, res) {
   try {
     const result = await runMandatoryLifecycle();
     const referralTime = await runReferralTimeRewards();
-    return res.status(200).json({ ok: true, ...result, referralTime });
+    const broadcasts = await runBroadcastJobs();
+    return res.status(200).json({ ok: true, ...result, referralTime, broadcasts });
   } catch (error) {
     console.error('mandatory_jobs_error', String(error?.message || error).slice(0, 300));
     return res.status(500).json({ ok: false, error: 'job_failed' });
