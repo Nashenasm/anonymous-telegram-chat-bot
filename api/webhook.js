@@ -1005,7 +1005,7 @@ function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=
 function broadcastScopeKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const labels=[['online','فقط آنلاین‌ها (All online🏃🏻‍➡️)'],['recent','کاربران جدید (48h-Recently🤳🏼)'],['all','تمامی کاربران (All👌)']]; return { reply_markup:{inline_keyboard:labels.map(([key,text])=>[{text:`${a.scope===key?'🟢':'⚪'} ${text}`,callback_data:`broadcast:scope:${campaignId}:${key}`}]).concat([[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]] )} }; }
 function broadcastDeleteKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'خیر',callback_data:`broadcast:delete_no:${campaignId}`},{text:'بله',callback_data:`broadcast:delete_yes:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]]} }; }
 function broadcastTimeKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'الان | NOW🥸❗️',callback_data:`broadcast:now:${campaignId}`}],[{text:'زمان‌بندی | SetTime⏰',callback_data:`broadcast:schedule:${campaignId}`}],[{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
-function broadcastConfirmKeyboard(campaignId, saved=false) { return { reply_markup:{inline_keyboard:[[{text:'ذخیره | Save✅',callback_data:`broadcast:save:${campaignId}`}],[{text:'تایید❗️',callback_data:`broadcast:confirm:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:back:${campaignId}`}]]} }; }
+function broadcastConfirmKeyboard(campaignId, saved=false) { return { reply_markup:{inline_keyboard:[[{text:'ذخیره در پیام‌های آمادهⓂ️',callback_data:`broadcast:save:${campaignId}`}],[{text:'ارسال مستقیم ✅',callback_data:`broadcast:confirm:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:back:${campaignId}`}]]} }; }
 async function broadcastStatsPanel(client,id) { const stats=await broadcastStats(client); return send(id, broadcastStatsText(stats), broadcastStatsKeyboard()); }
 async function broadcastCampaign(client, id, message) {
   const kind = broadcastMessageKind(message);
@@ -1015,7 +1015,7 @@ async function broadcastCampaign(client, id, message) {
 }
 async function broadcastDraftText(client, id, suffix = '') {
   const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1 AND created_by=$2', [id, id])).rows[0];
-  if (!row) return 'کمپین پیدا نشد.';
+  if (!row) return 'پیام آماده ارسال پیدا نشد.';
   const audience = normalizeBroadcastAudience(row.audience);
   const count = await broadcastTargetCount(client, audience);
   return `📢 ساخت پیام همگانی
@@ -1029,7 +1029,7 @@ async function broadcastDraftText(client, id, suffix = '') {
 
 ${suffix}` : ''}`;
 }
-function broadcastCountKeyboard() { return replyKeyboard([['همه'], ['تعداد دلخواه'], ['برگشت']], true); }
+function broadcastCountKeyboard() { return replyKeyboard([['ارسال برای همه'], ['تعداد مشخص'], ['برگشت']], true); }
 function broadcastCampaignKeyboard(row) { return { reply_markup: { inline_keyboard: [[{ text: 'ادامه ارسال ▶️', callback_data: `broadcast:continue:${row.id}` }, { text: 'ارسال مجدد 🔁', callback_data: `broadcast:resend:${row.id}` }], [{ text: 'لغو کمپین 🛑', callback_data: `broadcast:cancel:${row.id}` }], [{ text: 'بازگشت', callback_data: 'broadcast:campaigns' }]] } }; }
 async function broadcastCampaignsPanel(client, id, callbackQuery = null) {
   const rows = (await client.query("SELECT * FROM broadcast_campaigns WHERE created_by=$1 ORDER BY id DESC LIMIT 30", [id])).rows;
@@ -1639,7 +1639,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (action === 'delete_no') {
         await sClient.query('UPDATE broadcast_campaigns SET delete_after_seconds=NULL,updated_at=NOW() WHERE id=$1', [campaignId]);
         await updateAction(sClient, id, `admin:broadcast:count:${campaignId}`);
-        return send(id, 'به چند نفر ارسال شود؟ «همه» یا «تعداد دلخواه» را انتخاب کن.', broadcastCountKeyboard());
+        return send(id, 'تعداد گیرندگان را انتخاب کن؛ این ارسال مستقل است و ذخیره‌سازی اختیاری است.', broadcastCountKeyboard());
       }
       if (action === 'delete_yes') {
         await updateAction(sClient, id, `admin:broadcast:delete_time:${campaignId}`);
@@ -2349,15 +2349,15 @@ async function handleText(id, text, meta = {}) {
       if (!seconds || seconds <= 0) return send(id, 'زمان نامعتبر است؛ نمونه: 1d3h45m.');
       await client.query('UPDATE broadcast_campaigns SET delete_after_seconds=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2', [Number(idRaw), id, seconds]);
       await updateAction(client, id, `admin:broadcast:count:${idRaw}`);
-      return send(id, 'به چند نفر ارسال شود؟ «همه» یا «تعداد دلخواه» را انتخاب کن.', broadcastCountKeyboard());
+      return send(id, 'تعداد گیرندگان را انتخاب کن؛ این ارسال مستقل است و ذخیره‌سازی اختیاری است.', broadcastCountKeyboard());
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:count:')) {
       const idRaw = me.action_state.split(':').pop();
       if (value === 'برگشت') { await updateAction(client,id,`admin:broadcast:delete:${idRaw}`); return send(id,'آیا تایم حذف خودکار به این پیام اضافه شود؟',broadcastDeleteKeyboard(Number(idRaw))); }
-      if (value === 'همه') { await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات آماده است؛ برای شروع ارسال «تایید» را بزن.'),broadcastConfirmKeyboard(Number(idRaw))); }
-      if (value === 'تعداد دلخواه') return send(id,'تعداد موردنظر را به‌صورت عدد صحیح بفرست.',replyKeyboard([['برگشت']],true));
+      if (value === 'همه' || value === 'ارسال برای همه') { await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات ارسال آماده است؛ برای شروع، «ارسال مستقیم» را بزن. ذخیره در پیام‌های آماده اختیاری است.'),broadcastConfirmKeyboard(Number(idRaw))); }
+      if (value === 'تعداد دلخواه' || value === 'تعداد مشخص') return send(id,'تعداد موردنظر را به‌صورت عدد صحیح بفرست.',replyKeyboard([['برگشت']],true));
       if (!/^\d+$/.test(value) || Number(value) < 1) return send(id,'تعداد نامعتبر است؛ یک عدد مثبت بفرست.',broadcastCountKeyboard());
-      await client.query('UPDATE broadcast_campaigns SET target_limit=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id,Number(value)]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات آماده است؛ برای شروع ارسال «تایید» را بزن.'),broadcastConfirmKeyboard(Number(idRaw)));
+      await client.query('UPDATE broadcast_campaigns SET target_limit=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id,Number(value)]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات ارسال آماده است؛ برای شروع، «ارسال مستقیم» را بزن. ذخیره در پیام‌های آماده اختیاری است.'),broadcastConfirmKeyboard(Number(idRaw)));
     }
     if (isAdmin(id) && me.action_state === 'admin:user_control_hub') {
       if (value === 'کنترل مکالمات') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
