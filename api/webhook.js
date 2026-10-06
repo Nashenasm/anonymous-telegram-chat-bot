@@ -999,6 +999,8 @@ async function botSettingValue(client, key, fallback = '') { const r = await cli
 async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
 function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
 function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️', 'کمپین‌های قبلی'], ['برگشت']], true); }
+function broadcastReportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال'], ['بازگشت پیام همگانی']], true); }
+async function broadcastReportChannelText(client) { const channel=await botSettingValue(client,'broadcast_report_channel_id',''); const privateFlag=await botSettingValue(client,'broadcast_report_channel_private','false'); return `کانال گزارش پیام‌های همگانی\n\nوضعیت: ${channel ? '🟢 متصل' : '🔴 تنظیم نشده'}\nکانال: ${channel || 'تنظیم نشده'}\nنوع: ${channel ? (privateFlag === 'true' ? 'خصوصی' : 'عمومی') : 'نامشخص'}\n\nاین کانال فقط برای گزارش کمپین‌های پیام همگانی استفاده می‌شود و با کانال‌های گزارش دیگر مستقل است.`; }
 function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
 function broadcastScopeKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const labels=[['online','فقط آنلاین‌ها (All online🏃🏻‍➡️)'],['recent','کاربران جدید (48h-Recently🤳🏼)'],['all','تمامی کاربران (All👌)']]; return { reply_markup:{inline_keyboard:labels.map(([key,text])=>[{text:`${a.scope===key?'🟢':'⚪'} ${text}`,callback_data:`broadcast:scope:${campaignId}:${key}`}]).concat([[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]] )} }; }
 function broadcastDeleteKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'خیر',callback_data:`broadcast:delete_no:${campaignId}`},{text:'بله',callback_data:`broadcast:delete_yes:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]]} }; }
@@ -1648,7 +1650,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       }
       if (action === 'confirm') {
         const count = await prepareBroadcastTargets(sClient, campaignId, audience, campaign.target_limit);
-        const reportChannel = await botSettingValue(sClient, 'mandatory_report_channel_id', '');
+        const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
         await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,status=CASE WHEN scheduled_at > NOW() THEN 'scheduled' ELSE 'running' END,started_at=CASE WHEN scheduled_at <= NOW() THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1", [campaignId, count, reportChannel || null]);
         await updateAction(sClient, id, null);
         if (campaign.scheduled_at && new Date(campaign.scheduled_at).getTime() > Date.now()) return editAudienceCallback(callbackQuery, id, `✅ کمپین زمان‌بندی شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
@@ -2312,6 +2314,19 @@ async function handleText(id, text, meta = {}) {
 حالا گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ را می‌توانی همزمان انتخاب کنی.
 🟢 فعال  🔴 غیرفعال`, broadcastAudienceSegmentsKeyboard(draft.id, draft.audience));
     }
+    if (isAdmin(id) && me.action_state === 'admin:broadcast:report_channel') {
+      if (value === 'اتصال/تغییر کانال') { await updateAction(client,id,'admin:broadcast:report_channel_target'); return send(id,'آیدی عددی یا @نام‌کاربری کانال اختصاصی گزارش پیام‌های همگانی را بفرست. ربات باید ادمین کانال و دارای دسترسی ارسال پیام باشد.',replyKeyboard([['بازگشت']],true)); }
+      if (value === 'قطع اتصال کانال') { await saveBotSetting(client,'broadcast_report_channel_id',''); await saveBotSetting(client,'broadcast_report_channel_private','false'); return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard()); }
+      if (value === 'بازگشت پیام همگانی' || value === 'بازگشت') { await updateAction(client,id,null); return broadcastStatsPanel(client,id); }
+      return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'admin:broadcast:report_channel_target') {
+      const channel=await validateMandatoryReportChannel(value);
+      if (channel === false) return send(id,'دریافت اطلاعات کانال از تلگرام انجام نشد؛ دوباره تلاش کن.',replyKeyboard([['بازگشت']],true));
+      if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
+      await saveBotSetting(client,'broadcast_report_channel_id',channel.id); await saveBotSetting(client,'broadcast_report_channel_private',String(channel.isPrivate)); await updateAction(client,id,'admin:broadcast:report_channel');
+      return send(id,`کانال اختصاصی گزارش پیام‌های همگانی «${channel.title}» متصل شد.`,broadcastReportChannelKeyboard());
+    }
     if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_title:')) {
       const campaignId = Number(me.action_state.split(':').pop());
       if (!value || value.length > 80) return send(id, 'نام پیام آماده باید بین ۱ تا ۸۰ نویسه باشد.');
@@ -2607,7 +2622,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (privateAction === 'ads') return broadcastStatsPanel(client, id);
     if (isAdmin(id) && value === 'کمپین‌های قبلی') return broadcastCampaignsPanel(client, id);
     if (isAdmin(id) && value === 'پیام آمادهⓂ️') return broadcastTemplatesPanel(client, id);
-    if (isAdmin(id) && value === 'کانال گزارش👁‍🗨') { const channel = await botSettingValue(client, 'mandatory_report_channel_id', ''); return send(id, `کانال گزارش کمپین‌ها از کانال گزارش‌دهی عمومی استفاده می‌کند.\n\nکانال فعلی: ${channel || 'تنظیم نشده'}\nبرای اتصال یا تغییر کانال، از بخش «کانال های گزارش دهی» در پنل گزارش‌ها استفاده کن.`, broadcastStatsKeyboard()); }
+    if (isAdmin(id) && value === 'کانال گزارش👁‍🗨') { await updateAction(client,id,'admin:broadcast:report_channel'); return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard()); }
     if (privateAction === 'control') { await updateAction(client, id, 'admin:control'); return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard(s)); }
     if (value === 'کنترل کاربر' || value === 'کنترل کاربران') { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
     if (privateAction === 'users') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, appearanceFeedback(privateAppearance(s), 'users', 'آیدی عددی کاربر را بفرست.')); }
@@ -2923,7 +2938,7 @@ async function processUpdate(update) {
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
-  const reportChannelId = callback?.message?.chat?.id ? await pool.query("SELECT value FROM bot_settings WHERE key='mandatory_report_channel_id'").then(r => r.rows[0]?.value || '') : '';
+  const reportChannelId = callback?.message?.chat?.id ? await pool.query("SELECT value FROM bot_settings WHERE key='broadcast_report_channel_id'").then(r => r.rows[0]?.value || '') : '';
   const broadcastReportControl = Boolean(reportChannelId && String(callback?.message?.chat?.id) === String(reportChannelId) && callbackData.startsWith('broadcast:'));
   if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl || broadcastReportControl)) {
     await answerCallback(callback.id);
