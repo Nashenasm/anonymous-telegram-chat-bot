@@ -168,11 +168,23 @@ export async function copyBroadcastMessage(telegramCall, campaign, userId) {
 
 function iranDate(value) { return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hourCycle: 'h23', hour12: false }).format(new Date(value)); }
 
+function broadcastStatusLabel(status) {
+  return ({ draft: 'پیش‌نویس', scheduled: 'زمان‌بندی‌شده', running: 'در حال ارسال', completed: 'تکمیل‌شده', cancelled: 'لغوشده', deleting: 'در حال حذف', deleted: 'حذف‌شده', failed: 'ناموفق' }[status] || status || 'نامشخص');
+}
+function broadcastReportKeyboard(row) {
+  const id = row.id;
+  if (row.status === 'scheduled') return { inline_keyboard: [[{ text: 'ارسال الان | Send NOW‼️', callback_data: `broadcast:report:send_now:${id}` }], [{ text: 'کنسل | Cancel⭕️', callback_data: `broadcast:report:cancel:${id}` }]] };
+  if (row.status === 'running') return { inline_keyboard: [[{ text: 'کنسل | Cancel⭕️', callback_data: `broadcast:report:cancel:${id}` }]] };
+  if (row.status === 'deleting') return { inline_keyboard: [[{ text: 'در حال حذف...', callback_data: `broadcast:report:noop:${id}` }]] };
+  if (row.status === 'completed' || row.status === 'deleted' || row.status === 'failed' || row.status === 'cancelled') return { inline_keyboard: [[{ text: row.status === 'deleted' ? 'ارسال دوباره | Again♻️' : 'حذف پیام | Delete❌', callback_data: `broadcast:report:${row.status === 'deleted' ? 'resend' : 'delete'}:${id}` }, { text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
+  return { inline_keyboard: [] };
+}
+
 export function broadcastProgressText(campaign, extra = '') {
   const total = Number(campaign.total_targets || 0);
   const sent = Number(campaign.sent_count || 0);
   const failed = Number(campaign.failed_count || 0);
-  return `📢 پیام همگانی\n\nوضعیت: ${campaign.status}\nکل هدف‌ها: ${total}\nارسال موفق🟢: ${sent}/${total}\nارسال ناموفق🔴: ${failed}/${total}\n${extra}`.trim();
+  return `📢 وضعیت ارسال پیام همگانی\n\nوضعیت: ${broadcastStatusLabel(campaign.status)}\nکاربران کل (ALL): ${total}\nارسال موفق🟢: ${sent}/${total}\nارسال ناموفق🔴: ${failed}/${total}\nسرعت/آخرین بروزرسانی: ${iranDate(campaign.updated_at || new Date())}\n${extra}`.trim();
 }
 async function publishBroadcastReport(client, telegramCall, campaignId) {
   const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
@@ -180,7 +192,7 @@ async function publishBroadcastReport(client, telegramCall, campaignId) {
   const counts = (await client.query(`SELECT COUNT(*) FILTER (WHERE status='pending')::int AS pending, COUNT(*) FILTER (WHERE status='deleted')::int AS deleted FROM broadcast_deliveries WHERE campaign_id=$1`, [row.id])).rows[0] || {};
   const details = `نوع پیام: ${row.message_kind}\nمخاطب: ${broadcastAudienceLabel(row.audience)}\nزمان ایران: ${iranDate(row.finished_at || row.updated_at)}\nدر انتظار: ${Number(counts.pending || 0)}\nحذف‌شده: ${Number(counts.deleted || 0)}\nمشاهده: در پیام خصوصی تلگرام قابل اندازه‌گیری نیست`;
   const text = broadcastProgressText(row, details);
-  const markup = { inline_keyboard: [[{ text: 'جزئیات ارسال', callback_data: `broadcast:campaign:${row.id}` }]] };
+  const markup = broadcastReportKeyboard(row);
   try {
     if (row.report_channel_id) {
       if (row.report_message_id) await telegramCall('editMessageText', { chat_id: row.report_channel_id, message_id: row.report_message_id, text, reply_markup: markup });
@@ -231,14 +243,14 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
       }
     }
     const deletable = await client.query(`SELECT * FROM broadcast_campaigns
-      WHERE status='completed' AND delete_after_seconds IS NOT NULL AND finished_at IS NOT NULL
-        AND finished_at <= NOW() - (delete_after_seconds * INTERVAL '1 second')
+      WHERE (status='deleting' OR (status='completed' AND delete_after_seconds IS NOT NULL AND finished_at IS NOT NULL AND finished_at <= NOW() - (delete_after_seconds * INTERVAL '1 second')))
       ORDER BY finished_at LIMIT 10`);
     for (const campaign of deletable.rows) {
-      await client.query("UPDATE broadcast_campaigns SET status='deleting',updated_at=NOW() WHERE id=$1 AND status='completed'", [campaign.id]);
+      await client.query("UPDATE broadcast_campaigns SET status='deleting',updated_at=NOW() WHERE id=$1 AND status IN ('completed','deleting')", [campaign.id]);
       const delivered = await client.query("SELECT user_id,message_id FROM broadcast_deliveries WHERE campaign_id=$1 AND status='sent' AND message_id IS NOT NULL LIMIT 500", [campaign.id]);
+      let deletedForCampaign = 0;
       for (const row of delivered.rows) {
-        try { await telegramCall('deleteMessage', { chat_id: row.user_id, message_id: row.message_id }); await client.query("UPDATE broadcast_deliveries SET status='deleted',deleted_at=NOW() WHERE campaign_id=$1 AND user_id=$2", [campaign.id, row.user_id]); result.deleted += 1; }
+        try { await telegramCall('deleteMessage', { chat_id: row.user_id, message_id: row.message_id }); await client.query("UPDATE broadcast_deliveries SET status='deleted',deleted_at=NOW() WHERE campaign_id=$1 AND user_id=$2", [campaign.id, row.user_id]); result.deleted += 1; deletedForCampaign += 1; }
         catch (error) { await client.query("UPDATE broadcast_deliveries SET error_text=$3 WHERE campaign_id=$1 AND user_id=$2", [campaign.id, row.user_id, String(error?.message || error).slice(0, 500)]); }
       }
       const left = await client.query("SELECT COUNT(*)::int AS count FROM broadcast_deliveries WHERE campaign_id=$1 AND status='sent'", [campaign.id]);
