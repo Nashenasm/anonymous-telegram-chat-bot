@@ -165,6 +165,8 @@ export async function copyBroadcastMessage(telegramCall, campaign, userId) {
   });
 }
 
+function iranDate(value) { return new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', dateStyle: 'short', timeStyle: 'short', hourCycle: 'h23', hour12: false }).format(new Date(value)); }
+
 export function broadcastProgressText(campaign, extra = '') {
   const total = Number(campaign.total_targets || 0);
   const sent = Number(campaign.sent_count || 0);
@@ -174,7 +176,7 @@ export function broadcastProgressText(campaign, extra = '') {
 async function publishBroadcastReport(client, telegramCall, campaignId) {
   const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
   if (!row?.report_channel_id) return;
-  const text = broadcastProgressText(row, `نوع پیام: ${row.message_kind}\nزمان: ${row.finished_at || row.updated_at}`);
+  const text = broadcastProgressText(row, `نوع پیام: ${row.message_kind}\nزمان: ${iranDate(row.finished_at || row.updated_at)}`);
   const markup = { inline_keyboard: [[{ text: 'جزئیات کمپین', callback_data: `broadcast:campaign:${row.id}` }]] };
   try {
     if (row.report_message_id) await telegramCall('editMessageText', { chat_id: row.report_channel_id, message_id: row.report_message_id, text, reply_markup: markup });
