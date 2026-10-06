@@ -2187,6 +2187,8 @@ async function handleText(id, text, meta = {}) {
     // This public action must win over any stale admin action_state, especially for admins using the public menu.
     const firstPublicAction = visiblePublicAction(value, s);
     if (value === ANONYMOUS_LINK_BUTTON || firstPublicAction === 'anonymous_link') { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
+    // Once a user is actively replying in anonymous mode, the reply text must not be mistaken for a public-menu button.
+    if (me.action_state?.startsWith('anon_') && firstPublicAction !== 'connect') { const flow = flowFor(s); client.release(); released = true; return flow.handleText(id, value, me.action_state); }
     const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
     if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
