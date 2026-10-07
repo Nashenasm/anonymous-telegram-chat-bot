@@ -84,7 +84,7 @@ export async function queueInboxMessage(pool, { senderId, recipientId, linkKey, 
     const link = (await client.query("SELECT token_hash,link_name FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex')=$2 AND status='active'", [recipient, linkKey])).rows[0];
     if (!link) return { status: 'closed' };
     const row = (await client.query(`INSERT INTO anonymous_inbox_messages(sender_id,recipient_id,link_hash,body,direction,status)
-      VALUES($1,$2,$3,$4,'incoming','pending') RETURNING id,link_hash,link_name`, [sender, recipient, link.token_hash, text])).rows[0];
+      VALUES($1,$2,$3,$4,'incoming','pending') RETURNING id,link_hash`, [sender, recipient, link.token_hash, text])).rows[0];
     return { status: 'queued', id: Number(row.id), linkName: link.link_name };
   });
 }

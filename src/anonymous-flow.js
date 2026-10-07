@@ -56,7 +56,7 @@ const isActiveState = (state) => typeof state === 'string' && state.startsWith('
 
 let usernamePromise = null;
 
-export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = null, connectButton, disconnectButton, editMessage = null }) {
+export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = null, connectButton, disconnectButton, editMessage = null, mainKeyboard = null }) {
   const uid = (id) => Number(id);
   const deliverMessage = async (senderId, recipientId, text, markup) => {
     if (sendAsUser) return sendAsUser(senderId, recipientId, text, markup);
@@ -136,7 +136,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     }
   };
 
-  const mainKbFor = async (id) => mainKb(await isChatting(id));
+  const mainKbFor = async (id) => (typeof mainKeyboard === 'function' ? mainKeyboard() : mainKb(await isChatting(id)));
   const updateInline = async (id, text, markup, callbackQuery = null) => {
     if (editMessage && callbackQuery?.message?.message_id) return editMessage(callbackQuery, id, text, markup);
     return send(id, text, markup);

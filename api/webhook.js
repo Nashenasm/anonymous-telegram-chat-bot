@@ -441,7 +441,7 @@ function flowFor(settings) {
     finally { c.release(); }
   };
   const appearance = publicAppearance(settings);
-  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, editMessage: editAudienceCallback, connectButton: appearanceButton(appearance, 'connect', settings.connect_button), disconnectButton: appearanceButton(appearance, 'disconnect', settings.disconnect_button) });
+  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, editMessage: editAudienceCallback, mainKeyboard: () => mainKeyboard(settings), connectButton: appearanceButton(appearance, 'connect', settings.connect_button), disconnectButton: appearanceButton(appearance, 'disconnect', settings.disconnect_button) });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 

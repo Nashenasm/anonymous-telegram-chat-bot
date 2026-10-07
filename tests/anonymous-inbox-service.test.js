@@ -34,6 +34,25 @@ describe('anonymous inbox and multi-link service', () => {
     })).resolves.toEqual({ status: 'closed' });
   });
 
+  it('queues a message without selecting link_name from the inbox table', async () => {
+    const tokenHash = Buffer.from('link-hash');
+    const calls = [];
+    const { pool } = poolWith(async (sql) => {
+      calls.push(sql);
+      if (sql.includes('FROM anonymous_blocks')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM anon_links')) return { rows: [{ token_hash: tokenHash, link_name: 'لینک اصلی' }], rowCount: 1 };
+      if (sql.includes('INSERT INTO anonymous_inbox_messages')) return { rows: [{ id: 12, link_hash: tokenHash }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+    await expect(queueInboxMessage(pool, {
+      senderId: 100,
+      recipientId: 200,
+      linkKey: 'a'.repeat(64),
+      body: 'سلام',
+    })).resolves.toEqual({ status: 'queued', id: 12, linkName: 'لینک اصلی' });
+    expect(calls.find((sql) => sql.includes('INSERT INTO anonymous_inbox_messages'))).not.toContain('RETURNING id,link_hash,link_name');
+  });
+
   it('lists the sender’s own messages, including legacy incoming rows and replies', async () => {
     const rows = [{ id: 7, body: 'سلام', direction: 'incoming', status: 'replied', link_name: 'لینک اصلی' }];
     const { pool } = poolWith(async (sql) => sql.includes('FROM anonymous_inbox_messages') ? { rows, rowCount: 1 } : { rows: [], rowCount: 1 });

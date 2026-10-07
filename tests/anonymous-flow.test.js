@@ -65,6 +65,7 @@ function harness(initial = {}) {
     sendLink,
     connectButton: 'وصل کن به ناشناس',
     disconnectButton: 'قطع مکالمه',
+    mainKeyboard: () => ({ reply_markup: { keyboard: [['اتصال'], ['پروفایل']] } }),
   });
   return { flow, pool, send, sendLink, states, statuses };
 }
@@ -111,6 +112,13 @@ describe('anonymous deep-link flow', () => {
     await expect(flow.handleStartPayload(100, 'c'.repeat(64))).resolves.toBe(true);
     expect(states.get('100')).toBe('anon_compose:200');
     expect(send).toHaveBeenCalledWith(100, 'پیام ناشناس خود را بنویسید:', expect.any(Object));
+  });
+
+  it('returns to the full public menu when composition is canceled', async () => {
+    const { flow, send, states } = harness({ '100': 'anon_compose:200:link-key' });
+    await expect(flow.handleText(100, 'انصراف', 'anon_compose:200:link-key')).resolves.toBe(true);
+    expect(states.get('100')).toBe(null);
+    expect(send).toHaveBeenCalledWith('100', 'لغو شد.', { reply_markup: { keyboard: [['اتصال'], ['پروفایل']] } });
   });
 
   it('preserves an in-progress anonymous action but lets a completed sender open a new link', async () => {
