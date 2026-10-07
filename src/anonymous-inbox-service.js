@@ -105,6 +105,19 @@ export async function listOutbox(pool, senderId, offset = 0, limit = 10) {
   return result.rows;
 }
 
+export async function getOutboxMessage(pool, id, senderId) {
+  const result = await pool.query(`SELECT id,recipient_id,link_hash,body,status
+    FROM anonymous_inbox_messages
+    WHERE id=$1 AND sender_id=$2 AND direction='outgoing'`, [Number(id), normalizeId(senderId)]);
+  return result.rows[0] || null;
+}
+
+export async function blockOutboxMessage(pool, id, senderId) {
+  const result = await pool.query(`UPDATE anonymous_inbox_messages SET status='blocked',responded_at=now()
+    WHERE id=$1 AND sender_id=$2 AND direction='outgoing' AND status='pending' RETURNING *`, [Number(id), normalizeId(senderId)]);
+  return result.rows[0] || null;
+}
+
 export async function markInboxMessage(pool, id, recipientId, status) {
   if (!['replied', 'blocked'].includes(status)) throw new Error('Invalid inbox status');
   const result = await pool.query(`UPDATE anonymous_inbox_messages SET status=$3,responded_at=now() WHERE id=$1 AND recipient_id=$2 AND direction='incoming' AND status='pending' RETURNING *`, [Number(id), normalizeId(recipientId), status]);
