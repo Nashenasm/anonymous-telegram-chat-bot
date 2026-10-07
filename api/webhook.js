@@ -123,8 +123,20 @@ async function ensureRuntimeSchema() {
         await client.query(`CREATE TABLE IF NOT EXISTS chat_gifts (id BIGSERIAL PRIMARY KEY, sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, gift_type TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS daily_coin_claims (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
-        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
-        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT');
+	        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
+	        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT');
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS link_name TEXT');
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS token_value TEXT');
+	        await client.query("ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'");
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ');
+	        await client.query("UPDATE anon_links SET link_name=COALESCE(link_name,'لینک اصلی'),status=CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END WHERE link_name IS NULL OR status IS NULL");
+	        await client.query('ALTER TABLE anon_links DROP CONSTRAINT IF EXISTS anon_links_status_check');
+	        await client.query("ALTER TABLE anon_links ADD CONSTRAINT anon_links_status_check CHECK(status IN ('active','closed','revoked'))");
+	        await client.query('DROP INDEX IF EXISTS uq_anon_links_one_active');
+	        await client.query('CREATE INDEX IF NOT EXISTS idx_anon_links_user_status ON anon_links(telegram_id,status,created_at)');
+	        await client.query(`CREATE TABLE IF NOT EXISTS anonymous_inbox_messages (id BIGSERIAL PRIMARY KEY,sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,link_hash BYTEA NOT NULL REFERENCES anon_links(token_hash) ON DELETE CASCADE,body TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','replied','blocked')),created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),responded_at TIMESTAMPTZ,CHECK(sender_id<>recipient_id))`);
+        await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_recipient_idx ON anonymous_inbox_messages(recipient_id,direction,status,id DESC)');
+        await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_sender_idx ON anonymous_inbox_messages(sender_id,direction,status,id DESC)');
         await client.query("INSERT INTO bot_settings(key,value) VALUES ('chat_permissions',$1),('finance_card_text','متن واریز کارت به کارت تنظیم نشده است.'),('finance_crypto_text','برای واریز ارز دیجیتال، شبکه و آدرس کیف پول را از مدیریت دریافت کنید.'),('finance_stars_text','پرداخت با Telegram Stars پس از انتخاب این روش و راهنمایی مدیریت انجام می‌شود.'),('referral_reward_coins','5'),('referral_time_seconds','1800'),('referral_bonus_coins','0'),('referral_power_enabled','true'),('referral_staged_enabled','false'),('referral_stage_amounts','{}'),('referral_conditions','{\"join\":false,\"connect\":false,\"time\":false,\"purchase\":false,\"plus\":false,\"referral\":false}'),('min_chat_duration','15S'),('spam_consecutive_limit','3'),('spam_delay','2S') ON CONFLICT (key) DO NOTHING", [JSON.stringify(DEFAULT_CHAT_PERMISSIONS)]);
         await ensureBonusDefaults(client);
         const unblock = await client.query("SELECT value FROM bot_settings WHERE key='unblock_all_v1'");
@@ -1520,6 +1532,12 @@ async function handleCallback(id, data, callbackQuery = null) {
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
   if (data.startsWith('anon:')) {
+    const c = await pool.connect();
+    let s;
+    try { s = await settings(c); } finally { c.release(); }
+    return flowFor(s).handleCallback(id, data);
+  }
+  if (data.startsWith('alink:') || data.startsWith('ainbox:')) {
     const c = await pool.connect();
     let s;
     try { s = await settings(c); } finally { c.release(); }

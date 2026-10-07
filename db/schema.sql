@@ -89,6 +89,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_anon_links_one_active
   ON anon_links(telegram_id) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_anon_links_expiry ON anon_links(expires_at);
 
+-- Multi-link anonymous inbox migration. Existing links remain usable and receive a default name.
+ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS link_name TEXT;
+ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS token_value TEXT;
+ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+UPDATE anon_links SET link_name = COALESCE(link_name, 'لینک اصلی'), status = CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END WHERE link_name IS NULL OR status IS NULL;
+ALTER TABLE anon_links DROP CONSTRAINT IF EXISTS anon_links_status_check;
+ALTER TABLE anon_links ADD CONSTRAINT anon_links_status_check CHECK (status IN ('active','closed','revoked'));
+DROP INDEX IF EXISTS uq_anon_links_one_active;
+CREATE INDEX IF NOT EXISTS idx_anon_links_user_status ON anon_links(telegram_id,status,created_at);
+
+CREATE TABLE IF NOT EXISTS anonymous_inbox_messages (
+  id BIGSERIAL PRIMARY KEY,
+  sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  link_hash BYTEA NOT NULL REFERENCES anon_links(token_hash) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('incoming','outgoing')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','replied','blocked')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  responded_at TIMESTAMPTZ,
+  CHECK (sender_id <> recipient_id)
+);
+CREATE INDEX IF NOT EXISTS anonymous_inbox_recipient_idx ON anonymous_inbox_messages(recipient_id,direction,status,id DESC);
+CREATE INDEX IF NOT EXISTS anonymous_inbox_sender_idx ON anonymous_inbox_messages(sender_id,direction,status,id DESC);
+
 CREATE TABLE IF NOT EXISTS anonymous_pair_permissions (
   sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
