@@ -15,8 +15,8 @@ describe('anonymous inbox and multi-link service', () => {
   it('creates cryptographically random 64-character link tokens', () => {
     const a = randomLinkToken();
     const b = randomLinkToken();
-    expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(b).toMatch(/^[0-9a-f]{64}$/);
+    expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(b).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(a).not.toBe(b);
   });
 

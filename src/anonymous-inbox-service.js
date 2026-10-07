@@ -7,7 +7,7 @@ const tokenDigest = (token) => createHash('sha256').update(String(token), 'utf8'
 async function withTransaction(pool, fn) { const client = await pool.connect(); try { await client.query('BEGIN'); const result = await fn(client); await client.query('COMMIT'); return result; } catch (error) { try { await client.query('ROLLBACK'); } catch {} throw error; } finally { client.release(); } }
 
 export function randomLinkToken() {
-  return randomBytes(32).toString('hex');
+  return randomBytes(32).toString('base64url');
 }
 
 export function linkLimitForUser(user) {
@@ -52,7 +52,7 @@ export async function getOrCreateUserLinks(pool, userId, botToken, username) {
 }
 
 export async function resolveLinkDetails(pool, rawToken) {
-  if (typeof rawToken !== 'string' || !/^[0-9a-f]{64}$/i.test(rawToken)) return null;
+  if (typeof rawToken !== 'string' || !/^[A-Za-z0-9_-]{32,64}$/.test(rawToken)) return null;
   const result = await pool.query(`SELECT telegram_id,encode(token_hash,'hex') AS token_key,link_name,status
     FROM anon_links WHERE token_hash=$1 AND status='active' AND (expires_at IS NULL OR expires_at>now())`, [tokenDigest(rawToken)]);
   if (!result.rows.length) return null;

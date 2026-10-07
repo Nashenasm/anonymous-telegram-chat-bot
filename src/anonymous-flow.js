@@ -1,6 +1,7 @@
 import {
   getStableLink,
   resolveLink,
+  deterministicToken,
   pairIsBlocked,
   hasConsent,
   queueAnonymousMessage,
@@ -13,7 +14,7 @@ import { createUserLink, getOrCreateUserLinks, listUserLinks, setLinkStatus, ren
 
 const CANCEL_WORDS = ['انصراف', 'بازگشت'];
 const MAX_LEN = 4096;
-const HEX64 = /^[0-9a-fA-F]{64}$/;
+const START_TOKEN = /^[A-Za-z0-9_-]{32,64}$/;
 const LINK_LABEL = '🔗 لینک ناشناس من';
 const INBOX_LABEL = '📥 صندوق دریافت';
 const OUTBOX_LABEL = '📤 صندوق ارسال';
@@ -332,7 +333,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       if (action === 'list') { await setState(id, 'anon_menu'); return sendLinkList(id); }
       if (action === 'new') { await setState(id, 'anon_new_name'); return send(id, '✏️ نام لینک جدید را بفرست؛ برای نام تصادفی «تصادفی» بنویس.', { reply_markup: { inline_keyboard: [[{ text: '🎲 نام تصادفی', callback_data: 'alink:random' }], [{ text: '↩️ بازگشت', callback_data: 'alink:list' }]] } }); }
       if (action === 'random') { await setState(id, 'anon_new_name'); return handlePanelText(id, 'تصادفی', 'anon_new_name'); }
-      if (action === 'view') { const row = (await pool.query("SELECT token_value,link_name,status FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked'", [Number(id), key])).rows[0]; if (!row) return send(id, 'این لینک پیدا نشد.', backMarkup('alink:list')); const username = await ensureBotUsername(); return sendLink(id, `🔗 ${row.link_name}\nوضعیت: ${row.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\nhttps://t.me/${String(username).replace(/^@+/, '')}?start=${row.token_value}`, linkControls(key, row.status)); }
+      if (action === 'view') { const row = (await pool.query("SELECT token_value,link_name,status FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked'", [Number(id), key])).rows[0]; if (!row) return send(id, 'این لینک پیدا نشد.', backMarkup('alink:list')); const username = await ensureBotUsername(); const tokenValue = row.token_value || deterministicToken(process.env.TELEGRAM_BOT_TOKEN, id); return sendLink(id, `🔗 ${row.link_name}\nوضعیت: ${row.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\nhttps://t.me/${String(username).replace(/^@+/, '')}?start=${tokenValue}`, linkControls(key, row.status)); }
       if (action === 'close' || action === 'open') { const row = await setLinkStatus(pool, id, key, action === 'close' ? 'closed' : 'active'); return send(id, row ? `✅ لینک «${row.link_name}» ${action === 'close' ? 'بسته' : 'باز'} شد.` : 'عملیات روی لینک انجام نشد.', backMarkup('alink:list')); }
       if (action === 'rename') { await setState(id, `anon_rename_link:${key}`); return send(id, 'نام جدید لینک را بفرست.', backMarkup('alink:list')); }
       if (action === 'revoke') { await setState(id, `anon_revoke_confirm:${key}`); return send(id, '⚠️ باطل‌سازی دائمی است و لینک دیگر قابل بازگشت نیست. تأیید می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: '✅ بله، باطل کن', callback_data: `alink:revoke_yes:${key}` }, { text: '↩️ انصراف', callback_data: 'alink:list' }]] } }); }
@@ -428,7 +429,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
   };
 
   const handleStartPayload = async (id, payload) => {
-    if (typeof payload !== 'string' || !HEX64.test(payload)) return false;
+    if (typeof payload !== 'string' || !START_TOKEN.test(payload)) return false;
     let link = null; let legacyMode = false;
     try { link = await resolveLinkDetails(pool, payload); } catch { link = null; }
     if (!link) {
@@ -572,9 +573,10 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       }
       if (!links.length) return replyWith('ظرفیت ساخت لینک تکمیل است. کاربران عادی حداکثر ۳ و کاربران Plus حداکثر ۱۰ لینک دارند.');
       await setState(sid, 'anon_menu');
-      for (const link of links) {
-        await sendLink(sid, `🔗 ${link.link_name}\nوضعیت: ${link.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\n${link.url || `https://t.me/${username}?start=${link.token_key}`}`, linkControls(link.callback_key || link.token_key.slice(0, 40), link.status));
-      }
+      const rendered = links.map((link, index) => `🔗 ${index + 1}) ${link.link_name}\nوضعیت: ${link.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n${link.url || `https://t.me/${username}?start=${link.token_value || link.token_key}`}`).join('\n\n');
+      const listButtons = links.map((link, index) => [{ text: `⚙️ مدیریت لینک ${index + 1}`, callback_data: `alink:view:${link.callback_key || link.token_key.slice(0, 40)}` }]);
+      listButtons.push([{ text: '➕ لینک جدید', callback_data: 'alink:new' }], [{ text: '↩️ بازگشت به منو', callback_data: 'alink:menu' }]);
+      await sendLink(sid, `🔗 لینک‌های ناشناس شما\n\n${rendered}`, { reply_markup: { inline_keyboard: listButtons } });
       await send(sid, linkMenuText(), linkMenuKeyboard());
       return true;
     } catch {
