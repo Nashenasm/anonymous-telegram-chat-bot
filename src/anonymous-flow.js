@@ -1,6 +1,7 @@
 import {
   getStableLink,
   resolveLink,
+  deterministicToken,
   pairIsBlocked,
   hasConsent,
   queueAnonymousMessage,
@@ -8,11 +9,16 @@ import {
   createAnonymousBlock,
 } from './anonymous-link-service.js';
 import { applyCoinDelta } from './finance-ledger.js';
+import { BONUS_DEFINITIONS, claimBonus } from './bonus-service.js';
+import { createUserLink, getOrCreateUserLinks, listUserLinks, setLinkStatus, renameUserLink, resolveLinkDetails, queueInboxMessage, listInbox, listOutbox, markInboxMessage, createOutboxReply } from './anonymous-inbox-service.js';
 
 const CANCEL_WORDS = ['انصراف', 'بازگشت'];
 const MAX_LEN = 4096;
-const HEX64 = /^[0-9a-fA-F]{64}$/;
-const LINK_LABEL = 'لینک ناشناس من';
+const START_TOKEN = /^[A-Za-z0-9_-]{32,64}$/;
+const LINK_LABEL = '🔗 لینک ناشناس من';
+const INBOX_LABEL = '📥 صندوق دریافت';
+const OUTBOX_LABEL = '📤 صندوق ارسال';
+const LINKS_LABEL = '🗂 لینک های من';
 
 const MSG_HEADER = 'پیام ناشناس:\n';
 const CONSENT_PROMPT = 'شما یک پیام ناشناس دارید، آیا قبول میکنید؟';
@@ -50,7 +56,7 @@ const isActiveState = (state) => typeof state === 'string' && state.startsWith('
 
 let usernamePromise = null;
 
-export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = null, connectButton, disconnectButton }) {
+export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = null, connectButton, disconnectButton, editMessage = null }) {
   const uid = (id) => Number(id);
   const deliverMessage = async (senderId, recipientId, text, markup) => {
     if (sendAsUser) return sendAsUser(senderId, recipientId, text, markup);
@@ -65,10 +71,17 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       if (!first.rowCount) { await client.query('COMMIT'); return false; }
       await applyCoinDelta(client, { userId: uid(newcomerId), delta: 20, kind: 'grant', idempotencyKey: `anonymous-entry:${uid(newcomerId)}`, metadata: { source: 'anonymous_link' } });
       const owner = await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [uid(ownerId)]);
-      if (owner.rowCount) await applyCoinDelta(client, { userId: uid(ownerId), delta: 3, kind: 'referral', idempotencyKey: `anonymous-referral:${uid(newcomerId)}:${uid(ownerId)}`, metadata: { newcomerId: uid(newcomerId) } });
+      if (owner.rowCount) {
+        await applyCoinDelta(client, { userId: uid(ownerId), delta: 3, kind: 'referral', idempotencyKey: `anonymous-referral:${uid(newcomerId)}:${uid(ownerId)}`, metadata: { newcomerId: uid(newcomerId) } });
+        const bonus = await claimBonus(client, { bonusKey: 'first_referral', userId: uid(ownerId), metadata: { source: 'anonymous_link' } });
+        await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
+        await client.query('COMMIT');
+        await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
+        if (bonus.granted) { const definition = BONUS_DEFINITIONS.first_referral; await send(uid(ownerId), `🎁 بونوس دریافت کردی\n\nمقدار: +${bonus.amount} مانوکوین\nدلیل: ${definition.title}\n${definition.description}`); }
+        return true;
+      }
       await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1', [uid(newcomerId), uid(ownerId)]);
       await client.query('COMMIT');
-      if (owner.rowCount) await send(uid(ownerId), '🎁 یک کاربر از لینک ناشناس شما وارد شد و ۳ مانو کوین هدیه گرفتی.');
       return true;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   };
@@ -82,6 +95,18 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       ]],
     },
   });
+  const inboxActions = (messageId) => ({ reply_markup: { inline_keyboard: [[
+    { text: '💬 پاسخ', callback_data: `ainbox:reply:${messageId}` },
+    { text: '🚫 بلاک', callback_data: `ainbox:block:${messageId}` },
+  ]] } });
+  const backMarkup = (callback = 'alink:menu') => ({ reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: callback }]] } });
+  const linkControls = (key, status) => ({ reply_markup: { inline_keyboard: [
+    [{ text: '🪓 باطل کردن', callback_data: `alink:revoke:${key}` }],
+    [{ text: status === 'closed' ? '♦️ بازکردن لینک' : '🔒 بستن لینک', callback_data: `alink:${status === 'closed' ? 'open' : 'close'}:${key}` }],
+    [{ text: '✏️ تغییر نام', callback_data: `alink:rename:${key}` }],
+    [{ text: '➕ لینک جدید', callback_data: 'alink:new' }],
+    [{ text: '↩️ بازگشت به لینک‌ها', callback_data: 'alink:list' }],
+  ] } });
   const inlineBlockConfirm = (otherId) => ({
     reply_markup: {
       inline_keyboard: [[
@@ -99,8 +124,8 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     },
   });
   const mainKb = (chatting = false) =>
-    kb([[connectButton, LINK_LABEL], ...(chatting ? [[disconnectButton]] : [])]);
-  const composeKb = () => kb([[connectButton, LINK_LABEL], ['انصراف']]);
+    kb([[LINK_LABEL], ...(chatting ? [[disconnectButton]] : [])]);
+  const composeKb = () => kb([[LINK_LABEL], ['انصراف']]);
 
   const isChatting = async (id) => {
     try {
@@ -112,6 +137,10 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
   };
 
   const mainKbFor = async (id) => mainKb(await isChatting(id));
+  const updateInline = async (id, text, markup, callbackQuery = null) => {
+    if (editMessage && callbackQuery?.message?.message_id) return editMessage(callbackQuery, id, text, markup);
+    return send(id, text, markup);
+  };
 
   const setState = async (id, state) => {
     await pool.query('UPDATE users SET action_state = $1 WHERE telegram_id = $2', [
@@ -174,7 +203,8 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     await send(senderId, WAIT_MSG);
   };
 
-  const compose = async (senderId, targetId, body) => {
+  const compose = async (senderId, targetAndLink, body) => {
+    const [targetId, linkKey] = String(targetAndLink || '').split(':');
     if (CANCEL_WORDS.includes(body) || body === connectButton || body === LINK_LABEL) {
       await setState(senderId, null);
       await send(senderId, CANCEL_MSG, await mainKbFor(senderId));
@@ -189,12 +219,14 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       await setState(senderId, null);
       return true;
     }
-    if (await hasConsent(pool, senderId, targetId)) {
-      await deliver(senderId, targetId, body);
-      await finishSender(senderId);
+    if (!linkKey) {
+      if (await hasConsent(pool, senderId, targetId)) { await deliver(senderId, targetId, body); await finishSender(senderId); return true; }
+      const legacy = await queueAnonymousMessage(pool, senderId, targetId, body);
+      if (legacy?.status === 'queued') { await setState(targetId, `anon_consent:${senderId}`); await send(targetId, CONSENT_PROMPT, inlineConsent(senderId)); await finishSender(senderId); return true; }
+      await send(senderId, SAFE_RESPONSES[legacy?.status] || SAFE_RESPONSES.invalid, composeKb());
       return true;
     }
-    const result = await queueAnonymousMessage(pool, senderId, targetId, body);
+    const result = await queueInboxMessage(pool, { senderId, recipientId: targetId, linkKey, body });
     const status = result && typeof result === 'object' ? result.status : null;
     if (status !== 'queued') {
       if (status === 'blocked') {
@@ -205,9 +237,9 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       }
       return true;
     }
-    await setState(targetId, `anon_consent:${senderId}`);
-    await send(targetId, CONSENT_PROMPT, inlineConsent(senderId));
-    await finishSender(senderId);
+    if (!(await isChatting(targetId))) await send(targetId, `📥 پیام جدید در صندوق دریافت\n\n${body}\n\n▫️ از لینک: ${result.linkName || 'ناشناس'}`, inboxActions(result.id));
+    await setState(senderId, null);
+    await send(senderId, '✅ پیامت ارسال شد؛ لازم نیست منتظر بمانی.', await mainKbFor(senderId));
     return true;
   };
 
@@ -298,7 +330,33 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     return true;
   };
 
-  const handleCallback = async (id, callbackData) => {
+  const handleCallback = async (id, callbackData, callbackQuery = null) => {
+    if (callbackData.startsWith('alink:')) {
+      const [, action, key] = callbackData.split(':');
+      if (action === 'menu') { await setState(id, 'anon_menu'); return updateInline(id, linkMenuText(), linkMenuKeyboard(), callbackQuery); }
+      if (action === 'list') { await setState(id, 'anon_menu'); return sendLinkList(id, callbackQuery); }
+      if (action === 'new') { await setState(id, 'anon_new_name'); return updateInline(id, '✏️ نام لینک جدید را بفرست؛ برای نام تصادفی «تصادفی» بنویس.', { reply_markup: { inline_keyboard: [[{ text: '🎲 نام تصادفی', callback_data: 'alink:random' }], [{ text: '↩️ بازگشت', callback_data: 'alink:list' }]] } }, callbackQuery); }
+      if (action === 'random') { await setState(id, 'anon_new_name'); return handlePanelText(id, 'تصادفی', 'anon_new_name', callbackQuery); }
+      if (action === 'view') { const row = (await pool.query("SELECT token_value,link_name,status FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked'", [Number(id), key])).rows[0]; if (!row) return send(id, 'این لینک پیدا نشد.', backMarkup('alink:list')); const username = await ensureBotUsername(); const tokenValue = row.token_value || deterministicToken(process.env.TELEGRAM_BOT_TOKEN, id); return updateInline(id, `🔗 ${row.link_name}\nوضعیت: ${row.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\nhttps://t.me/${String(username).replace(/^@+/, '')}?start=${tokenValue}`, linkControls(key, row.status), callbackQuery); }
+      if (action === 'close' || action === 'open') { const row = await setLinkStatus(pool, id, key, action === 'close' ? 'closed' : 'active'); return updateInline(id, row ? `✅ لینک «${row.link_name}» ${action === 'close' ? 'بسته' : 'باز'} شد.` : 'عملیات روی لینک انجام نشد.', backMarkup('alink:list'), callbackQuery); }
+      if (action === 'rename') { await setState(id, `anon_rename_link:${key}`); return updateInline(id, 'نام جدید لینک را بفرست.', backMarkup('alink:list'), callbackQuery); }
+      if (action === 'revoke') { await setState(id, `anon_revoke_confirm:${key}`); return updateInline(id, '⚠️ باطل‌سازی دائمی است و لینک دیگر قابل بازگشت نیست. تأیید می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: '✅ بله، باطل کن', callback_data: `alink:revoke_yes:${key}` }, { text: '↩️ انصراف', callback_data: 'alink:list' }]] } }, callbackQuery); }
+      if (action === 'revoke_yes') { const row = await setLinkStatus(pool, id, key, 'revoked'); await setState(id, 'anon_menu'); return updateInline(id, row ? '🪓 لینک به‌طور کامل باطل شد.' : 'این لینک قبلاً باطل شده است.', linkMenuKeyboard(), callbackQuery); }
+      return true;
+    }
+    if (callbackData.startsWith('aout:')) {
+      const [, action, raw] = callbackData.split(':');
+      if (action === 'page') return sendOutbox(id, Number(raw), callbackQuery);
+      return true;
+    }
+    if (callbackData.startsWith('ainbox:')) {
+      const [, action, raw] = callbackData.split(':'); const messageId = Number(raw);
+      if (action === 'page') return sendInbox(id, messageId, callbackQuery);
+      if (action === 'view') { const row = (await pool.query("SELECT m.id,m.body,l.link_name FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash WHERE m.id=$1 AND m.recipient_id=$2 AND m.status='pending'", [messageId, Number(id)])).rows[0]; return row ? updateInline(id, `✉️ پیام ناشناس\n\n${row.body}\n\n▫️ از لینک: ${row.link_name}`, inboxActions(row.id), callbackQuery) : updateInline(id, 'این پیام دیگر در صندوق فعال نیست.', backMarkup('alink:menu'), callbackQuery); }
+      if (action === 'reply') { await setState(id, `anon_inbox_reply:${messageId}`); return updateInline(id, '💬 پاسخ خود را بفرست؛ برای لغو «بازگشت» را بزن.', { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } }, callbackQuery); }
+      if (action === 'block') { const row = (await pool.query("SELECT sender_id FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND status='pending'", [messageId, Number(id)])).rows[0]; if (row) { await createAnonymousBlock(pool, id, row.sender_id); await markInboxMessage(pool, messageId, id, 'blocked'); } return updateInline(id, '🚫 کاربر بلاک شد و پیام از صندوق فعال خارج شد.', linkMenuKeyboard(), callbackQuery); }
+      return true;
+    }
     const match = /^anon:(reply|block|block_confirm|block_cancel|consent_yes|consent_no):(\d{1,20})$/.exec(callbackData);
     if (!match) return false;
     const [, action, rawOtherId] = match;
@@ -351,6 +409,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     if (!parsed || !parsed.name.startsWith('anon_')) return false;
     const body = typeof text === 'string' ? text.trim() : '';
     const sid = String(id);
+    if (parsed && (parsed.name === 'anon_menu' || parsed.name === 'anon_new_name' || parsed.name === 'anon_inbox_reply' || parsed.name === 'anon_rename_link' || parsed.name === 'anon_revoke_confirm')) return handlePanelText(sid, body, state);
     switch (parsed.name) {
       case 'anon_compose':
         return compose(sid, parsed.id, body);
@@ -374,8 +433,14 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
   };
 
   const handleStartPayload = async (id, payload) => {
-    if (typeof payload !== 'string' || !HEX64.test(payload)) return false;
-    const targetId = await resolveLink(pool, payload);
+    if (typeof payload !== 'string' || !START_TOKEN.test(payload)) return false;
+    let link = null; let legacyMode = false;
+    try { link = await resolveLinkDetails(pool, payload); } catch { link = null; }
+    if (!link) {
+      const legacyTarget = await resolveLink(pool, payload);
+      if (typeof legacyTarget === 'number') { link = { telegram_id: legacyTarget, token_key: payload, link_name: 'لینک ناشناس' }; legacyMode = true; }
+    }
+    const targetId = link?.telegram_id;
     if (typeof targetId !== 'number' || !Number.isFinite(targetId)) return false;
     if (String(targetId) === String(id)) return false;
     if (await pairIsBlocked(pool, id, targetId)) return false;
@@ -385,9 +450,88 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       return true;
     }
     await rewardFirstEntry(id, targetId);
-    await setState(id, `anon_compose:${targetId}`);
-    await send(id, COMPOSE_PROMPT, composeKb());
+    await setState(id, `anon_compose:${targetId}${legacyMode ? '' : `:${link.token_key}`}`);
+    await send(id, legacyMode ? COMPOSE_PROMPT : `✉️ پیام ناشناس برای «${link.link_name || 'لینک ناشناس'}»\n\nمتنت را بفرست؛ لازم نیست منتظر پاسخ بمانی.`, composeKb());
     return true;
+  };
+
+  const linkMenuKeyboard = () => kb([[INBOX_LABEL, OUTBOX_LABEL], [LINKS_LABEL], ['↩️ بازگشت']]);
+  const linkMenuText = () => `╭────── ✦ ──────╮
+        🔗 لینک ناشناس من
+╰────── ✦ ──────╯
+
+لینک‌هایت را مدیریت کن؛ پیام‌های ورودی بدون معطل‌کردن تو در صندوق ذخیره می‌شوند.
+هر پیام را می‌توانی ببینی، پاسخ بدهی یا بلاک کنی.`;
+  const ensureBotUsername = async () => {
+    if (!usernamePromise) {
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      usernamePromise = fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(8000) })
+        .then((r) => r.json()).then((j) => { if (!j?.ok || !j.result?.username) throw new Error('getMe failed'); return j.result.username; });
+      usernamePromise.catch(() => { usernamePromise = null; });
+    }
+    return usernamePromise;
+  };
+  const sendLinkList = async (id, callbackQuery = null) => {
+    const username = await ensureBotUsername();
+    const links = await getOrCreateUserLinks(pool, id, process.env.TELEGRAM_BOT_TOKEN, username);
+    const keyboard = links.map((row) => [{ text: `${row.status === 'active' ? '🟢' : '⚪'} ${row.link_name}`, callback_data: `alink:view:${row.callback_key || row.token_key.slice(0, 40)}` }]);
+    keyboard.push([{ text: '➕ لینک جدید', callback_data: 'alink:new' }], [{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
+    return updateInline(id, `🗂 لینک های من\n\n${links.length ? links.map((x, i) => `${i + 1}. ${x.status === 'active' ? 'فعال' : 'بسته'} — ${x.link_name}`).join('\n') : 'هنوز لینکی نساخته‌ای.'}`, { reply_markup: { inline_keyboard: keyboard } }, callbackQuery);
+  };
+  const handlePanelText = async (id, body, state, callbackQuery = null) => {
+    const isBack = body === '↩️ بازگشت' || body === 'بازگشت' || body === 'انصراف';
+    if (isBack) {
+      if (state === 'anon_menu') { await setState(id, null); return send(id, BACK_MSG, await mainKbFor(id)); }
+      if (state === 'anon_new_name' || state === 'anon_inbox_reply' || String(state || '').startsWith('anon_rename_link:') || String(state || '').startsWith('anon_revoke_confirm:')) { await setState(id, 'anon_menu'); return send(id, 'مدیریت لینک ناشناس', linkMenuKeyboard()); }
+      await setState(id, null); return send(id, BACK_MSG, await mainKbFor(id));
+    }
+    const renameMatch = /^anon_rename_link:(\w+)$/.exec(state || '');
+    if (renameMatch) { const row = await renameUserLink(pool, id, renameMatch[1], body); await setState(id, 'anon_menu'); return send(id, row ? `✅ نام لینک به «${row.link_name}» تغییر کرد.` : 'نام لینک معتبر نیست.', linkMenuKeyboard()); }
+    const revokeMatch = /^anon_revoke_confirm:(\w+)$/.exec(state || '');
+    if (revokeMatch) { if (body === 'تایید' || body === 'بله') { await setLinkStatus(pool, id, revokeMatch[1], 'revoked'); await setState(id, 'anon_menu'); return send(id, '🪓 لینک باطل شد.', linkMenuKeyboard()); } return send(id, 'برای تأیید، «بله» را بفرست یا «بازگشت» را بزن.', backMarkup('alink:list')); }
+    if (state === 'anon_menu') {
+      if (body === INBOX_LABEL) return sendInbox(id);
+      if (body === OUTBOX_LABEL) return sendOutbox(id);
+      if (body === LINKS_LABEL) return sendLinkList(id);
+      if (body === LINK_LABEL) return handleLinkButton(id);
+      return send(id, linkMenuText(), linkMenuKeyboard());
+    }
+    if (state === 'anon_new_name') {
+      const username = await ensureBotUsername();
+      if (!username) return send(id, 'دریافت اطلاعات ربات ناموفق بود؛ دوباره تلاش کن.', { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:list' }]] } });
+      const result = await createUserLink(pool, id, body === 'تصادفی' || body === 'بدون نام' ? '' : body, process.env.TELEGRAM_BOT_TOKEN, username);
+      await setState(id, 'anon_menu');
+      if (result.limited) return send(id, `ظرفیت ساخت لینک تکمیل است؛ سقف حساب شما ${result.limit} لینک است.`, linkMenuKeyboard());
+      return updateInline(id, `✅ لینک جدید ساخته شد\n\n🔗 ${result.link_name}\n${result.url}`, linkControls(result.callback_key || result.token_key.slice(0, 40), 'active'), callbackQuery);
+    }
+    const replyMatch = /^anon_inbox_reply:(\d+)$/.exec(state || '');
+    if (replyMatch) {
+      if (!body || body.length > MAX_LEN) return send(id, LEN_MSG, { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } });
+      const messageId = Number(replyMatch[1]);
+      const original = (await pool.query("SELECT sender_id,link_hash FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND direction='incoming' AND status='pending'", [messageId, Number(id)])).rows[0];
+      if (!original) return send(id, 'این پیام دیگر در صندوق فعال نیست.', linkMenuKeyboard());
+      await createOutboxReply(pool, { senderId: id, recipientId: original.sender_id, linkHash: original.link_hash, body });
+      await markInboxMessage(pool, messageId, id, 'replied');
+      await setState(id, 'anon_menu');
+      await send(original.sender_id, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`);
+      return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
+    }
+    return false;
+  };
+  const sendInbox = async (id, offset = 0, callbackQuery = null) => {
+    const rows = await listInbox(pool, id, offset);
+    const text = rows.length ? rows.map((r) => `✉️ ${r.body}\n▫️ از: ${r.link_name}\n▫️ ${new Date(r.created_at).toLocaleString('fa-IR')}`).join('\n\n') : 'صندوق دریافتت خالی است.';
+    const buttons = rows.map((r) => [{ text: `💬 مدیریت پیام ${r.id}`, callback_data: `ainbox:view:${r.id}` }]);
+    if (rows.length === 10) buttons.push([{ text: '📜 پیام‌های قدیمی‌تر', callback_data: `ainbox:page:${offset + 10}` }]);
+    buttons.push([{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
+    return updateInline(id, `📥 صندوق دریافت\n\n${text}`, { reply_markup: { inline_keyboard: buttons } }, callbackQuery);
+  };
+  const sendOutbox = async (id, offset = 0, callbackQuery = null) => {
+    const rows = await listOutbox(pool, id, offset);
+    const text = rows.length ? rows.map((r) => `📨 ${r.body}\n▫️ از لینک: ${r.link_name}\n▫️ ${new Date(r.created_at).toLocaleString('fa-IR')}`).join('\n\n') : 'صندوق ارسال خالی است.';
+    const buttons = rows.length === 10 ? [[{ text: '📜 پیام‌های قدیمی‌تر', callback_data: `aout:page:${offset + 10}` }]] : [];
+    buttons.push([{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
+    return updateInline(id, `📤 صندوق ارسال\n\n${text}`, { reply_markup: { inline_keyboard: buttons } }, callbackQuery);
   };
 
   const handleLinkButton = async (id) => {
@@ -424,9 +568,20 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       }
       if (!username) return replyWith(LINK_RETRY_MSG);
 
-      const url = await getStableLink(pool, sid, token, username);
-      if (!url) return replyWith(LINK_RETRY_MSG);
-      await sendLink(sid, url, await mainKbFor(sid));
+      let links;
+      try { links = await getOrCreateUserLinks(pool, sid, token, username); }
+      catch {
+        const legacyUrl = await getStableLink(pool, sid, token, username);
+        await sendLink(sid, legacyUrl, await mainKbFor(sid));
+        return true;
+      }
+      if (!links.length) return replyWith('ظرفیت ساخت لینک تکمیل است. کاربران عادی حداکثر ۳ و کاربران Plus حداکثر ۱۰ لینک دارند.');
+      await setState(sid, 'anon_menu');
+      const rendered = links.map((link, index) => `🔗 ${index + 1}) ${link.link_name}\nوضعیت: ${link.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n${link.url || `https://t.me/${username}?start=${link.token_value || link.token_key}`}`).join('\n\n');
+      const listButtons = links.map((link, index) => [{ text: `⚙️ مدیریت لینک ${index + 1}`, callback_data: `alink:view:${link.callback_key || link.token_key.slice(0, 40)}` }]);
+      listButtons.push([{ text: '➕ لینک جدید', callback_data: 'alink:new' }], [{ text: '↩️ بازگشت به منو', callback_data: 'alink:menu' }]);
+      await sendLink(sid, `🔗 لینک‌های ناشناس شما\n\n${rendered}`, { reply_markup: { inline_keyboard: listButtons } });
+      await send(sid, linkMenuText(), linkMenuKeyboard());
       return true;
     } catch {
       usernamePromise = null;
@@ -434,5 +589,5 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     }
   };
 
-  return { handleLinkButton, handleStartPayload, handleText, handleCallback, isActiveState };
+  return { handleLinkButton, handleStartPayload, handleText, handleCallback, handlePanelText, isActiveState };
 }

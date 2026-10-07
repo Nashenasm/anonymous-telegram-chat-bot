@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinKeyboard, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, mandatoryScheduleListText, mandatoryStatusKeyboard, mandatoryStatusText, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
+import { arePreferencesCompatible, BLOCK_REASONS, DEFAULTS, STOP_MIN_SECONDS, isTelegramMember, mandatoryAdminSourceDetails, mandatoryJoinKeyboard, mandatoryJoinMarkup, mandatoryJoinMessage, mandatoryScheduleListKeyboard, chatPermissionViolations, mandatoryScheduleListText, mandatoryStatusKeyboard, mandatoryStatusText, normalizeFa, preferenceFromText, preferenceKeyboard } from '../api/webhook.js';
 import { isMandatoryJobsAuthorized } from '../api/mandatory-jobs.js';
 import { formatMandatorySourceDetails, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, trackingCommand } from '../src/mandatory-service.js';
 import { DEFAULT_MANDATORY_AUDIENCE, MANDATORY_AUDIENCE_OPTIONS, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
@@ -132,21 +132,102 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("if (value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'کنترل ربات'");
   });
 
+  it('exposes an admin activity report channel and sends audit events when enabled', () => {
+    expect(source).toContain('کانال گزارش فعالیت ادمین‌ها');
+    expect(source).toContain('admin_activity_report_channel_id');
+    expect(source).toContain('admin_activity_report_enabled');
+    expect(source).toContain("admin_activity_report_error");
+    expect(source).toContain('اتصال/تغییر کانال');
+    expect(source).toContain('ارسال پیام تست');
+    expect(source).toContain("row.role !== 'owner' && Array.isArray(row.permissions)");
+    expect(source).toContain("adminPermissionFromContext(`${item.id || ''} ${item.label || ''}`)");
+    expect(source).toContain('for (let attempt = 0; attempt < 3; attempt += 1)');
+    expect(source).toContain('admin_button_click');
+    expect(source).toContain('admin_text_action');
+    expect(source).toContain('value === ANONYMOUS_LINK_BUTTON');
+    expect(source).toContain('public action must win over any stale admin action_state');
+    expect(source).toContain("firstPublicAction === 'anonymous_link'");
+    expect(source).toContain('never retain a stale admin-panel state');
+    expect(source).toContain('ADMIN_ACTIVITY_LABELS');
+    expect(source).toContain("/^mandatory:/.test(String(data || ''))");
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS admin_activity_posts');
+    expect(source).toContain('Number(post.activity_count)>=50');
+    expect(source).toContain('adminActivityPostKeyboard');
+    expect(source).toContain('admins:role:${adminId}');
+  });
+  it('enforces granular chat permissions for text links, mentions, captions, and media', () => {
+    expect(chatPermissionViolations({}, 'https://t.me/example')).toContain('telegram_link');
+    expect(chatPermissionViolations({}, '@example')).toContain('mention');
+    expect(chatPermissionViolations({ photo: [{}], caption: 'https://example.com' }, 'https://example.com')).toEqual(expect.arrayContaining(['photo', 'website_link']));
+    expect(chatPermissionViolations({ document: { mime_type: 'application/pdf' } }, '')).toContain('file');
+    expect(chatPermissionViolations({ reply_to_message: { message_id: 4 } }, 'سلام')).toContain('reply');
+  });
+  it('provides owner-controlled admin management with roles and permissions', () => {
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS admin_accounts');
+    expect(source).toContain('مدیریت جامع ادمین‌ها');
+    expect(source).toContain("value === 'امور ادمین'");
+    expect(source).toContain('admins:perm:');
+    expect(source).toContain('مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.');
+  });
+  it('shows only enabled and monitored wallets in crypto payments', () => {
+    expect(source).toContain('WHERE enabled=TRUE AND monitor_enabled=TRUE');
+    expect(source).toContain('این ولت دیگر فعال نیست؛ لطفاً دوباره انتخاب کن.');
+  });
+  it('provides global and per-wallet monitoring controls', () => {
+    expect(source).toContain("wallet:monitor:global:");
+    expect(source).toContain("wallet:monitor:auto:");
+    expect(source).toContain("wallet:monitor:wallet:");
+    expect(source).toContain("wallet:monitor:confirmations");
+    expect(source).toContain("wallet:monitor:reset");
+  });
+  it('restores the wallet management label and complete auto-credit controls', () => {
+    expect(source).toContain("['درگاه ها', 'مدیریت ولت']");
+    expect(source).toContain("data === 'wallet:auto:on' || data === 'wallet:auto:off'");
+    expect(source).toContain("callback_data: `wallet:monitor:auto:${autoOn ? 'off' : 'on'}`");
+    expect(source).toContain("wallet:monitor:auto:");
+  });
+  it('protects gift-code administration from public users', () => {
+    expect(source).toContain("data.startsWith('gift:') && !isAdmin(id)");
+    expect(source).toContain("me.action_state?.startsWith('admin:gift') && !isAdmin(id)");
+    expect(source).toContain('این بخش فقط برای مدیریت ربات است.');
+  });
+  it('notifies users about enabled bonuses without exposing referral identities', () => {
+    expect(source).toContain('notifyBonus');
+    expect(source).toContain('مقدار: +${result.amount} مانوکوین');
+    expect(source).toContain('دلیل: ${definition.title}');
+    expect(source).toContain('یک کاربر جدید با لینک دعوتت وارد ربات شد.');
+    expect(source).not.toContain('شناسه کاربر: ${newcomerId}');
+    expect(source).not.toContain('شناسه زیرمجموعه: ${newcomerId}');
+  });
+  it('supports timed referral rewards, public explanation, safe gift back navigation, and removes duplicate daily coin control', () => {
+    expect(source).toContain('referral_started_at');
+    expect(source).toContain('runReferralTimeRewards');
+    expect(source).toContain('referral:time:toggle');
+    expect(source).toContain('conditions.time=true');
+    expect(source).toContain('شرط زمانی');
+    expect(source).toContain("me.action_state?.startsWith('admin:gift:') && value === 'بازگشت'");
+    expect(source).toContain("function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['بازگشت کنترل کاربران']], true); }");
+    expect(source).not.toContain("if (value === 'تنظیم دیلی کوین') { await updateAction(client, id, 'admin:daily_coin');");
+  });
   it('places gift-code administration under bot finance ManoCoin controls', () => {
-    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinKeyboard()); }");
+    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("function referralAdminKeyboard() { return replyKeyboard([['کوین پله ای'], ['کوین زیرمجموعه'], ['شرایط زیرمجموعه'], ['دکمه پاور'], ['بازگشت مانوکوین']], true); }");
+    expect(source).toContain("referral:staged_condition");
+    expect(source).toContain("referral_stage_amounts");
+    expect(source).toContain("if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }");
     expect(source).toContain("if (value === 'کد هدیه') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }");
     expect(source).not.toContain("['دریافت وضعیت کاربران'], ['کد هدیه']");
     expect(source).toContain("'بازگشت مانوکوین'");
   });
   it('keeps card operations on the bot keyboard and glass buttons display only the admin label', () => {
     expect(source).toContain("function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("text:c.admin_label");
+    expect(source).toContain('safeCardAdminLabel(c.admin_label)');
     expect(source).toContain("return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());");
   });
   it('offers card-to-card as a payment method before showing payment contacts', () => {
     expect(source).toContain("function paymentMethodKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'کارت به کارت', callback_data: 'coins:method:card' }");
-    expect(source).toContain("if (data === 'coins:buy') return send(id, 'نحوه واریز مانوکوین را انتخاب کن:', paymentMethodKeyboard());");
+    expect(source).toContain("if (data === 'coins:buy') return coinAmountPanel(sClient, id, callbackQuery);");
     expect(source).toContain("if (data === 'coins:method:card') return cardPaymentForUser(sClient, id);");
   });
 
@@ -456,7 +537,7 @@ describe('anonymous chat public contract', () => {
 
   it('keeps anonymous message callbacks separate from random chat and serializes searches', () => {
     expect(source).toContain("if (data.startsWith('anon:'))");
-    expect(source).toContain('return flowFor(s).handleCallback(id, data)');
+    expect(source).toContain('return flowFor(s).handleCallback(id, data, callbackQuery)');
     expect(source).toContain('pg_advisory_xact_lock');
     expect(source).toContain("AND ($2='any' OR candidate.gender=$2)");
     expect(source).toContain("AND (COALESCE(candidate.match_preference, 'any')='any' OR candidate.match_preference=$3)");
