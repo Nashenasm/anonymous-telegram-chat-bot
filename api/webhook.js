@@ -12,9 +12,10 @@ import { APPEARANCE_SECTIONS, appearanceButton, appearanceFeedback, appearanceIt
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
-import { BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
+import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
-import { ensureCryptoWalletSchema } from '../src/crypto-wallet-service.js';
+import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
+import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -24,12 +25,35 @@ const pool = new Pool({
   ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
 });
 let runtimeSchemaPromise;
+const runtimeAdmins = new Map();
+const ADMIN_PERMISSION_KEYS = ['dashboard','users','finance','wallets','bonuses','referrals','gifts','appearance','broadcast','reports','admins'];
+const ADMIN_ROLE_DEFAULTS = { owner: ADMIN_PERMISSION_KEYS, admin: ADMIN_PERMISSION_KEYS, operator: ['dashboard','users','reports'], support: ['dashboard','users'], finance: ['dashboard','finance','wallets','gifts'] };
+async function refreshAdminCache(client) { const rows = (await client.query('SELECT telegram_id,role,enabled,permissions FROM admin_accounts')).rows; runtimeAdmins.clear(); for (const row of rows) if (row.enabled !== false) runtimeAdmins.set(String(row.telegram_id), row); }
+function adminPermissionFromContext(value, state = '') { const text = `${value || ''} ${state || ''}`; if (/admin|ادمین|مدیر/.test(text)) return 'admins'; if (/wallet|ولت|finance|مالی|مانوکوین|کارت|درگاه|coin|gift|هدیه/.test(text)) return /wallet|ولت/.test(text) ? 'wallets' : 'finance'; if (/bonus|بونوس|referral|زیرمجموعه/.test(text)) return /referral|زیرمجموعه/.test(text) ? 'referrals' : 'bonuses'; if (/appearance|آرایش|ظاهری/.test(text)) return 'appearance'; if (/broadcast|همگانی|تبلیغ/.test(text)) return 'broadcast'; if (/report|گزارش/.test(text)) return 'reports'; if (/user|کاربر|چت/.test(text)) return 'users'; return 'dashboard'; }
+function hasAdminPermission(id, key) { if (isOwner(id)) return true; const row = runtimeAdmins.get(String(id)); return Boolean(row && row.enabled !== false && row.role !== 'owner' && Array.isArray(row.permissions) && row.permissions.includes(key)); }
+function adminRoleLabel(role) { return ({ owner: 'مالک اصلی', admin: 'مدیر کامل', operator: 'اپراتور', support: 'پشتیبانی', finance: 'امور مالی' }[role] || role || 'نامشخص'); }
+function adminPermissionLabel(key) { return ({ dashboard:'داشبورد', users:'کاربران و مکالمات', finance:'امور مالی عمومی', wallets:'ولت و مانیتورینگ', bonuses:'بونوس‌ها', referrals:'زیرمجموعه‌ها', gifts:'کدهای هدیه', appearance:'ظاهر و پیام‌ها', broadcast:'تبلیغات و پیام همگانی', reports:'گزارش‌ها', admins:'مدیریت ادمین‌ها' }[key] || key); }
+function adminManagementKeyboard() { return replyKeyboard([['فهرست ادمین‌ها'], ['افزودن ادمین'], ['کانال گزارش فعالیت ادمین‌ها'], ['بازگشت پنل']], true); }
+function adminActivityReportKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['روشن/خاموش گزارش‌ها'], ['ارسال پیام تست'], ['قطع اتصال کانال'], ['بازگشت امور ادمین']], true); }
+async function adminActivityReportText(client) { const rows=(await client.query("SELECT key,value FROM bot_settings WHERE key IN ('admin_activity_report_channel_id','admin_activity_report_enabled','admin_activity_report_private')")).rows; const values=Object.fromEntries(rows.map(row=>[row.key,row.value])); return `کانال گزارش فعالیت ادمین‌ها
+
+وضعیت گزارش‌دهی: ${values.admin_activity_report_enabled === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+کانال: ${values.admin_activity_report_channel_id || 'تنظیم نشده'}
+نوع: ${values.admin_activity_report_private === 'true' ? 'خصوصی' : values.admin_activity_report_channel_id ? 'عمومی' : 'نامشخص'}
+
+در صورت فعال بودن، فعالیت‌های مدیریتی مانند تغییر مجوز، ورود به پنل، تغییرات مالی و مدیریت کاربران در این کانال ثبت می‌شود.`; }
+function adminAccountKeyboard(row) { const buttons = ADMIN_PERMISSION_KEYS.map(key => [{ text: `${Array.isArray(row.permissions) && row.permissions.includes(key) ? '🟢' : '🔴'} ${adminPermissionLabel(key)}`, callback_data: `admins:perm:${row.telegram_id}:${key}` }]); return { reply_markup: { inline_keyboard: [[{ text: `نقش: ${adminRoleLabel(row.role)}`, callback_data: `admins:role:${row.telegram_id}` }], [{ text: row.enabled ? '🔴 غیرفعال کردن' : '🟢 فعال کردن', callback_data: `admins:toggle:${row.telegram_id}` }], ...buttons, [{ text: '🗑 حذف ادمین', callback_data: `admins:delete:${row.telegram_id}` }], [{ text: 'بازگشت به فهرست', callback_data: 'admins:list' }]] } }; }
+async function adminRows(client) { return (await client.query("SELECT a.*,u.username,u.role AS user_role FROM admin_accounts a LEFT JOIN users u ON u.telegram_id=a.telegram_id ORDER BY CASE WHEN a.role='owner' THEN 0 ELSE 1 END,a.created_at")).rows; }
+async function sendAdminManagement(client,id,callbackQuery=null) { const rows=await adminRows(client); const text=`مدیریت جامع ادمین‌ها\n\nتعداد: ${rows.length}\n\n${rows.map((r,i)=>`${i+1}. ${r.enabled?'🟢':'🔴'} ${r.username?`@${r.username}`:'بدون نام کاربری'}\nآیدی: ${r.telegram_id} | نقش: ${adminRoleLabel(r.role)}`).join('\n\n')||'ادمینی ثبت نشده است.'}`; const markup={reply_markup:{inline_keyboard:rows.map(r=>[{text:`${r.enabled?'🟢':'🔴'} ${r.username?`@${r.username}`:r.telegram_id} — ${adminRoleLabel(r.role)}`,callback_data:`admins:view:${r.telegram_id}`}]).concat([[{text:'بازگشت پنل',callback_data:'admins:back'}]])}}; if (callbackQuery) return editAudienceCallback(callbackQuery,id,text,markup); await send(id,text,markup); return send(id,'عملیات مدیریت ادمین:',adminManagementKeyboard()); }
+async function sendAdminAccount(client,id,targetId,callbackQuery=null) { const row=(await client.query('SELECT a.*,u.username FROM admin_accounts a LEFT JOIN users u ON u.telegram_id=a.telegram_id WHERE a.telegram_id=$1',[targetId])).rows[0]; if(!row) return send(id,'ادمین پیدا نشد.',adminManagementKeyboard()); const perms=Array.isArray(row.permissions)?row.permissions.map(adminPermissionLabel).join('، '):''; return callbackQuery ? editAudienceCallback(callbackQuery,id,`جزئیات ادمین\n\nآیدی: ${row.telegram_id}\nنام کاربری: ${row.username?`@${row.username}`:'ثبت نشده'}\nنقش: ${adminRoleLabel(row.role)}\nوضعیت: ${row.enabled?'🟢 فعال':'🔴 غیرفعال'}\nمجوزها: ${perms||'بدون مجوز'}`,adminAccountKeyboard(row)) : send(id,`جزئیات ادمین\n\nآیدی: ${row.telegram_id}\nنام کاربری: ${row.username?`@${row.username}`:'ثبت نشده'}\nنقش: ${adminRoleLabel(row.role)}\nوضعیت: ${row.enabled?'🟢 فعال':'🔴 غیرفعال'}\nمجوزها: ${perms||'بدون مجوز'}`,adminAccountKeyboard(row)); }
+
 async function ensureRuntimeSchema() {
   if (!runtimeSchemaPromise) {
     runtimeSchemaPromise = (async () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        await ensureBroadcastSchema(client);
         await client.query(`CREATE TABLE IF NOT EXISTS finance_ledger (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, delta INTEGER NOT NULL CHECK (delta <> 0), balance_before INTEGER NOT NULL CHECK (balance_before >= 0), balance_after INTEGER NOT NULL CHECK (balance_after >= 0), kind TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('CREATE INDEX IF NOT EXISTS finance_ledger_user_time_idx ON finance_ledger(user_id, created_at DESC)');
         await client.query(`CREATE TABLE IF NOT EXISTS payment_orders (order_id TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, product TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), currency TEXT NOT NULL DEFAULT 'coin', provider TEXT NOT NULL DEFAULT 'disabled', provider_reference TEXT UNIQUE, status TEXT NOT NULL DEFAULT 'pending', metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ)`);
@@ -55,6 +79,8 @@ async function ensureRuntimeSchema() {
         await client.query(`CREATE TABLE IF NOT EXISTS mandatory_source_reports (source_id BIGINT NOT NULL REFERENCES mandatory_sources(id) ON DELETE RESTRICT, channel_chat_id BIGINT NOT NULL, message_id BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (source_id, channel_chat_id))`);
         await client.query('CREATE INDEX IF NOT EXISTS mandatory_source_reports_channel_idx ON mandatory_source_reports(channel_chat_id, updated_at)');
         await client.query('CREATE UNIQUE INDEX IF NOT EXISTS users_referral_code_unique ON users(referral_code) WHERE referral_code IS NOT NULL');
+        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_started_at TIMESTAMPTZ');
+        await client.query('CREATE INDEX IF NOT EXISTS users_referral_started_idx ON users(referral_started_at) WHERE referral_started_at IS NOT NULL');
         await client.query("CREATE TABLE IF NOT EXISTS plus_purchases (id BIGSERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, months INTEGER NOT NULL CHECK (months IN (1,3,6,12)), price INTEGER NOT NULL CHECK (price IN (100,250,450,800)), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
         await client.query('ALTER TABLE plus_purchases DROP CONSTRAINT IF EXISTS plus_purchases_price_check');
         await client.query(`CREATE TABLE IF NOT EXISTS anonymous_blocks (
@@ -74,6 +100,10 @@ async function ensureRuntimeSchema() {
         await client.query("INSERT INTO bot_settings(key, value) VALUES ('unblock_all_v1', 'pending') ON CONFLICT (key) DO NOTHING");
         await client.query(`CREATE TABLE IF NOT EXISTS chat_metrics (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, total_chat_seconds BIGINT NOT NULL DEFAULT 0, total_chats INTEGER NOT NULL DEFAULT 0, completed_chats INTEGER NOT NULL DEFAULT 0, total_messages BIGINT NOT NULL DEFAULT 0, longest_chat_seconds BIGINT NOT NULL DEFAULT 0, longest_chat_messages INTEGER NOT NULL DEFAULT 0, active_days INTEGER NOT NULL DEFAULT 0, last_active_day DATE, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ)`);
         await client.query(`CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT NOT NULL, target_user_id BIGINT, action TEXT NOT NULL, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await client.query(`CREATE TABLE IF NOT EXISTS admin_activity_posts (id BIGSERIAL PRIMARY KEY, admin_id BIGINT NOT NULL, report_channel_id TEXT NOT NULL, report_day DATE NOT NULL, part INTEGER NOT NULL, message_id BIGINT NOT NULL, first_log_id BIGINT NOT NULL, activity_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(admin_id, report_channel_id, report_day, part))`);
+        await client.query(`CREATE TABLE IF NOT EXISTS admin_accounts (telegram_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('owner','admin','operator','support','finance')), enabled BOOLEAN NOT NULL DEFAULT TRUE, permissions JSONB NOT NULL DEFAULT '[]'::jsonb, added_by BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        const configuredAdmins = [process.env.OWNER_TELEGRAM_ID, ...(process.env.ADMIN_TELEGRAM_IDS || '').split(',')].map(x=>String(x||'').trim()).filter(x=>/^\d+$/.test(x));
+        for (const configuredId of [...new Set(configuredAdmins)]) { await client.query(`INSERT INTO admin_accounts(telegram_id,role,permissions) SELECT $1,$2,$3::jsonb WHERE EXISTS (SELECT 1 FROM users WHERE telegram_id=$1) ON CONFLICT (telegram_id) DO NOTHING`, [Number(configuredId), String(configuredId) === String(process.env.OWNER_TELEGRAM_ID || '') ? 'owner' : 'admin', JSON.stringify(ADMIN_PERMISSION_KEYS)]); }
         await client.query(`CREATE TABLE IF NOT EXISTS gift_codes (code TEXT PRIMARY KEY, coins INTEGER NOT NULL DEFAULT 0 CHECK (coins >= 0), plus_days INTEGER NOT NULL DEFAULT 0 CHECK (plus_days >= 0), max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ, created_by BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS gift_code_redemptions (code TEXT NOT NULL REFERENCES gift_codes(code) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (code, user_id))`);
         await client.query("ALTER TABLE gift_codes ADD COLUMN IF NOT EXISTS max_uses INTEGER");
@@ -93,8 +123,20 @@ async function ensureRuntimeSchema() {
         await client.query(`CREATE TABLE IF NOT EXISTS chat_gifts (id BIGSERIAL PRIMARY KEY, sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, gift_type TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS daily_coin_claims (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
-        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
-        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT');
+	        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT');
+	        await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT');
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS link_name TEXT');
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS token_value TEXT');
+	        await client.query("ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'");
+	        await client.query('ALTER TABLE anon_links ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ');
+	        await client.query("UPDATE anon_links SET link_name=COALESCE(link_name,'لینک اصلی'),status=CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END WHERE link_name IS NULL OR status IS NULL");
+	        await client.query('ALTER TABLE anon_links DROP CONSTRAINT IF EXISTS anon_links_status_check');
+	        await client.query("ALTER TABLE anon_links ADD CONSTRAINT anon_links_status_check CHECK(status IN ('active','closed','revoked'))");
+	        await client.query('DROP INDEX IF EXISTS uq_anon_links_one_active');
+	        await client.query('CREATE INDEX IF NOT EXISTS idx_anon_links_user_status ON anon_links(telegram_id,status,created_at)');
+	        await client.query(`CREATE TABLE IF NOT EXISTS anonymous_inbox_messages (id BIGSERIAL PRIMARY KEY,sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,link_hash BYTEA NOT NULL REFERENCES anon_links(token_hash) ON DELETE CASCADE,body TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('incoming','outgoing')),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','replied','blocked')),created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),responded_at TIMESTAMPTZ,CHECK(sender_id<>recipient_id))`);
+        await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_recipient_idx ON anonymous_inbox_messages(recipient_id,direction,status,id DESC)');
+        await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_sender_idx ON anonymous_inbox_messages(sender_id,direction,status,id DESC)');
         await client.query("INSERT INTO bot_settings(key,value) VALUES ('chat_permissions',$1),('finance_card_text','متن واریز کارت به کارت تنظیم نشده است.'),('finance_crypto_text','برای واریز ارز دیجیتال، شبکه و آدرس کیف پول را از مدیریت دریافت کنید.'),('finance_stars_text','پرداخت با Telegram Stars پس از انتخاب این روش و راهنمایی مدیریت انجام می‌شود.'),('referral_reward_coins','5'),('referral_time_seconds','1800'),('referral_bonus_coins','0'),('referral_power_enabled','true'),('referral_staged_enabled','false'),('referral_stage_amounts','{}'),('referral_conditions','{\"join\":false,\"connect\":false,\"time\":false,\"purchase\":false,\"plus\":false,\"referral\":false}'),('min_chat_duration','15S'),('spam_consecutive_limit','3'),('spam_delay','2S') ON CONFLICT (key) DO NOTHING", [JSON.stringify(DEFAULT_CHAT_PERMISSIONS)]);
         await ensureBonusDefaults(client);
         const unblock = await client.query("SELECT value FROM bot_settings WHERE key='unblock_all_v1'");
@@ -121,6 +163,7 @@ async function ensureRuntimeSchema() {
           ON CONFLICT (key) DO NOTHING`);
         await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING', ['mandatory_join_message', DEFAULTS.mandatory_join_message]);
         await client.query('COMMIT');
+        await refreshAdminCache(client);
       } catch (error) {
         await client.query('ROLLBACK');
         runtimeSchemaPromise = undefined;
@@ -187,9 +230,9 @@ export function arePreferencesCompatible(requesterGender, requesterPreference, c
 function adminIds() {
   return new Set((process.env.ADMIN_TELEGRAM_IDS || '').split(',').map(x => x.trim()).filter(Boolean));
 }
-function isAdmin(id) { return adminIds().has(String(id)) || (process.env.OWNER_TELEGRAM_ID && String(id) === String(process.env.OWNER_TELEGRAM_ID)); }
+function isAdmin(id) { return adminIds().has(String(id)) || runtimeAdmins.has(String(id)) || (process.env.OWNER_TELEGRAM_ID && String(id) === String(process.env.OWNER_TELEGRAM_ID)); }
 function ownerId() { return String(process.env.OWNER_TELEGRAM_ID || [...adminIds()][0] || ''); }
-function isOwner(id) { return String(id) === ownerId(); }
+function isOwner(id) { return String(id) === ownerId() || runtimeAdmins.get(String(id))?.role === 'owner'; }
 function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
@@ -201,10 +244,10 @@ function emojiKeyboard(settings) { return replyKeyboard(screenKeyboard(publicApp
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
 function plusPurchaseKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پلاس 1 ماهه⭐', callback_data: 'plus:buy:1' }], [{ text: 'پلاس 3 ماهه🌟', callback_data: 'plus:buy:3' }], [{ text: 'پلاس 6 ماهه✨', callback_data: 'plus:buy:6' }], [{ text: 'پلاس 12 ماهه💎', callback_data: 'plus:buy:12' }]] } }; }
 function plusConfirmKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'بله تایید میکنم', callback_data: 'plus:confirm' }, { text: 'خیر بعدا میخرم', callback_data: 'plus:cancel' }]] } }; }
-function adminMainKeyboard(settings = {}) { const a = privateAppearance(settings); return replyKeyboard([...appearanceKeyboard(a), ['افزودن ادمین']]); }
+function adminMainKeyboard(settings = {}, adminId = null) { const a = privateAppearance(settings); const filtered = adminId ? { ...a, buttons: (a.buttons || []).map(row => row.filter(item => item?.enabled !== false && (item.id === 'exit' || hasAdminPermission(adminId, adminPermissionFromContext(`${item.id || ''} ${item.label || ''}`))))) } : a; const rows = appearanceKeyboard(filtered); if (!adminId || hasAdminPermission(adminId, 'admins')) rows.push(['امور ادمین']); return replyKeyboard(rows); }
 function reportsKeyboard() { return replyKeyboard([['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']], true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
-function adsKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(privateAppearance(settings), 'ads', [['جویین اجباری', 'پیام همگانی'], ['پیام خوش‌آمد', 'تبلیغ اتصال'], ['تبلیغ میان مکالمه'], ['بازگشت پنل']]), true); }
+function adsKeyboard(settings = {}) { return replyKeyboard([['📢 پیام همگانی', '📌 جویین اجباری'], ['👋 پیام خوش‌آمد', '🔗 تبلیغ اتصال'], ['💬 تبلیغ میان مکالمه', '↩️ بازگشت پنل']], true); }
 function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
@@ -214,11 +257,11 @@ function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard:
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
-function adminKeyboard(enabled) { return adminMainKeyboard(); }
+function adminKeyboard(enabled) { return adminMainKeyboard({}, null); }
 function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['دریافت وضعیت کاربران'], ['بازگشت پنل']], true); }
-function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['تنظیم دیلی کوین'], ['بازگشت کنترل کاربران']], true); }
+function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['بازگشت کنترل کاربران']], true); }
 function financeKeyboard() { return userFinanceKeyboard(); }
-function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'ولت ها'], ['امور کارت'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
+function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'مدیریت ولت'], ['امور کارت'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
 function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }
 function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }
 function cardAdminKeyboard(rows=[]) { return { reply_markup: { inline_keyboard: rows } }; }
@@ -235,12 +278,36 @@ async function selectedCoinAmount(client, id) { const row = (await client.query(
 async function coinAmountPanel(client, id, callbackQuery = null) { const raw = await botSettingValue(client, 'crypto_coin_packages', '100,200,500,1000'); const packages = [...new Set(String(raw).split(',').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x > 0))].slice(0, 12); const custom = await botSettingValue(client, 'crypto_custom_amount_enabled', 'true') === 'true'; const text = `🪙 خرید مانوکوین\n\nلطفاً مقدار مانوکوین موردنظر را انتخاب کن.\n\nحداقل خرید: ${await botSettingValue(client, 'crypto_coin_min', '100')}\nحداکثر خرید: ${await botSettingValue(client, 'crypto_coin_max', '1000')}`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, coinAmountKeyboard(packages, custom)) : send(id, text, coinAmountKeyboard(packages, custom)); }
 async function paymentMethodsForAmount(client, id, amount, callbackQuery = null) { await updateAction(client, id, `coins:amount_selected:${amount}`); const text = `✅ مقدار انتخاب شد: ${Number(amount).toLocaleString('en-US')} مانوکوین\n\nحالا روش پرداخت را انتخاب کن:`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, paymentMethodKeyboard()) : send(id, text, paymentMethodKeyboard()); }
 async function liveTomanRates() { try { const r = await fetch('https://api.wallex.ir/v1/markets', { signal: AbortSignal.timeout(10000) }); const j = await r.json(); const symbols = j?.result?.symbols || {}; const usdt = Number(symbols.USDTTMN?.stats?.lastPrice || 0); const trx = Number(symbols.TRXTMN?.stats?.lastPrice || 0); if (usdt > 0 && trx > 0) return { usdt, trx }; } catch {} return { usdt: 0, trx: 0 }; }
-async function cryptoWalletsForPurchase(client) { return (await client.query("SELECT id,name,asset,address,network FROM crypto_wallets WHERE enabled=TRUE AND asset IN ('USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20') ORDER BY id")).rows; }
+async function cryptoWalletsForPurchase(client) { return (await client.query("SELECT id,name,asset,address,network,monitor_enabled FROM crypto_wallets WHERE enabled=TRUE AND monitor_enabled=TRUE AND asset IN ('TRX','USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20') ORDER BY id")).rows; }
 async function cryptoWalletChoice(client, id, callbackQuery = null) { const wallets = await cryptoWalletsForPurchase(client); if (!wallets.length) return send(id, 'در حال حاضر ولت USDT روی شبکه TRC20 برای پرداخت فعال نیست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:amount_methods' }]] } }); const text = `💳 نوع ارز دیجیتال و شبکه را انتخاب کن:\n\n${wallets.map(w => `• ${walletPaymentLabel(w)}\n  ارز: ${w.asset === 'USDT_TRC20' || w.asset === 'USDT-TRC20' || w.asset === 'USDT' ? 'USDT' : w.asset}\n  شبکه: ${w.network === 'TRON' ? 'TRC20' : w.network}`).join('\n\n')}`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, cryptoWalletChoiceKeyboard(wallets)) : send(id, text, cryptoWalletChoiceKeyboard(wallets)); }
-async function createCryptoPurchase(client, id, amount, walletId) { const wallet = (await client.query("SELECT id,name,address,asset,network FROM crypto_wallets WHERE id=$1 AND enabled=TRUE AND asset IN ('USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20')", [walletId])).rows[0]; if (!wallet) return send(id, 'این ولت دیگر فعال نیست؛ لطفاً دوباره انتخاب کن.', cryptoWalletChoiceKeyboard(await cryptoWalletsForPurchase(client))); const priceToman = Number(await botSettingValue(client, 'finance_coin_price', '1000')); const rates = await liveTomanRates(); if (!rates.usdt || !rates.trx || !priceToman) return send(id, 'دریافت نرخ لحظه‌ای انجام نشد؛ چند لحظه بعد دوباره تلاش کن.', cryptoWalletChoiceKeyboard([wallet])); const baseUsdt = (Number(amount) * priceToman) / rates.usdt; const configuredFee = await botSettingValue(client, 'crypto_network_fee_trx', '') || await botSettingValue(client, 'crypto_trx_fee_reserve', '12'); const feeTrx = Math.max(1, Math.min(50, Number(configuredFee) || 12)); const feeUsdt = (feeTrx * rates.trx) / rates.usdt; const unique = (Number(id) % 97) / 1000000; const payable = Number((baseUsdt + feeUsdt + unique).toFixed(6)); const orderId = `CR-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`; const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); await client.query(`INSERT INTO payment_orders(order_id,user_id,product,amount,currency,provider,status,metadata) VALUES($1,$2,'manocoin',$3,'USDT-TRC20','tron','pending',$4::jsonb)`, [orderId, id, amount, JSON.stringify({ wallet_id: String(wallet.id), amount_usdt: payable, base_usdt: baseUsdt, fee_trx: feeTrx, fee_usdt: feeUsdt, usdt_toman: rates.usdt, trx_toman: rates.trx, expires_at: expiresAt })]); await updateAction(client, id, null); const text = `🧾 رسید خرید مانوکوین\n\nمقدار مانوکوین: ${Number(amount).toLocaleString('en-US')}\n\n💵 مبلغ خرید: ${money(baseUsdt)} USDT\n⛽ کارمزد شبکه: ${money(feeTrx, 2)} TRX ≈ ${money(feeUsdt)} USDT\n✅ مجموع قابل واریز: ${money(payable)} USDT\n\nارز: USDT\nشبکه: TRC20\n\nآدرس دریافت:\n${wallet.address}\n\nنرخ USDT: ${rates.usdt.toLocaleString('en-US')} تومان\nنرخ TRX: ${rates.trx.toLocaleString('en-US')} تومان\n⏱ مهلت پرداخت: ۳۰ دقیقه\n\nشناسه سفارش: ${orderId}\n\nلطفاً دقیقاً مبلغ مجموع را ارسال کن؛ کارمزد شبکه از مبلغ USDT کم نشود.`; return send(id, text, { reply_markup: { inline_keyboard: [[{ text: 'کپی آدرس دریافت', copy_text: { text: wallet.address } }], [{ text: 'بازگشت', callback_data: 'coins:back' }]] } }); }
-
+async function createCryptoPurchase(client, id, amount, walletId) {
+  const wallet = (await client.query("SELECT id,name,address,asset,network,monitor_enabled FROM crypto_wallets WHERE id=$1 AND enabled=TRUE AND monitor_enabled=TRUE AND asset IN ('TRX','USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20')", [walletId])).rows[0];
+  if (!wallet) return send(id, 'این ولت دیگر فعال نیست؛ لطفاً دوباره انتخاب کن.', cryptoWalletChoiceKeyboard(await cryptoWalletsForPurchase(client)));
+  const isTrx = wallet.asset === 'TRX';
+  const currency = isTrx ? 'TRX' : 'USDT';
+  const orderCurrency = isTrx ? 'TRX' : 'USDT-TRC20';
+  const network = wallet.network === 'TRON' ? 'TRON' : wallet.network;
+  const priceToman = Number(await botSettingValue(client, 'finance_coin_price', '1000'));
+  const rates = await liveTomanRates();
+  const rate = isTrx ? rates.trx : rates.usdt;
+  if (!rate || !rates.trx || !priceToman) return send(id, 'دریافت نرخ لحظه‌ای انجام نشد؛ چند لحظه بعد دوباره تلاش کن.', cryptoWalletChoiceKeyboard([wallet]));
+  const base = (Number(amount) * priceToman) / rate;
+  const configuredFee = await botSettingValue(client, 'crypto_network_fee_trx', '') || await botSettingValue(client, 'crypto_trx_fee_reserve', '12');
+  const feeTrx = Math.max(1, Math.min(50, Number(configuredFee) || 12));
+  const fee = isTrx ? feeTrx : (feeTrx * rates.trx) / rates.usdt;
+  const unique = (Number(id) % 97) / 1000000;
+  const payable = Number((base + fee + unique).toFixed(6));
+  const orderId = `CR-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const metadata = { wallet_id: String(wallet.id), amount_asset: payable, ...(isTrx ? {} : { amount_usdt: payable }), base_amount: base, fee_trx: feeTrx, fee_asset: fee, usdt_toman: rates.usdt, trx_toman: rates.trx, expires_at: expiresAt };
+  await client.query(`INSERT INTO payment_orders(order_id,user_id,product,amount,currency,provider,status,metadata) VALUES($1,$2,'manocoin',$3,$4,'tron','pending',$5::jsonb)`, [orderId, id, amount, orderCurrency, JSON.stringify(metadata)]);
+  await updateAction(client, id, null);
+  const text = `🧾 رسید خرید مانوکوین\n\nمقدار مانوکوین: ${Number(amount).toLocaleString('en-US')}\n\n💵 مبلغ خرید: ${money(base)} ${currency}\n⛽ کارمزد شبکه: ${money(feeTrx, 2)} TRX ≈ ${money(fee)} ${currency}\n✅ مجموع قابل واریز: ${money(payable)} ${currency}\n\nارز: ${currency}\nشبکه: ${network}\n\nآدرس دریافت:\n${wallet.address}\n\nنرخ USDT: ${rates.usdt.toLocaleString('en-US')} تومان\nنرخ TRX: ${rates.trx.toLocaleString('en-US')} تومان\n⏱ مهلت پرداخت: ۳۰ دقیقه\n\nشناسه سفارش: ${orderId}\n\nلطفاً دقیقاً مبلغ مجموع را ارسال کن.`;
+  return send(id, text, { reply_markup: { inline_keyboard: [[{ text: 'کپی آدرس دریافت', copy_text: { text: wallet.address } }], [{ text: 'بازگشت', callback_data: 'coins:back' }]] } });
+}
 function referralAdminKeyboard() { return replyKeyboard([['کوین پله ای'], ['کوین زیرمجموعه'], ['شرایط زیرمجموعه'], ['دکمه پاور'], ['بازگشت مانوکوین']], true); }
-function referralConditionsKeyboard(c={}) { const labels=[['join','جویین اجباری'],['connect','وصل شدن'],['time','زمان'],['purchase','خرید مانوکوین'],['plus','مانوپلاس'],['referral','زیرمجموعه']]; return {reply_markup:{inline_keyboard:[...labels.map(([k,l])=>[{text:`${c[k]?'🟢':'🔴'} ${l}`,callback_data:`referral:condition:${k}`}]),[{text:'بازگشت',callback_data:'referral:back'}]]}}; }
+function referralConditionsKeyboard(c={}) { const labels=[['join','جویین اجباری'],['connect','وصل شدن'],['time','زمان'],['purchase','خرید مانوکوین'],['plus','مانوپلاس'],['referral','زیرمجموعه']]; return {reply_markup:{inline_keyboard:[...labels.map(([k,l])=>[{text:`${c[k]?'🟢':'🔴'} ${l}`,callback_data:k==='time'?'referral:time:settings':`referral:condition:${k}`}]),[{text:'بازگشت',callback_data:'referral:back'}]]}}; }
+function referralTimeKeyboard(enabled) { return { reply_markup: { inline_keyboard: [[{ text: enabled ? '🔴 خاموش کردن تایم' : '🟢 روشن کردن تایم', callback_data: 'referral:time:toggle' }], [{ text: 'تعیین / تغییر زمان', callback_data: 'referral:time:set' }], [{ text: 'بازگشت', callback_data: 'referral:conditions:back' }]] } }; }
 function safeCardAdminLabel(value) { const text = String(value || '').trim(); return !text || /finance(?:_|\b)/i.test(text) ? 'ارتباط با ادمین' : text.slice(0, 80); }
 async function cardAdmins(client) { return (await client.query('SELECT * FROM payment_cards ORDER BY id')).rows; }
 async function sendCardAdminPanel(client,id) {
@@ -250,6 +317,7 @@ async function sendCardAdminPanel(client,id) {
   return send(id, 'عملیات امور کارت:', cardAdminReplyKeyboard());
 }
 async function referralConditions(client) { try{return JSON.parse(await botSettingValue(client,'referral_conditions','{}')||'{}')}catch{return {}} }
+async function referralTimeText(client) { const enabled = (await referralConditions(client)).time === true; const seconds = Number(await botSettingValue(client, 'referral_time_seconds', '1800')) || 1800; return `⏱ شرط زمانی زیرمجموعه\n\nوضعیت: ${enabled ? '🟢 فعال' : '🔴 خاموش'}\nزمان فعلی: ${durationLabel(seconds)}\n\nپس از گذشت این زمان از ورود کاربر با لینک دعوت، سهم تعیین‌شده در کوین پله‌ای برای دعوت‌کننده ثبت می‌شود.`; }
 function financeAppearanceKeyboard() { return replyKeyboard([['فعال/غیرفعال کردن پرداخت'], ['بازگشت امور مالی']], true); }
 function bonusListKeyboard(rows) { return { reply_markup: { inline_keyboard: rows.map(row => [{ text: `${row.enabled ? '🟢' : '🔴'} ${row.title}`, callback_data: `bonus:open:${row.bonus_key}` }]).concat([[{ text: 'بازگشت مانوکوین', callback_data: 'bonus:back_manocoin' }]]) } }; }
 function bonusDetailKeyboard(row) { return { reply_markup: { inline_keyboard: [[{ text: 'وارد کردن مقدار', callback_data: `bonus:amount:${row.bonus_key}` }], [{ text: `${row.enabled ? 'غیرفعال🔴' : 'فعال🟢'}`, callback_data: `bonus:toggle:${row.bonus_key}` }], [{ text: 'بازگشت به فهرست بونوس‌ها', callback_data: 'bonus:list' }]] } }; }
@@ -278,11 +346,17 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
     const coinCost = type === 'coins' ? amount : 0;
     if (!recipient) { await client.query('ROLLBACK'); throw new Error('recipient_missing'); }
     if (type === 'coins' && (!sender || Number(sender.coins) < amount)) { await client.query('ROLLBACK'); throw new Error('insufficient_coins'); }
-    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}`), metadata: { recipientId, amount } });
+    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}:${type}:${amount}:${Date.now()}`), metadata: { recipientId, amount } });
     else await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' months')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1", [recipientId, amount]);
     await client.query('INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4)', [senderId, recipientId, type, amount]); await client.query('COMMIT');
     const label = type === 'coins' ? `${amount} مانو کوین🐝` : `${amount === 12 ? '۱ سال' : `${amount} ماه`} مانو پلاس`;
-    await send(recipientId, `🎁 طرف مکالمه‌ات برایت ${label} هدیه فرستاد. مبارکت باشد!`);
+    try {
+      await send(recipientId, `🎁 طرف مکالمه‌ات برایت ${label} هدیه فرستاد. مبارکت باشد!`);
+      return { delivered: true };
+    } catch (deliveryError) {
+      console.error('chat_gift_delivery_error', { senderId, recipientId, type, amount, error: String(deliveryError?.message || deliveryError).slice(0, 240) });
+      return { delivered: false };
+    }
   } catch (error) { if (error.message !== 'recipient_missing' && error.message !== 'insufficient_coins') await client.query('ROLLBACK'); if (error.message === 'insufficient_coins') throw error; if (error.message === 'recipient_missing') throw error; throw error; }
 }
 function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { return { reply_markup: { inline_keyboard: permissionKeyboard(permissions).map(item => [{ text: item.label, callback_data: `conversation:permission:${item.key}` }]).concat([[{ text: 'بازگشت', callback_data: 'conversation:back' }]]) } }; }
@@ -312,17 +386,37 @@ function mandatoryAppearanceLayoutKeyboard() { return replyKeyboard([['تک‌ر
 async function telegram(method, body, { timeoutMs = 12_000 } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const result = await response.json();
-  if (!response.ok || !result.ok) throw new Error(`Telegram ${method}: ${result.description || response.status}`);
-  return result.result;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(`Telegram ${method}: ${result.description || response.status}`);
+      return result.result;
+    } catch (error) {
+      lastError = error;
+      if (!/fetch failed|network|econnreset|socket|timeout/i.test(String(error?.message || error)) || attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+let privacyCache = { value: true, expiresAt: 0 };
+async function privacyProtectionEnabled() {
+  if (privacyCache.expiresAt > Date.now()) return privacyCache.value;
+  try {
+    const client = await pool.connect();
+    try { privacyCache = { value: (await botSettingValue(client, 'privacy_protection_enabled', 'true')) !== 'false', expiresAt: Date.now() + 5000 }; }
+    finally { client.release(); }
+  } catch { /* keep the safe default */ }
+  return privacyCache.value;
 }
 async function send(chatId, text, replyMarkup) {
   const markup = replyMarkup?.reply_markup || replyMarkup;
-  return telegram('sendMessage', { chat_id: chatId, text, protect_content: true, ...(markup ? { reply_markup: markup } : {}) });
+  return telegram('sendMessage', { chat_id: chatId, text, protect_content: await privacyProtectionEnabled(), ...(markup ? { reply_markup: markup } : {}) });
 }
 async function sendLink(chatId, text, replyMarkup) {
   const markup = replyMarkup?.reply_markup || replyMarkup;
@@ -618,9 +712,15 @@ function technicalKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(
 function sourceFormatKeyboard() { return replyKeyboard([['ZIP'], ['TAR.GZ'], ['بازگشت']], true); }
 function databaseFormatKeyboard() { return replyKeyboard([['ZIP چندفرمتی'], ['SQL'], ['JSON'], ['CSV (ZIP)'], ['بازگشت']], true); }
 
+async function notifyBonus(userId, bonusKey, result) {
+  if (!result?.granted || !result.amount) return;
+  const definition = BONUS_DEFINITIONS[bonusKey];
+  if (!definition) return;
+  try { await send(Number(userId), `🎁 بونوس دریافت کردی\n\nمقدار: +${result.amount} مانوکوین\nدلیل: ${definition.title}\n${definition.description}`); } catch {}
+}
 async function ensureUser(client, id) {
   const created = await client.query("INSERT INTO users (telegram_id, coins, start_completed) VALUES ($1, 20, FALSE) ON CONFLICT (telegram_id) DO NOTHING RETURNING telegram_id", [id]);
-  if (created.rowCount) await claimBonus(client, { bonusKey: 'new_user', userId: id, metadata: { source: 'first_bot_entry' } });
+  if (created.rowCount) { const bonus = await claimBonus(client, { bonusKey: 'new_user', userId: id, metadata: { source: 'first_bot_entry' } }); await notifyBonus(id, 'new_user', bonus); }
   else await client.query('UPDATE users SET updated_at=NOW() WHERE telegram_id=$1', [id]);
   const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [id]);
   return result.rows[0];
@@ -744,8 +844,37 @@ async function sendBlockedList(client, id, prefix = '') {
   const rows = await blockedListRows(client, id);
   return send(id, `${prefix}${blockedListText(rows)}`, blockedListKeyboard(rows));
 }
+const ADMIN_ACTIVITY_LABELS = { admin_button_click: 'تغییر تنظیمات', admin_text_action: 'ثبت تنظیمات', admin_add: 'افزودن ادمین', admin_delete: 'حذف ادمین', admin_toggle: 'تغییر وضعیت ادمین', admin_permission_change: 'تغییر مجوز ادمین', admin_role_change: 'تغییر نقش ادمین', admin_activity_report_channel_connected: 'اتصال کانال گزارش فعالیت', coin_adjustment: 'تغییر مانو کوین کاربر', plus_adjustment: 'تغییر مانو پلاس کاربر', ban: 'بن کردن کاربر', unban: 'رفع بن کاربر', timed_ban: 'بن زمان‌دار کاربر', private_message: 'ارسال پیام اختصاصی', gift_code_create: 'ساخت کد هدیه', gift_code_cancel: 'لغو کد هدیه', gift_code_increase: 'افزایش اعتبار کد هدیه', unblock_pair: 'رفع بلاک کاربران' };
+const ADMIN_ACTIVITY_IGNORED = new Set(['view_user_panel', 'admin_button_click_navigation']);
+function adminActivityPostKeyboard(adminId) { return { reply_markup: { inline_keyboard: [[{ text: '👤 اطلاعات ادمین', callback_data: `admins:view:${adminId}` }, { text: '🛠 نقش و دسترسی', callback_data: `admins:role:${adminId}` }]] } }; }
+function adminActionSummary(action, targetId, details = {}) {
+  const d = details && typeof details === 'object' ? details : {}; const target = targetId ? ` (کاربر ${targetId})` : '';
+  if (action === 'admin_button_click') { const button=String(d.button||''); const map=[['bonus:toggle','تغییر وضعیت بونوس'],['conversation:permission','تغییر مجوزهای چت'],['wallet:monitor:auto','تغییر اعتباردهی خودکار'],['wallet:monitor:global','تغییر وضعیت مانیتورینگ'],['referral:power_toggle','تغییر دکمه پاور زیرمجموعه'],['referral:staged_toggle','تغییر کوین پله‌ای']]; return map.find(([key])=>button.startsWith(key))?.[1] || `تغییر تنظیمات (${button.slice(0,80)})`; }
+  if (action === 'admin_text_action') { const state=String(d.state||''); if(state.includes('broadcast')) return 'ارسال پیام همگانی'; if(state.includes('mandatory')) return 'تنظیم جویین اجباری'; if(state.includes('finance')) return 'تغییر تنظیمات مالی'; if(state.includes('wallet')) return 'تغییر تنظیمات ولت'; if(state.includes('conversation')) return 'تغییر تنظیمات مکالمات'; if(state.includes('gift')) return 'تغییر کد هدیه یا بونوس'; return 'تغییر تنظیمات ربات'; }
+  if(action==='admin_permission_change') return `${ADMIN_ACTIVITY_LABELS[action]}: ${d.key||'مجوز'} ${d.enabled?'فعال شد':'غیرفعال شد'}`;
+  if(action==='admin_role_change') return `${ADMIN_ACTIVITY_LABELS[action]} به ${d.role||'نقش جدید'}`;
+  if(action==='coin_adjustment') return `${ADMIN_ACTIVITY_LABELS[action]}: ${Number(d.amount)>0?'+':''}${d.amount||0}${target}`;
+  if(action==='plus_adjustment') return `${ADMIN_ACTIVITY_LABELS[action]}: ${d.months||0} ماه${target}`;
+  return `${ADMIN_ACTIVITY_LABELS[action]||action}${target}`;
+}
+async function renderAdminActivityPost(client, adminId, channelId, post) {
+  const logs=(await client.query(`SELECT id,target_user_id,action,details,created_at FROM admin_audit_log WHERE admin_id=$1 AND id >= $2 AND action <> ALL($3::text[]) ORDER BY id ASC`,[adminId,post.first_log_id,[...ADMIN_ACTIVITY_IGNORED]])).rows;
+  const lines=logs.slice(-50).map(row=>`• ${iranDate(row.created_at)} — ${adminActionSummary(row.action,row.target_user_id,row.details)}`);
+  const text=`🛡 فعالیت‌های ادمین\n\nادمین: ${adminId}\nبازه: ${post.report_day} | بخش ${post.part}\n\n${lines.join('\n')||'فعالیتی ثبت نشده است.'}`;
+  try { await telegram('editMessageText',{chat_id:channelId,message_id:post.message_id,text,reply_markup:adminActivityPostKeyboard(adminId).reply_markup,protect_content:true}); } catch(error) { if(!/message is not modified/i.test(String(error?.message||error))) throw error; }
+  await client.query('UPDATE admin_activity_posts SET activity_count=$2,updated_at=NOW() WHERE id=$1',[post.id,lines.length]);
+}
+async function publishAdminActivity(client, adminId, channelId, logId) {
+  if(!channelId||!adminId) return;
+  const day=(await client.query("SELECT to_char(NOW() AT TIME ZONE 'Asia/Tehran','YYYY-MM-DD') AS day")).rows[0].day;
+  let post=(await client.query('SELECT * FROM admin_activity_posts WHERE admin_id=$1 AND report_channel_id=$2 AND report_day=$3 ORDER BY part DESC LIMIT 1',[adminId,channelId,day])).rows[0];
+  if(!post||Number(post.activity_count)>=50) { const part=post?Number(post.part)+1:1; const sent=await telegram('sendMessage',{chat_id:channelId,text:`🛡 فعالیت‌های ادمین\n\nادمین: ${adminId}\nبازه: ${day} | بخش ${part}\n\nدر حال ثبت فعالیت‌ها...`,reply_markup:adminActivityPostKeyboard(adminId).reply_markup,protect_content:true}); post=(await client.query('INSERT INTO admin_activity_posts(admin_id,report_channel_id,report_day,part,message_id,first_log_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[adminId,channelId,day,part,sent.message_id,logId])).rows[0]; }
+  await renderAdminActivityPost(client,adminId,channelId,post);
+}
 async function audit(client, adminId, targetId, action, details = {}) {
-  await client.query('INSERT INTO admin_audit_log(admin_id,target_user_id,action,details) VALUES ($1,$2,$3,$4)', [adminId, targetId || null, action, JSON.stringify(details)]);
+  const inserted=await client.query('INSERT INTO admin_audit_log(admin_id,target_user_id,action,details) VALUES($1,$2,$3,$4) RETURNING id',[adminId,targetId||null,action,JSON.stringify(details)]);
+  if(ADMIN_ACTIVITY_IGNORED.has(action)) return;
+  try { const rows=(await client.query("SELECT key,value FROM bot_settings WHERE key IN ('admin_activity_report_channel_id','admin_activity_report_enabled')")).rows; const values=Object.fromEntries(rows.map(row=>[row.key,row.value])); if(values.admin_activity_report_enabled!=='true'||!values.admin_activity_report_channel_id) return; await publishAdminActivity(client,adminId,values.admin_activity_report_channel_id,inserted.rows[0].id); } catch(error) { console.error('admin_activity_report_error',String(error?.message||error).slice(0,200)); }
 }
 async function adminUserPanel(client, viewerId, targetId) {
   const result = await client.query('SELECT * FROM users WHERE telegram_id=$1', [targetId]);
@@ -766,6 +895,86 @@ async function openAdminUserPanel(viewerId, targetId) {
     await updateAction(client, viewerId, `admin:user_control:${resolved || targetId}`);
     return send(viewerId, panel.text, panel.markup);
   } finally { client.release(); }
+}
+async function sendWalletPanel(client, id) {
+  await ensureCryptoWalletSchema(client);
+  const rows = await walletRows(client);
+  const settingRows = (await client.query("SELECT key,value FROM bot_settings WHERE key IN ('crypto_auto_credit','crypto_monitor_enabled','crypto_report_channel_id','crypto_usd_price_source','crypto_asset_price_source')")).rows;
+  const walletSettings = Object.fromEntries(settingRows.map(row => [row.key, row.value]));
+  await send(id, walletPanelText(rows, walletSettings), walletPanelKeyboard(rows));
+  return send(id, 'عملیات مدیریت ولت را انتخاب کن:', walletManagementReplyKeyboard());
+}
+async function walletById(client, id) {
+  return (await walletRows(client)).find(row => Number(row.id) === Number(id));
+}
+async function walletMonitorSettings(client) {
+  const rows = (await client.query("SELECT key,value FROM bot_settings WHERE key IN ('crypto_monitor_enabled','crypto_auto_credit','crypto_confirmations','crypto_monitor_started_at')")).rows;
+  return Object.fromEntries(rows.map(row => [row.key, row.value]));
+}
+function walletMonitorKeyboard(rows, settings) {
+  const monitorOn = settings.crypto_monitor_enabled === 'true';
+  const autoOn = settings.crypto_auto_credit === 'true';
+  const buttons = [
+    [{ text: monitorOn ? '🔴 خاموش کردن مانیتورینگ کلی' : '🟢 روشن کردن مانیتورینگ کلی', callback_data: `wallet:monitor:global:${monitorOn ? 'off' : 'on'}` }],
+    [{ text: autoOn ? '🔴 خاموش کردن اعتباردهی خودکار' : '🟢 روشن کردن اعتباردهی خودکار', callback_data: `wallet:monitor:auto:${autoOn ? 'off' : 'on'}` }],
+    [{ text: `تعداد تأییدها: ${settings.crypto_confirmations || '20'}`, callback_data: 'wallet:monitor:confirmations' }, { text: 'ریست شروع مانیتورینگ', callback_data: 'wallet:monitor:reset' }],
+  ];
+  for (const row of rows) buttons.push([{ text: `${row.monitor_enabled ? '🟢' : '🔴'} ${row.name} — ${row.monitor_enabled ? 'مانیتور می‌شود' : 'مانیتور نمی‌شود'}`, callback_data: `wallet:monitor:wallet:${row.id}` }]);
+  buttons.push([{ text: '↩️ بازگشت به مدیریت ولت', callback_data: 'wallet:panel' }]);
+  return { reply_markup: { inline_keyboard: buttons } };
+}
+async function sendWalletMonitorPanel(client, id) {
+  await ensureCryptoWalletSchema(client);
+  const rows = await walletRows(client);
+  const settings = await walletMonitorSettings(client);
+  const started = Number(settings.crypto_monitor_started_at || 0);
+  const text = `مانیتورینگ و اعتباردهی خودکار
+
+مانیتورینگ کلی: ${settings.crypto_monitor_enabled === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+اعتباردهی خودکار: ${settings.crypto_auto_credit === 'true' ? '🟢 فعال' : '🔴 خاموش'}
+تعداد تأییدهای لازم: ${settings.crypto_confirmations || '20'}
+شروع بررسی تراکنش‌ها: ${started ? iranDate(started) : 'از اولین اجرای بعدی'}
+
+فقط ولت‌هایی که کنارشان 🟢 است بررسی می‌شوند. با خاموش بودن اعتباردهی خودکار، تراکنش‌ها فقط شناسایی و ثبت می‌شوند و به حساب کاربر اعتبار داده نمی‌شود.`;
+  return send(id, text, walletMonitorKeyboard(rows, settings));
+}
+async function handleWalletCallback(client, id, data) {
+  if (!isAdmin(id) || !data.startsWith('wallet:')) return false;
+  await ensureCryptoWalletSchema(client);
+  if (data === 'wallet:panel') return sendWalletPanel(client, id);
+  if (data === 'wallet:add') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
+  if (data === 'wallet:asset') { await updateAction(client, id, 'admin:wallet:add:asset'); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
+  if (data === 'wallet:auto:on' || data === 'wallet:auto:off') { const enabled = data.endsWith(':on'); await saveBotSetting(client, 'crypto_auto_credit', String(enabled)); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:auto') return sendWalletMonitorPanel(client, id);
+  if (data.startsWith('wallet:monitor:global:')) { await saveBotSetting(client, 'crypto_monitor_enabled', String(data.endsWith(':on'))); return sendWalletMonitorPanel(client, id); }
+  if (data.startsWith('wallet:monitor:auto:')) { await saveBotSetting(client, 'crypto_auto_credit', String(data.endsWith(':on'))); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:monitor:reset') { await saveBotSetting(client, 'crypto_monitor_started_at', String(Date.now())); return sendWalletMonitorPanel(client, id); }
+  if (data === 'wallet:monitor:confirmations') { await updateAction(client, id, 'admin:wallet:confirmations'); return send(id, 'تعداد تأییدهای لازم را به‌صورت عدد بین 1 تا 1000 بفرست.', walletBackReplyKeyboard()); }
+  if (data.startsWith('wallet:monitor:wallet:')) { const walletId = Number(data.slice('wallet:monitor:wallet:'.length)); const row = (await client.query('SELECT monitor_enabled FROM crypto_wallets WHERE id=$1', [walletId])).rows[0]; if (!row) return send(id, 'ولت پیدا نشد.'); await client.query('UPDATE crypto_wallets SET monitor_enabled=NOT monitor_enabled,updated_at=NOW() WHERE id=$1', [walletId]); return sendWalletMonitorPanel(client, id); }
+  if (data.startsWith('wallet:asset:')) { const asset = normalizeWalletAsset(data.slice('wallet:asset:'.length)); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است.', walletAssetKeyboard()); const state = (await user(client, id))?.action_state || ''; if (state === 'admin:wallet:add:asset') return send(id, 'ابتدا نام ولت را بفرست.', walletBackReplyKeyboard()); const name = state.startsWith('admin:wallet:add:asset:') ? decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)) : null; if (!name) return send(id, 'فرآیند افزودن ولت منقضی شده است؛ دوباره از «افزودن ولت» شروع کن.', walletManagementReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
+  const [, action, rawId] = data.split(':');
+  const row = await walletById(client, rawId);
+  if (!row) return send(id, 'ولت پیدا نشد.', walletManagementReplyKeyboard());
+  if (action === 'view') return send(id, walletDetailsText(row), walletDetailsKeyboard(row));
+  if (action === 'toggle') { await client.query('UPDATE crypto_wallets SET enabled=NOT enabled,updated_at=NOW() WHERE id=$1', [row.id]); return sendWalletPanel(client, id); }
+  if (action === 'delete') { await client.query('DELETE FROM crypto_wallets WHERE id=$1', [row.id]); return sendWalletPanel(client, id); }
+  if (action === 'address' || action === 'name') { await updateAction(client, id, `admin:wallet:${action}:${row.id}`); return send(id, action === 'address' ? 'آدرس جدید ولت TRON را بفرست.' : 'نام جدید ولت را بفرست.', walletBackReplyKeyboard()); }
+  return false;
+}
+async function handleWalletText(client, id, value, state) {
+  if (!isAdmin(id) || !state?.startsWith('admin:wallet')) return false;
+  if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+  if (state === 'admin:wallet:add:name') { if (!value.trim()) return send(id, 'نام ولت نمی‌تواند خالی باشد.', walletBackReplyKeyboard()); await updateAction(client, id, `admin:wallet:add:asset:${encodeURIComponent(value.trim().slice(0, 80))}`); return send(id, 'نوع ارز را انتخاب کن:', walletAssetKeyboard()); }
+  if (state.startsWith('admin:wallet:add:asset:')) { const asset = normalizeWalletAsset(value); if (!['TRX','USDT_TRC20'].includes(asset)) return send(id, 'ارز نامعتبر است؛ TRX یا USDT-TRC20 را انتخاب کن.', walletAssetKeyboard()); const name = decodeURIComponent(state.slice('admin:wallet:add:asset:'.length)); await updateAction(client, id, `admin:wallet:add:address:${asset}:${encodeURIComponent(name)}`); return send(id, 'آدرس ولت TRON را بفرست.', walletBackReplyKeyboard()); }
+  if (state === 'admin:wallet:add:asset') return false;
+  if (state.startsWith('admin:wallet:add:address:')) { const parts = state.split(':'); const asset = parts[4]; const name = decodeURIComponent(parts.slice(5).join(':')); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ باید با T شروع شود و 34 کاراکتر باشد.', walletBackReplyKeyboard()); await client.query('INSERT INTO crypto_wallets(asset,name,address,network) VALUES($1,$2,$3,\'TRON\')', [asset, name, value.trim()]); await updateAction(client, id, 'admin:finance_panel'); return sendWalletPanel(client, id); }
+  if (state.startsWith('admin:wallet:address:')) { const walletId = Number(state.split(':').pop()); if (!validateTronAddress(value)) return send(id, 'آدرس TRON معتبر نیست؛ آدرس معتبر بفرست.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET address=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim()]); return sendWalletPanel(client, id); }
+  if (state.startsWith('admin:wallet:name:')) { const walletId = Number(state.split(':').pop()); if (!value.trim()) return send(id, 'نام ولت نمی‌تواند خالی باشد.', walletBackReplyKeyboard()); await client.query('UPDATE crypto_wallets SET name=$2,updated_at=NOW() WHERE id=$1', [walletId, value.trim().slice(0,80)]); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:confirmations') { if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 1000) return send(id, 'تعداد تأییدها باید عددی بین 1 تا 1000 باشد.', walletBackReplyKeyboard()); await saveBotSetting(client, 'crypto_confirmations', String(Number(value))); return sendWalletMonitorPanel(client, id); }
+  if (state === 'admin:wallet:channel') { await saveBotSetting(client, 'crypto_report_channel_id', value.trim()); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:usd_source') { await saveBotSetting(client, 'crypto_usd_price_source', value.trim()); return sendWalletPanel(client, id); }
+  if (state === 'admin:wallet:asset_source') { await saveBotSetting(client, 'crypto_asset_price_source', value.trim()); return sendWalletPanel(client, id); }
+  return false;
 }
 async function giftRows(client) {
   await client.query('DELETE FROM gift_codes WHERE expires_at IS NOT NULL AND expires_at <= NOW()');
@@ -817,14 +1026,84 @@ async function claimDailyCoins(client, id, callbackQuery = null) {
 async function botSettingValue(client, key, fallback = '') { const r = await client.query('SELECT value FROM bot_settings WHERE key=$1', [key]); return r.rows[0]?.value ?? fallback; }
 async function saveBotSetting(client, key, value) { await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, value]); }
 function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS, ...(JSON.parse(value || '{}')) }; } catch { p = DEFAULT_CHAT_PERMISSIONS; } return `مجوزهای چت\n\n${permissionKeyboard(p).map(x => `${x.label}`).join('\n')}`; }
-async function broadcastText(client, text, senderId) {
-  const users = await client.query('SELECT telegram_id FROM users');
-  let sent = 0;
-  for (const row of users.rows) {
-    try { await send(row.telegram_id, text); sent += 1; } catch { /* حساب‌های مسدودشده رد می‌شوند */ }
-  }
-  await send(senderId, `ارسال همگانی تمام شد.\nموفق: ${sent}\nکل هدف‌ها: ${users.rowCount}`, adminMainKeyboard());
+function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️'], ['برگشت']], true); }
+function broadcastReportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال'], ['بازگشت پیام همگانی']], true); }
+async function broadcastReportChannelText(client) { const channel=await botSettingValue(client,'broadcast_report_channel_id',''); const privateFlag=await botSettingValue(client,'broadcast_report_channel_private','false'); return `کانال گزارش پیام‌های همگانی\n\nوضعیت: ${channel ? '🟢 متصل' : '🔴 تنظیم نشده'}\nکانال: ${channel || 'تنظیم نشده'}\nنوع: ${channel ? (privateFlag === 'true' ? 'خصوصی' : 'عمومی') : 'نامشخص'}\n\nاین کانال فقط برای گزارش کمپین‌های پیام همگانی استفاده می‌شود و با کانال‌های گزارش دیگر مستقل است.`; }
+function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
+function broadcastScopeKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const labels=[['online','فقط آنلاین‌ها (All online🏃🏻‍➡️)'],['recent','کاربران جدید (48h-Recently🤳🏼)'],['all','تمامی کاربران (All👌)']]; return { reply_markup:{inline_keyboard:labels.map(([key,text])=>[{text:`${a.scope===key?'🟢':'⚪'} ${text}`,callback_data:`broadcast:scope:${campaignId}:${key}`}]).concat([[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]] )} }; }
+function broadcastDeleteKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'خیر',callback_data:`broadcast:delete_no:${campaignId}`},{text:'بله',callback_data:`broadcast:delete_yes:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]]} }; }
+function broadcastTimeKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'الان | NOW🥸❗️',callback_data:`broadcast:now:${campaignId}`}],[{text:'زمان‌بندی | SetTime⏰',callback_data:`broadcast:schedule:${campaignId}`}],[{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
+function broadcastConfirmKeyboard(campaignId, saved=false) { return { reply_markup:{inline_keyboard:[[{text:saved?'✔️ برداشتن ذخیره | Unsaved':'ذخیره | Saved✅',callback_data:`broadcast:${saved?'unsave':'save'}:${campaignId}`}],[{text:'ارسال مستقیم ✅',callback_data:`broadcast:confirm:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:back:${campaignId}`}]]} }; }
+async function broadcastStatsPanel(client,id) { const stats=await broadcastStats(client); return send(id, broadcastStatsText(stats), broadcastStatsKeyboard()); }
+async function broadcastCampaign(client, id, message) {
+  const kind = broadcastMessageKind(message);
+  const preserveForward = Boolean(message.forward_origin || message.forward_from || message.forward_from_chat || message.is_automatic_forward);
+  const privacy = await botSettingValue(client, 'privacy_protection_enabled', 'true') !== 'false';
+  const row = (await client.query(`INSERT INTO broadcast_campaigns(created_by,source_chat_id,source_message_id,message_kind,preserve_forward,protect_content,audience)
+    VALUES($1,$1,$2,$3,$4,$5,$6::jsonb) RETURNING *`, [id, message.message_id, kind, preserveForward, privacy, JSON.stringify({ regular_male:false, regular_female:false, plus_male:false, plus_female:false, scope:null })])).rows[0];
+  return row;
 }
+async function broadcastDraftText(client, id, suffix = '') {
+  const row = (await client.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [id])).rows[0];
+  if (!row) return 'پیام آماده ارسال پیدا نشد.';
+  const audience = normalizeBroadcastAudience(row.audience);
+  const count = await broadcastTargetCount(client, audience);
+  return `📢 ساخت پیام همگانی
+
+نوع پیام: ${row.message_kind}
+مخاطبان: ${broadcastAudienceLabel(audience)}
+تعداد برآوردی مخاطبان: ${count}
+زمان شروع: ${row.scheduled_at ? iranDate(row.scheduled_at) : 'همین حالا'}
+حذف خودکار: ${row.delete_after_seconds ? durationLabel(row.delete_after_seconds) : 'خیر'}${row.target_limit ? `
+تعداد ارسال: ${row.target_limit}` : ''}${suffix ? `
+
+${suffix}` : ''}`;
+}
+function broadcastCountKeyboard() { return replyKeyboard([['ارسال برای همه'], ['تعداد مشخص'], ['برگشت']], true); }
+function broadcastCampaignKeyboard(row) { return { reply_markup: { inline_keyboard: [[{ text: 'ادامه ارسال ▶️', callback_data: `broadcast:continue:${row.id}` }, { text: 'ارسال مجدد 🔁', callback_data: `broadcast:resend:${row.id}` }], [{ text: 'لغو کمپین 🛑', callback_data: `broadcast:cancel:${row.id}` }], [{ text: 'بازگشت', callback_data: 'broadcast:campaigns' }]] } }; }
+async function broadcastCampaignsPanel(client, id, callbackQuery = null) {
+  const rows = (await client.query("SELECT * FROM broadcast_campaigns WHERE created_by=$1 ORDER BY id DESC LIMIT 30", [id])).rows;
+  const text = `📚 کمپین‌های قبلی
+
+${rows.map((r, i) => `${i + 1}. #${r.id} | ${r.status} | موفق: ${r.sent_count}/${r.total_targets} | ناموفق: ${r.failed_count}`).join('\n') || 'هنوز کمپینی ثبت نشده است.'}`;
+  const markup = { reply_markup: { inline_keyboard: rows.map(r => [{ text: `#${r.id} — ${r.status}`, callback_data: `broadcast:campaign:${r.id}` }]).concat([[{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }]]) } };
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+function broadcastTemplateKeyboard(templateId, row) {
+  return { reply_markup: { inline_keyboard: [
+    [{ text: 'ارسال الان', callback_data: `broadcast:template:${templateId}:send` }],
+    [{ text: 'تغییر تفکیک', callback_data: `broadcast:template:${templateId}:segments` }],
+    [{ text: 'تغییر نحوه ارسال', callback_data: `broadcast:template:${templateId}:scope` }],
+    [{ text: 'افزودن زمان‌بندی', callback_data: `broadcast:template:${templateId}:schedule` }],
+    [{ text: 'تغییر تعداد', callback_data: `broadcast:template:${templateId}:count` }],
+    [{ text: 'برداشتن ذخیره | Unsaved☑️', callback_data: `broadcast:template:${templateId}:unsave` }],
+    [{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }],
+  ] } };
+}
+async function broadcastTemplatePanel(client, id, templateId, callbackQuery = null) {
+  const row = (await client.query('SELECT t.id AS template_id,t.title,c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
+  if (!row) return send(id, 'پیام آماده پیدا نشد.');
+  const audience = normalizeBroadcastAudience(row.audience);
+  const count = await broadcastTargetCount(client, audience);
+  const text = `Ⓜ️ ${row.title}
+
+نوع پیام: ${row.message_kind}
+تفکیک: ${broadcastAudienceLabel(audience)}
+تعداد فعلی مخاطبان: ${count}
+زمان‌بندی: ${row.scheduled_at ? iranDate(row.scheduled_at) : 'بدون زمان‌بندی'}
+تعداد ارسال: ${row.target_limit || 'همه'}`;
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, broadcastTemplateKeyboard(templateId, row)) : send(id, text, broadcastTemplateKeyboard(templateId, row));
+}
+
+async function broadcastTemplatesPanel(client, id, callbackQuery = null) {
+  const rows = (await client.query('SELECT t.*,c.message_kind,c.audience FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.owner_id=$1 ORDER BY t.id DESC LIMIT 30', [id])).rows;
+  const text = `Ⓜ️ پیام‌های آماده
+
+${rows.map((r, i) => `${i + 1}. ${r.title} (${r.message_kind})`).join('\n') || 'هنوز پیام آماده‌ای ذخیره نشده است.'}`;
+  const markup = { reply_markup: { inline_keyboard: rows.map(r => [{ text: r.title, callback_data: `broadcast:template:${r.id}` }]).concat([[{ text: 'بازگشت', callback_data: 'broadcast:back_menu' }]]) } };
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function broadcastText(client, text, senderId) { return send(senderId, 'برای ارسال همگانی، پیام را در مرحلهٔ بعد بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', broadcastStatsKeyboard()); }
 
 async function updateAction(client, id, action) { await client.query('UPDATE users SET action_state=$2, updated_at=NOW() WHERE telegram_id=$1', [id, action]); }
 
@@ -876,15 +1155,15 @@ async function findPair(id, preference) {
 async function chargeSuccessfulConnection(userIds) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN'); const referralGrants = [];
+    await client.query('BEGIN'); const referralGrants = []; const bonusNotices = [];
     const costs = Object.fromEntries((await client.query("SELECT key,value FROM bot_settings WHERE key IN ('chat_cost_any','chat_cost_male','chat_cost_female')")).rows.map(row => [row.key, Number(row.value) || 0]));
     for (const userId of userIds.filter(Boolean)) {
       if (isAdmin(userId)) continue;
       const row = (await client.query('SELECT match_preference FROM users WHERE telegram_id=$1 FOR UPDATE', [userId])).rows[0]; const cost = costs[`chat_cost_${row?.match_preference || 'any'}`] || 0;
       if (cost > 0) await applyCoinDelta(client, { userId, delta: -cost, kind: 'chat_cost', idempotencyKey: newFinanceIdempotencyKey(`chat-cost:${userId}`), metadata: { cost } });
-      await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } }); const grant = await completeReferralCondition(client, userId, 'connect'); if (grant.granted) referralGrants.push({ grant, newcomerId: userId });
+      const bonus = await claimBonus(client, { bonusKey: 'first_connection', userId, metadata: { source: 'first_successful_connection' } }); if (bonus.granted) bonusNotices.push({ userId, bonusKey: 'first_connection', result: bonus }); const grant = await completeReferralCondition(client, userId, 'connect'); if (grant.granted) referralGrants.push({ grant, newcomerId: userId });
     }
-    await client.query('COMMIT'); for (const item of referralGrants) await notifyReferralGrant(item.grant, item.newcomerId);
+    await client.query('COMMIT'); for (const notice of bonusNotices) await notifyBonus(notice.userId, notice.bonusKey, notice.result); for (const item of referralGrants) await notifyReferralGrant(item.grant, item.newcomerId);
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 async function searchByPreference(id, preference, s) {
@@ -1026,8 +1305,8 @@ async function referralCode(client, id) {
   }
   return null;
 }
-async function notifyReferralEntry(ownerId, newcomerId) { try { await send(Number(ownerId), `🔗 کاربر جدید با لینک دعوتت وارد ربات شد.\n\nشناسه کاربر: ${newcomerId}\nپاداش مرحله‌ای پس از تکمیل شرایط فعال، طبق تنظیمات به حسابت اضافه می‌شود.`); } catch {} }
-async function notifyReferralGrant(grant, newcomerId) { if (!grant?.granted || !grant.ownerId) return; const label = REFERRAL_CONDITION_LABELS[grant.conditionKey] || grant.conditionKey; try { await send(Number(grant.ownerId), `🎁 پاداش زیرمجموعه‌گیری دریافت شد\n\nزیرمجموعه‌ات شرط «${label}» را تکمیل کرد.\nمقدار دریافتی: ${grant.granted} مانوکوین\nشناسه زیرمجموعه: ${newcomerId}`); } catch {} }
+async function notifyReferralEntry(ownerId, newcomerId) { try { await send(Number(ownerId), '🔗 یک کاربر جدید با لینک دعوتت وارد ربات شد.\n\nپاداش مرحله‌ای پس از تکمیل شرایط فعال، طبق تنظیمات به حسابت اضافه می‌شود.'); } catch {} }
+async function notifyReferralGrant(grant, newcomerId) { if (!grant?.granted || !grant.ownerId) return; const label = REFERRAL_CONDITION_LABELS[grant.conditionKey] || grant.conditionKey; try { await send(Number(grant.ownerId), `🎁 پاداش زیرمجموعه‌گیری دریافت شد\n\nیک کاربر معرفی‌شده شرط «${label}» را تکمیل کرد.\nمقدار دریافتی: ${grant.granted} مانوکوین`); } catch {} }
 async function rewardFirstEntry(id, ownerId, reward, s, { joinReady = true } = {}) {
   reward = Number(s?.referral_reward_coins || reward);
   const client = await pool.connect();
@@ -1072,10 +1351,11 @@ async function referralUserDescription(client) {
       ? `• ${REFERRAL_CONDITION_LABELS[key]}: ${amount} مانوکوین`
       : `• ${REFERRAL_CONDITION_LABELS[key]}: بخشی از پاداش نهایی`;
   }).join('\n');
+  const timeNote = conditions.time ? `\n\n⏱ شرط زمانی: پس از گذشت ${durationLabel(Number(await botSettingValue(client, 'referral_time_seconds', '1800')) || 1800)} از ورود کاربر، سهم این مرحله برای دعوت‌کننده ثبت می‌شود.` : '';
   const joinNote = mandatory.rows.length
     ? '\n\nبرای تکمیل مرحلهٔ عضویت، ابتدا در منابع اعلام‌شده عضو شو و سپس «بررسی عضویت» را بزن.'
     : '';
-  return `🎁 با دعوت دوستانت، مانوکوین دریافت کن\n\n${staged ? 'با انجام هر مرحله، پاداش همان مرحله برایت ثبت می‌شود.' : `پس از تکمیل مراحل، مجموع ${total} مانوکوین برایت ثبت می‌شود.`}\n\n${lines}${joinNote}\n\nلینک دعوتت را برای دوستانت بفرست و از دعوت آن‌ها لذت ببر.`;
+  return `🎁 با دعوت دوستانت، مانوکوین دریافت کن\n\n${staged ? 'با انجام هر مرحله، پاداش همان مرحله برایت ثبت می‌شود.' : `پس از تکمیل مراحل، مجموع ${total} مانوکوین برایت ثبت می‌شود.`}\n\n${lines}${timeNote}${joinNote}\n\nلینک دعوتت را برای دوستانت بفرست و از دعوت آن‌ها لذت ببر.`;
 }
 async function sendIncreaseCoins(id, settings) { return send(id, 'افزایش مانو کوین\n\nخرید مانو کوین در حال حاضر غیرفعال است.', increaseCoinsKeyboard(settings)); }
 async function sendFreeCoins(id, settings) { const client = await pool.connect(); try { const code = await referralCode(client, id); const username = await botUsername(); if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings)); const url = `https://t.me/${username}?start=ref_${code}`; const description=await referralUserDescription(client); const text = `🔗 لینک دعوت شما:\n${url}\n\n${description}\n\n📨 متن پیشنهادی برای ارسال:\nبا لینک من وارد ربات شو و دوستان جدید پیدا کن:\n${url}`; return sendLink(id, text, increaseCoinsKeyboard(settings)); } finally { client.release(); } }
@@ -1106,9 +1386,9 @@ async function handlePlusCallback(id, data, client, s) {
       await applyCoinDelta(tx, { userId: id, delta: -finalPrice, kind: 'purchase', idempotencyKey: `plus-purchase:${id}:${months}:${base.toISOString()}`, metadata: { product: 'plus', months, finalPrice } });
       await tx.query("UPDATE users SET plus_expires_at=$2, discount_percent=0, discount_code=NULL, plus_emoji=COALESCE(NULLIF(plus_emoji, ''), '✨'), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, base]);
       await tx.query('INSERT INTO plus_purchases(telegram_id, months, price) VALUES ($1,$2,$3)', [id, months, finalPrice]);
-      await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
-      await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
-      await tx.query('COMMIT'); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
+      const purchaseBonus = await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
+      const plusBonus = await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
+      await tx.query('COMMIT'); await notifyBonus(id, 'first_purchase', purchaseBonus); await notifyBonus(id, 'first_plus', plusBonus); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
       return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
     } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
   }
@@ -1143,9 +1423,12 @@ async function handlePremiumRoleCommand(viewerId, command) {
 async function handleStart(id, payload = null) {
   const client = await pool.connect(); let released = false; try {
     const me = await ensureUser(client, id); const s = await settings(client);
+    // /start always returns the user to the public context; never retain a stale admin-panel state.
+    await updateAction(client, id, null);
+    me.action_state = null;
     if (payload !== null) await recordMandatoryStart(id, payload, client, me);
     let referralOwnerId = null;
-    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2 WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
+    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
     if (!isAdmin(id)) {
       const missing = await mandatoryRequirements(id, client, { profile: me });
       if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
@@ -1232,7 +1515,10 @@ async function handleMandatoryTrackingCallback(id, data) {
   } finally { client.release(); }
 }
 
+function isAdminActivityCallback(data) { return /^(admins:(toggle|perm|role_set|delete)|admin:(?!.*:(back|list|view|open|noop)$)|bonus:(toggle|amount)|conversation:(permission|entertainment)|referral:(staged_toggle|power_toggle|condition:)|financecard:(toggle|button|delete_confirm)|wallet:(auto|monitor)|gift:(cancel|increase)|mandatory:(activate|schedule|pause|cancel|resume|audience:confirm))/.test(String(data || '')); }
+function adminTextActivityDetails(state, value) { const sensitive = String(state || '').includes('admin:message'); return { state: String(state || 'پنل اصلی').slice(0, 180), text: sensitive ? `[متن پیام خصوصی، ${String(value || '').length} نویسه]` : String(value || '').slice(0, 300) }; }
 async function handleCallback(id, data, callbackQuery = null) {
+  if (isAdmin(id) && /^mandatory:/.test(String(data || ''))) { const activityClient = await pool.connect(); try { await audit(activityClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: 'mandatory', messageId: callbackQuery?.message?.message_id || null }); } finally { activityClient.release(); } }
   if (data.startsWith('mandatory:audience:')) return handleMandatoryAudienceCallback(id, data, callbackQuery);
   if (data === 'mandatory:verify') {
     const c = await pool.connect();
@@ -1251,9 +1537,31 @@ async function handleCallback(id, data, callbackQuery = null) {
     try { s = await settings(c); } finally { c.release(); }
     return flowFor(s).handleCallback(id, data);
   }
+  if (data.startsWith('alink:') || data.startsWith('ainbox:')) {
+    const c = await pool.connect();
+    let s;
+    try { s = await settings(c); } finally { c.release(); }
+    return flowFor(s).handleCallback(id, data);
+  }
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
+    if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
+    if (data.startsWith('admins:')) {
+      if (!hasAdminPermission(id, 'admins')) return send(id, 'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.');
+      const parts = data.split(':'); const action = parts[1]; const targetId = Number(parts[2]);
+      if (action === 'back') { await updateAction(sClient, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
+      if (action === 'list') { await updateAction(sClient, id, 'admin:admins'); return sendAdminManagement(sClient, id, callbackQuery); }
+      if (action === 'view') return sendAdminAccount(sClient, id, targetId, callbackQuery);
+      if (action === 'toggle') { if (targetId === Number(ownerId())) return send(id, 'مالک اصلی قابل غیرفعال‌سازی نیست.'); await sClient.query('UPDATE admin_accounts SET enabled=NOT enabled,updated_at=NOW() WHERE telegram_id=$1', [targetId]); await refreshAdminCache(sClient); await audit(sClient,id,targetId,'admin_toggle',{}); return sendAdminAccount(sClient,id,targetId,callbackQuery); }
+      if (action === 'perm') { const key=parts[3]; if (!ADMIN_PERMISSION_KEYS.includes(key) || targetId === Number(ownerId())) return send(id,'این مجوز قابل تغییر نیست.'); const row=(await sClient.query('SELECT permissions FROM admin_accounts WHERE telegram_id=$1',[targetId])).rows[0]; if(!row) return send(id,'ادمین پیدا نشد.'); const permissions=Array.isArray(row.permissions)?row.permissions:[]; const next=permissions.includes(key)?permissions.filter(x=>x!==key):[...permissions,key]; await sClient.query('UPDATE admin_accounts SET permissions=$2::jsonb,updated_at=NOW() WHERE telegram_id=$1',[targetId,JSON.stringify(next)]); await refreshAdminCache(sClient); await audit(sClient,id,targetId,'admin_permission_change',{key,enabled:next.includes(key)}); return sendAdminAccount(sClient,id,targetId,callbackQuery); }
+      if (action === 'role') return editAudienceCallback(callbackQuery,id,'نقش جدید را انتخاب کن:',{reply_markup:{inline_keyboard:[['admin','operator','support','finance'].map(role=>({text:adminRoleLabel(role),callback_data:`admins:role_set:${targetId}:${role}`})),[{text:'بازگشت',callback_data:`admins:view:${targetId}`}]]}});
+      if (action === 'role_set') { const role=parts[3]; if(!['admin','operator','support','finance'].includes(role) || targetId===Number(ownerId())) return send(id,'این نقش قابل انتخاب نیست.'); await sClient.query('UPDATE admin_accounts SET role=$2,permissions=$3::jsonb,updated_at=NOW() WHERE telegram_id=$1',[targetId,role,JSON.stringify(ADMIN_ROLE_DEFAULTS[role])]); await refreshAdminCache(sClient); await audit(sClient,id,targetId,'admin_role_change',{role}); return sendAdminAccount(sClient,id,targetId,callbackQuery); }
+      if (action === 'delete') { if (targetId === Number(ownerId())) return send(id,'مالک اصلی قابل حذف نیست.'); await sClient.query('DELETE FROM admin_accounts WHERE telegram_id=$1',[targetId]); await refreshAdminCache(sClient); await audit(sClient,id,targetId,'admin_delete',{}); return sendAdminManagement(sClient,id,callbackQuery); }
+      return send(id,'عملیات ادمین نامعتبر است.');
+    }
+    if (data.startsWith('gift:') && !isAdmin(id)) { await updateAction(sClient, id, null); return send(id, 'این بخش فقط برای مدیریت ربات است.'); }
     if (isAdmin(id) && data.startsWith('beauty:')) return handleBeautyCallback(id, data, callbackQuery, sClient, s);
     if (isAdmin(id) && data === 'bonus:list') { const rows = await bonusRows(sClient); return editAudienceCallback(callbackQuery, id, bonusListText(rows), bonusListKeyboard(rows)); }
     if (isAdmin(id) && data === 'bonus:back_manocoin') { await updateAction(sClient, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
@@ -1282,13 +1590,14 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'chatgift:back') { await updateAction(sClient, id, null); return send(id, 'مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
     if (data === 'chatgift:noop') return false;
     if (data.startsWith('chatgift:coin:')) { const delta = data.split(':')[2]; if (delta === 'custom') { await updateAction(sClient, id, 'chatgift:coin_custom'); return send(id, 'مقدار دلخواه را به‌صورت عدد مثبت بفرست.'); } const current = Number(String(me.action_state || '').split(':')[2]) || 10; const next = Math.max(1, current + Number(delta)); await updateAction(sClient, id, `chatgift:coins:${next}`); return editAudienceCallback(callbackQuery, id, 'چه مقدار مانو کوین می‌خواهی هدیه بدهی؟', chatGiftCoinKeyboard(next)); }
-    if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); try { await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, `هدیهٔ ${amount} مانو کوین ارسال شد.`, { reply_markup: { inline_keyboard: [] } }); }
-    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); try { await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.`, { reply_markup: { inline_keyboard: [] } }); }
+    if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${amount} مانو کوین ارسال شد.` : `هدیهٔ ${amount} مانو کوین ثبت شد، اما اعلان آن به طرف مقابل نرسید و برای جلوگیری از ارسال دوباره، عملیات بسته شد.`, { reply_markup: { inline_keyboard: [] } }); }
+    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.` : 'هدیه ثبت شد، اما اعلان آن به طرف مقابل نرسید و عملیات بسته شد.', { reply_markup: { inline_keyboard: [] } }); }
     if (isAdmin(id) && data === 'conversation:back') { await updateAction(sClient, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
     if (isAdmin(id) && data.startsWith('conversation:permission:')) {
       const key = data.slice('conversation:permission:'.length); const current = JSON.parse(await botSettingValue(sClient, 'chat_permissions', JSON.stringify(DEFAULT_CHAT_PERMISSIONS)) || '{}');
       if (!Object.hasOwn(CHAT_PERMISSION_LABELS, key)) return send(id, 'مجوز نامعتبر است.');
-      current[key] = current[key] === false; await saveBotSetting(sClient, 'chat_permissions', JSON.stringify({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
+      let privacyEnabled; if (key === 'privacy') { privacyEnabled = (await botSettingValue(sClient, 'privacy_protection_enabled', 'true')) !== 'true'; await saveBotSetting(sClient, 'privacy_protection_enabled', String(privacyEnabled)); privacyCache = { value: privacyEnabled, expiresAt: Date.now() + 5000 }; }
+      current[key] = key === 'privacy' ? privacyEnabled : current[key] === false; await saveBotSetting(sClient, 'chat_permissions', JSON.stringify({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
       return editAudienceCallback(callbackQuery, id, 'مجوزهای چت', permissionInlineKeyboard({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
     }
     if (isAdmin(id) && data.startsWith('conversation:cost:')) { const preference = data.slice('conversation:cost:'.length); if (!['any','male','female'].includes(preference)) return send(id, 'نوع انتخاب نامعتبر است.'); await updateAction(sClient, id, `admin:chat_cost:${preference}`); return send(id, `هزینهٔ هر اتصال موفق برای «${preference === 'any' ? 'مهم نیست' : preference === 'male' ? 'پسر' : 'دختر'}» را به مانو کوین بفرست.`); }
@@ -1331,9 +1640,131 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('referral:staged_condition:')) { const key=data.split(':')[2]; if(!REFERRAL_CONDITION_ORDER.includes(key)) return send(id,'گزینه نامعتبر است.'); return editAudienceCallback(callbackQuery,id,await referralStagedConditionText(sClient,key),referralStagedConditionKeyboard(key)); }
     if (isAdmin(id) && data.startsWith('referral:staged_amount:')) { const key=data.split(':')[2]; if(!REFERRAL_CONDITION_ORDER.includes(key)) return send(id,'گزینه نامعتبر است.'); await updateAction(sClient,id,`admin:referral:staged_amount:${key}`); return editAudienceCallback(callbackQuery,id,await referralStagedConditionText(sClient,key)+'\n\nمقدار جدید را به‌صورت عدد صحیح بفرست.',{reply_markup:{inline_keyboard:[]}}); }
     if (isAdmin(id) && data === 'referral:staged_back') { return editAudienceCallback(callbackQuery,id,await referralStagedText(sClient),referralStagedKeyboard()); }
-    if (isAdmin(id) && data.startsWith('referral:condition:')) { const key=data.split(':')[2]; const allowed=['join','connect','time','purchase','plus','referral']; if(!allowed.includes(key)) return send(id,'گزینه نامعتبر است.'); if(key==='time'){ await updateAction(sClient,id,'admin:referral:time'); return send(id,`زمان فعلی: ${await botSettingValue(sClient,'referral_time_seconds','1800')} ثانیه\nزمان جدید را مثل 30M یا 1H بفرست.`,replyKeyboard([['بازگشت']],true)); } const c=await referralConditions(sClient); c[key]=!c[key]; await saveBotSetting(sClient,'referral_conditions',JSON.stringify(c)); return editAudienceCallback(callbackQuery,id,'شرایط دریافت کوین زیرمجموعه:',referralConditionsKeyboard(c)); }
+    if (isAdmin(id) && data === 'referral:time:settings') { const c=await referralConditions(sClient); return editAudienceCallback(callbackQuery,id,await referralTimeText(sClient),referralTimeKeyboard(c.time === true)); }
+    if (isAdmin(id) && data === 'referral:time:toggle') { const c=await referralConditions(sClient); c.time=!Boolean(c.time); await saveBotSetting(sClient,'referral_conditions',JSON.stringify(c)); return editAudienceCallback(callbackQuery,id,await referralTimeText(sClient),referralTimeKeyboard(c.time)); }
+    if (isAdmin(id) && data === 'referral:time:set') { await updateAction(sClient,id,'admin:referral:time'); return editAudienceCallback(callbackQuery,id,`زمان فعلی: ${await botSettingValue(sClient,'referral_time_seconds','1800')} ثانیه\nزمان جدید را مثل 30M یا 1H بفرست.`,{reply_markup:{inline_keyboard:[]}}); }
+    if (isAdmin(id) && data === 'referral:conditions:back') return editAudienceCallback(callbackQuery,id,'شرایط دریافت کوین زیرمجموعه:',referralConditionsKeyboard(await referralConditions(sClient)));
+    if (isAdmin(id) && data.startsWith('referral:condition:')) { const key=data.split(':')[2]; const allowed=['join','connect','time','purchase','plus','referral']; if(!allowed.includes(key)) return send(id,'گزینه نامعتبر است.'); if(key==='time'){ return editAudienceCallback(callbackQuery,id,await referralTimeText(sClient),referralTimeKeyboard((await referralConditions(sClient)).time === true)); } const c=await referralConditions(sClient); c[key]=!c[key]; await saveBotSetting(sClient,'referral_conditions',JSON.stringify(c)); return editAudienceCallback(callbackQuery,id,'شرایط دریافت کوین زیرمجموعه:',referralConditionsKeyboard(c)); }
     if (isAdmin(id) && data === 'referral:back') { await updateAction(sClient,id,'admin:referral'); return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard()); }
     if (isAdmin(id) && data.startsWith('financecard:')) { const parts=data.split(':'); const action=parts[1]; const cardId=Number(parts[2]); if(action==='back'||action==='list'){await updateAction(sClient,id,'admin:finance:cards');return sendCardAdminPanel(sClient,id);} if(action==='add'){await updateAction(sClient,id,'admin:finance:card:add:name');return send(id,'نام نمایشی ادمین کارت به کارت را بفرست.',replyKeyboard([['بازگشت']],true));} if(action==='text'){await updateAction(sClient,id,'admin:finance:card:text');return send(id,`متن فعلی:\n${await botSettingValue(sClient,'finance_card_text','تنظیم نشده')}\n\nمتن جدید را بفرست.`,replyKeyboard([['بازگشت']],true));} const row=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; if(!row) return send(id,'ادمین پیدا نشد.'); if(action==='view') return send(id,`ادمین: ${safeCardAdminLabel(row.admin_label)}\nآیدی ثبت‌شده: ${row.admin_id || row.admin_username || 'ثبت نشده'}\nوضعیت: ${row.enabled?'فعال':'غیرفعال'}\nنمایش دکمه: ${row.button_enabled?'فعال':'غیرفعال'}`,cardAdminPanelKeyboard(row)); if(action==='toggle'||action==='button'){await sClient.query(`UPDATE payment_cards SET ${action==='toggle'?'enabled':'button_enabled'}=NOT ${action==='toggle'?'enabled':'button_enabled'},updated_at=NOW() WHERE id=$1`,[cardId]); const updated=(await sClient.query('SELECT * FROM payment_cards WHERE id=$1',[cardId])).rows[0]; return send(id,`ادمین: ${safeCardAdminLabel(updated.admin_label)}`,cardAdminPanelKeyboard(updated));} if(action==='delete') return send(id,'از حذف این ادمین مطمئنی؟',{reply_markup:{inline_keyboard:[[{text:'تایید حذف',callback_data:`financecard:delete_confirm:${cardId}`},{text:'انصراف',callback_data:`financecard:view:${cardId}`}]]}}); if(action==='delete_confirm'){await sClient.query('DELETE FROM payment_cards WHERE id=$1',[cardId]);return sendCardAdminPanel(sClient,id);} if(action==='change'){await updateAction(sClient,id,`admin:finance:card:change:${cardId}`);return send(id,'آیدی عددی ادمین جدید را بفرست.');} }
+    if (isAdmin(id) && data.startsWith('broadcast:')) {
+      const parts = data.split(':');
+      const action = parts[1];
+      if (action === 'campaigns') return broadcastCampaignsPanel(sClient, id, callbackQuery);
+      if (action === 'templates') return broadcastTemplatesPanel(sClient, id, callbackQuery);
+      if (action === 'back_menu') { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
+      if (action === 'template') {
+        const templateId = Number(parts[2]);
+        if (!parts[3]) return broadcastTemplatePanel(sClient, id, templateId, callbackQuery);
+        const templateAction = parts[3];
+        const row = (await sClient.query('SELECT t.id AS template_id,t.campaign_id,c.* FROM broadcast_templates t JOIN broadcast_campaigns c ON c.id=t.campaign_id WHERE t.id=$1 AND t.owner_id=$2', [templateId, id])).rows[0];
+        if (!row) return send(id, 'پیام آماده پیدا نشد.');
+        if (templateAction === 'unsave') { await sClient.query('DELETE FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id]); return broadcastTemplatesPanel(sClient, id, callbackQuery); }
+        if (templateAction === 'segments') { await updateAction(sClient, id, `admin:broadcast:template_segments:${templateId}`); return editAudienceCallback(callbackQuery, id, 'تفکیک ذخیره‌شده را تغییر بده:', broadcastAudienceSegmentsKeyboard(row.campaign_id, row.audience)); }
+        if (templateAction === 'scope') { await updateAction(sClient, id, `admin:broadcast:template_scope:${templateId}`); return editAudienceCallback(callbackQuery, id, 'نحوه ارسال را انتخاب کن:', broadcastScopeKeyboard(row.campaign_id, row.audience)); }
+        if (templateAction === 'schedule') { await updateAction(sClient, id, `admin:broadcast:template_schedule:${templateId}`); return editAudienceCallback(callbackQuery, id, 'زمان شروع را با قالب 1405/7/10-20:00 بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'حذف زمان‌بندی', callback_data: `broadcast:template:${templateId}:clear_schedule` }], [{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
+        if (templateAction === 'count') { await updateAction(sClient, id, `admin:broadcast:template_count:${templateId}`); return editAudienceCallback(callbackQuery, id, 'تعداد گیرندگان را به‌صورت عدد بفرست؛ برای همه کلمه «همه» را بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
+        if (templateAction === 'send') {
+          await sClient.query('DELETE FROM broadcast_deliveries WHERE campaign_id=$1', [row.campaign_id]);
+          const audience = normalizeBroadcastAudience(row.audience); const count = await prepareBroadcastTargets(sClient, row.campaign_id, audience, row.target_limit);
+          const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
+          await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,admin_chat_id=$4,admin_message_id=$5,status='running',scheduled_at=NOW(),started_at=NOW(),finished_at=NULL,sent_count=0,failed_count=0,deleted_count=0,updated_at=NOW() WHERE id=$1", [row.campaign_id, count, reportChannel || null, id, callbackQuery?.message?.message_id || null]);
+          void runBroadcastJobs({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_template_send_error', error));
+          return editAudienceCallback(callbackQuery, id, '✅ ارسال پیام آماده شروع شد؛ وضعیت همین پیام به‌روزرسانی می‌شود.', broadcastTemplateKeyboard(templateId, { ...row, status: 'running' }));
+        }
+        if (templateAction === 'clear_schedule') { await sClient.query('UPDATE broadcast_campaigns SET scheduled_at=NULL,updated_at=NOW() WHERE id=$1', [row.campaign_id]); return broadcastTemplatePanel(sClient, id, templateId, callbackQuery); }
+      }
+      if (action === 'back' && !parts[2]) { await updateAction(sClient, id, null); return broadcastStatsPanel(sClient, id); }
+      const campaignId = Number(action === 'report' ? parts[3] : parts[2]);
+      const campaign = action === 'template' ? { id: campaignId } : (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
+      if (!campaign || !isAdmin(id)) return send(id, 'ارسال پیدا نشد؛ برای ارسال جدید دوباره «ارسال پیام🔺» را بزن.');
+      const audience = normalizeBroadcastAudience(campaign.audience);
+      if (action === 'report') {
+        const reportAction = parts[2];
+        if (reportAction === 'noop') return;
+        if (reportAction === 'send_now') { await sClient.query("UPDATE broadcast_campaigns SET scheduled_at=NOW(),status='running',started_at=COALESCE(started_at,NOW()),updated_at=NOW() WHERE id=$1 AND status='scheduled'", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_send_now_error', error)); return broadcastStatsPanel(sClient, id); }
+        if (reportAction === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','running')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_cancel_error', error)); return broadcastStatsPanel(sClient, id); }
+        if (reportAction === 'delete') {
+          await sClient.query("UPDATE broadcast_campaigns SET status='deleting',updated_at=NOW() WHERE id=$1 AND status='completed'", [campaignId]);
+          const current = (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
+          const notice = await send(id, broadcastProgressText({ ...current, status: 'deleting' }, 'حذف پیام‌های ارسال‌شده شروع شد؛ میزان ارسال موفق حفظ می‌شود و تعداد حذف‌شده در همین گزارش افزایش پیدا می‌کند.'));
+          if (notice?.message_id) await sClient.query('UPDATE broadcast_campaigns SET admin_chat_id=$2,admin_message_id=$3,updated_at=NOW() WHERE id=$1', [campaignId, id, notice.message_id]);
+          void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_delete_error', error));
+          return;
+        }
+        if (reportAction === 'resend') { await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL,message_id=NULL WHERE campaign_id=$1 AND status IN ('sent','failed','deleted')", [campaignId]); await sClient.query("UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,deleted_count=0,started_at=NOW(),finished_at=NULL,updated_at=NOW() WHERE id=$1", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_resend_error', error)); return broadcastStatsPanel(sClient, id); }
+        if (reportAction === 'save' || reportAction === 'unsave') { if (reportAction === 'save') await sClient.query("INSERT INTO broadcast_templates(owner_id,title,campaign_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [id, `پیام همگانی #${campaignId}`, campaignId]); else await sClient.query('DELETE FROM broadcast_templates WHERE owner_id=$1 AND campaign_id=$2', [id, campaignId]); await sClient.query('UPDATE broadcast_campaigns SET saved=$2,updated_at=NOW() WHERE id=$1', [campaignId, reportAction === 'save']); return broadcastStatsPanel(sClient, id); }
+      }
+      if (action === 'campaign') return editAudienceCallback(callbackQuery, id, broadcastProgressText(campaign, `نوع پیام: ${campaign.message_kind}`), broadcastCampaignKeyboard(campaign));
+      if (action === 'continue') { await sClient.query("UPDATE broadcast_campaigns SET status='running',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','failed','cancelled')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_continue_error', error)); return editAudienceCallback(callbackQuery, id, 'ادامهٔ ارسال کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
+      if (action === 'resend') { await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL WHERE campaign_id=$1 AND status IN ('failed','sent')", [campaignId]); await sClient.query("UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,updated_at=NOW() WHERE id=$1", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_resend_error', error)); return editAudienceCallback(callbackQuery, id, 'ارسال مجدد کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
+      if (action === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','deleted')", [campaignId]); return editAudienceCallback(callbackQuery, id, 'کمپین لغو شد.', broadcastCampaignKeyboard({ ...campaign, status: 'cancelled' })); }
+      if (action === 'segment') {
+        const key = parts[3];
+        if (!['regular_male','regular_female','plus_male','plus_female'].includes(key)) return send(id, 'گروه نامعتبر است.');
+        audience[key] = !audience[key];
+        await sClient.query('UPDATE broadcast_campaigns SET audience=$2::jsonb,updated_at=NOW() WHERE id=$1', [campaignId, JSON.stringify(audience)]);
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+      }
+      if (action === 'segments_next') {
+        if (!['regular_male','regular_female','plus_male','plus_female'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۴ را فعال کن.');
+        await updateAction(sClient, id, `admin:broadcast:scope:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'حالا فقط یکی از روش‌های زیر را برای محدودکردن ارسال انتخاب کن:', broadcastScopeKeyboard(campaignId, audience));
+      }
+      if (action === 'scope') {
+        const scope = parts[3];
+        if (!['online','recent','all'].includes(scope)) return send(id, 'روش ارسال نامعتبر است.');
+        audience.scope = scope;
+        await sClient.query('UPDATE broadcast_campaigns SET audience=$2::jsonb,updated_at=NOW() WHERE id=$1', [campaignId, JSON.stringify(audience)]);
+        await updateAction(sClient, id, `admin:broadcast:time:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'مرحله سوم: پیام همگانی چه زمانی شروع شود؟', broadcastTimeKeyboard(campaignId));
+      }
+      if (action === 'now') {
+        await sClient.query('UPDATE broadcast_campaigns SET scheduled_at=NOW(),updated_at=NOW() WHERE id=$1', [campaignId]);
+        await updateAction(sClient, id, `admin:broadcast:delete:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'آیا تایم حذف خودکار به این پیام اضافه شود؟', broadcastDeleteKeyboard(campaignId));
+      }
+      if (action === 'schedule') {
+        await updateAction(sClient, id, `admin:broadcast:schedule:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'تاریخ و ساعت شروع را با قالب شمسی بفرست؛ نمونه: 1405/7/10-20:00', { reply_markup: { inline_keyboard: [[{ text: 'برگشت', callback_data: `broadcast:time:${campaignId}` }]] } });
+      }
+      if (action === 'delete_no') {
+        await sClient.query('UPDATE broadcast_campaigns SET delete_after_seconds=NULL,updated_at=NOW() WHERE id=$1', [campaignId]);
+        await updateAction(sClient, id, `admin:broadcast:count:${campaignId}`);
+        return send(id, 'تعداد گیرندگان را انتخاب کن؛ این ارسال مستقل است و ذخیره‌سازی اختیاری است.', broadcastCountKeyboard());
+      }
+      if (action === 'delete_yes') {
+        await updateAction(sClient, id, `admin:broadcast:delete_time:${campaignId}`);
+        return send(id, 'زمان حذف را با قالب روز/ساعت/دقیقه بفرست؛ نمونه: 1d3h45m.', replyKeyboard([['برگشت']], true));
+      }
+      if (action === 'save') {
+        await updateAction(sClient, id, `admin:broadcast:template_title:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'برای این پیام آماده یک نام بفرست؛ مثال: پیام تخفیف تابستانی.', { reply_markup: { inline_keyboard: [[{ text: 'برگشت', callback_data: `broadcast:back:${campaignId}` }]] } });
+      }
+      if (action === 'unsave') {
+        await sClient.query('DELETE FROM broadcast_templates WHERE owner_id=$1 AND campaign_id=$2', [id, campaignId]);
+        await sClient.query('UPDATE broadcast_campaigns SET saved=FALSE,updated_at=NOW() WHERE id=$1 AND created_by=$2', [campaignId, id]);
+        return editAudienceCallback(callbackQuery, id, await broadcastDraftText(sClient, campaignId, 'ذخیره از پیام‌های آماده برداشته شد.'), broadcastConfirmKeyboard(campaignId, false));
+      }
+      if (action === 'confirm') {
+        const count = await prepareBroadcastTargets(sClient, campaignId, audience, campaign.target_limit);
+        const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
+        await sClient.query("UPDATE broadcast_campaigns SET total_targets=$2,report_channel_id=$3,admin_chat_id=$4,admin_message_id=$5,status=CASE WHEN scheduled_at > NOW() THEN 'scheduled' ELSE 'running' END,started_at=CASE WHEN scheduled_at <= NOW() THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$1", [campaignId, count, reportChannel || null, id, callbackQuery?.message?.message_id || null]);
+        await updateAction(sClient, id, null);
+        if (campaign.scheduled_at && new Date(campaign.scheduled_at).getTime() > Date.now()) return editAudienceCallback(callbackQuery, id, `✅ کمپین زمان‌بندی شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
+        void runBroadcastJobs({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_start_error', error));
+        return editAudienceCallback(callbackQuery, id, `✅ ارسال شروع شد.\\n\\n${await broadcastDraftText(sClient, campaignId)}`, broadcastConfirmKeyboard(campaignId));
+      }
+      if (action === 'back' || action === 'segments') {
+        await updateAction(sClient, id, `admin:broadcast:segments:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+      }
+      if (action === 'time') {
+        await updateAction(sClient, id, `admin:broadcast:time:${campaignId}`);
+        return editAudienceCallback(callbackQuery, id, 'مرحله سوم: پیام همگانی چه زمانی شروع شود؟', broadcastTimeKeyboard(campaignId));
+      }
+    }
+    if (data.startsWith('wallet:')) { const handled = await handleWalletCallback(sClient, id, data); if (handled !== false) return handled; }
     if (data === 'gift:list' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data === 'gift:type:coins' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:coins'); return send(id, 'مقدار مانو کوین هدیه را بفرست.'); }
     if (data === 'gift:type:plus' && isAdmin(id)) { await updateAction(sClient, id, 'admin:gift:plus:type'); return send(id, 'پلن مانو پلاس را انتخاب کن:', giftPlanKeyboard()); }
@@ -1775,7 +2206,7 @@ function visiblePublicAction(value, s) {
   return legacy[text] || null;
 }
 function botKeyboardLabels(s = {}) {
-  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'افزودن ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) for (const item of screen?.buttons || []) if (item?.label) labels.add(String(item.label).trim());
@@ -1795,18 +2226,37 @@ async function rememberReplyMessage(client, senderId, sourceMessageId, recipient
   if (!sourceMessageId || !recipientMessageId) return;
   await client.query(`INSERT INTO chat_reply_message_map(sender_id,sender_message_id,recipient_id,recipient_message_id) VALUES($1,$2,$3,$4) ON CONFLICT (sender_id,sender_message_id,recipient_id) DO UPDATE SET recipient_message_id=EXCLUDED.recipient_message_id`, [senderId, sourceMessageId, recipientId, recipientMessageId]);
 }
+export function chatPermissionViolations(message = {}, text = '') {
+  const content = String(text || message.text || message.caption || '');
+  const kind = message?.photo ? 'photo' : message?.video ? 'video' : message?.voice ? 'voice' : message?.audio ? 'music' : message?.document ? 'file' : message?.location ? 'location' : message?.contact ? 'contact' : message?.sticker ? 'sticker' : 'text';
+  const violations = [kind];
+  if (message?.reply_to_message) violations.push('reply');
+  if (message?.has_spoiler && message?.photo) violations.push('timed_photo');
+  if (message?.document?.mime_type?.startsWith('application/') || /(?:\.apk|\.exe|اپلیکیشن|application)/i.test(content)) violations.push('app');
+  if (content) {
+    if (/(?:https?:\/\/)?(?:t\.me|telegram\.me)\/[A-Za-z0-9_+/?=&.-]+/i.test(content)) violations.push('telegram_link');
+    if (/(^|\s)@[A-Za-z0-9_]{2,64}\b/.test(content)) violations.push('mention');
+    if (/[A-Za-z]/.test(content)) violations.push('english');
+    if (/(?:https?:\/\/|www\.)[^\s]+/i.test(content)) violations.push('website_link');
+    if (/(?:instagram\.com|instagr\.am)/i.test(content)) violations.push('instagram_link');
+    if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(content)) violations.push('emoji');
+    if (/(کسکش|کونی|حرومزاده|fuck|shit|bitch)/i.test(content)) violations.push('profanity');
+  }
+  return [...new Set(violations)];
+}
 async function forwardChatMessage(client, senderId, targetId, message, me, settings, text) {
   const permissions = (() => { try { return { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(settings.chat_permissions || '{}') }; } catch { return DEFAULT_CHAT_PERMISSIONS; } })();
   const kind = message?.photo ? 'photo' : message?.video ? 'video' : message?.voice ? 'voice' : message?.audio ? 'music' : message?.document ? 'file' : message?.location ? 'location' : message?.contact ? 'contact' : message?.sticker ? 'sticker' : 'text';
-  if (permissions[kind] === false) return send(senderId, 'این نوع پیام طبق مجوزهای چت غیرفعال است.', chatKeyboard(settings, isAdmin(senderId)));
+  const blocked = chatPermissionViolations(message, text).find(key => permissions[key] === false);
+  if (blocked) return send(senderId, `ارسال این محتوا طبق مجوزهای چت غیرفعال است: ${CHAT_PERMISSION_LABELS[blocked] || blocked}`, chatKeyboard(settings, isAdmin(senderId)));
   const sourceMessageId = message?.message_id;
   const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
   const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
   let delivered;
   if (message && kind !== 'text') {
-    delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: true, ...extra });
+    delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
   } else {
-    delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: true, ...extra });
+    delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
   }
   await rememberReplyMessage(client, senderId, sourceMessageId, targetId, delivered?.message_id);
   return delivered;
@@ -1818,6 +2268,46 @@ async function handleText(id, text, meta = {}) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    // This public action must win over any stale admin action_state, especially for admins using the public menu.
+    const firstPublicAction = visiblePublicAction(value, s);
+    if (['📥 صندوق دریافت', '📤 صندوق ارسال', '🗂 لینک های من', '🔗 لینک ناشناس من', 'لینک ناشناس من'].includes(value)) {
+      const flow = flowFor(s);
+      await updateAction(client, id, 'anon_menu');
+      client.release(); released = true;
+      if (value === '🔗 لینک ناشناس من' || value === 'لینک ناشناس من') return flow.handleLinkButton(id);
+      return flow.handlePanelText(id, value, 'anon_menu');
+    }
+    if (value === ANONYMOUS_LINK_BUTTON || firstPublicAction === 'anonymous_link') { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
+    // Once a user is actively replying in anonymous mode, the reply text must not be mistaken for a public-menu button.
+    if (me.action_state?.startsWith('anon_') && firstPublicAction !== 'connect') { const flow = flowFor(s); client.release(); released = true; return flow.handleText(id, value, me.action_state); }
+    const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
+    if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
+    if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'افزودن ادمین') { await updateAction(client,id,'admin:admins:add:id'); return send(id,'آیدی عددی کاربر را بفرست. برای لغو «بازگشت» را بفرست.',replyKeyboard([['بازگشت']],true)); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'بازگشت پنل') { await updateAction(client,id,null); return send(id,'پنل مدیریت',adminMainKeyboard(s,id)); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:add:id') {
+      if (value === 'بازگشت') { await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
+      if (!/^\d{3,20}$/.test(value)) return send(id,'آیدی عددی معتبر بفرست.',replyKeyboard([['بازگشت']],true));
+      const targetId=Number(value); const target=(await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1',[targetId])).rows[0]; if(!target) return send(id,'این کاربر هنوز عضو ربات نشده است. ابتدا باید وارد ربات شود.',replyKeyboard([['بازگشت']],true));
+      await client.query("INSERT INTO admin_accounts(telegram_id,role,permissions,added_by) VALUES($1,'admin',$2::jsonb,$3) ON CONFLICT (telegram_id) DO UPDATE SET enabled=TRUE,updated_at=NOW()", [targetId,JSON.stringify(ADMIN_ROLE_DEFAULTS.admin),id]); await refreshAdminCache(client); await audit(client,id,targetId,'admin_add',{role:'admin'}); await updateAction(client,id,'admin:admins'); return sendAdminAccount(client,id,targetId);
+    }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'کانال گزارش فعالیت ادمین‌ها') { await updateAction(client,id,'admin:admins:activity_report'); return send(id, await adminActivityReportText(client), adminActivityReportKeyboard()); }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:activity_report') {
+      if (value === 'بازگشت امور ادمین') { await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
+      if (value === 'اتصال/تغییر کانال') { await updateAction(client,id,'admin:admins:activity_report:channel'); return send(id,'آیدی عددی یا @نام‌کاربری کانال را بفرست. ربات باید ادمین کانال و دارای دسترسی ارسال پیام باشد.',replyKeyboard([['بازگشت']],true)); }
+      if (value === 'روشن/خاموش گزارش‌ها') { const next=(await botSettingValue(client,'admin_activity_report_enabled','false')) !== 'true'; await saveBotSetting(client,'admin_activity_report_enabled',String(next)); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      if (value === 'قطع اتصال کانال') { await saveBotSetting(client,'admin_activity_report_channel_id',''); await saveBotSetting(client,'admin_activity_report_enabled','false'); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      if (value === 'ارسال پیام تست') { const channel=await botSettingValue(client,'admin_activity_report_channel_id',''); if(!channel) return send(id,'ابتدا کانال گزارش را متصل کن.',adminActivityReportKeyboard()); try { await telegram('sendMessage',{chat_id:channel,text:`✅ پیام تست کانال گزارش فعالیت ادمین‌ها\nادمین آزمایشی: ${id}\nزمان: ${iranDate(new Date())}`,protect_content:true}); return send(id,'پیام تست با موفقیت ارسال شد.',adminActivityReportKeyboard()); } catch { return send(id,'ارسال پیام تست ناموفق بود؛ دسترسی ربات و آیدی کانال را بررسی کن.',adminActivityReportKeyboard()); } }
+      return send(id,await adminActivityReportText(client),adminActivityReportKeyboard());
+    }
+    if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins:activity_report:channel') {
+      if (value === 'بازگشت') { await updateAction(client,id,'admin:admins:activity_report'); return send(id,await adminActivityReportText(client),adminActivityReportKeyboard()); }
+      const channel=await validateMandatoryReportChannel(value);
+      if (channel === false) return send(id,'دریافت اطلاعات کانال از تلگرام انجام نشد؛ دوباره تلاش کن.',replyKeyboard([['بازگشت']],true));
+      if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
+      await saveBotSetting(client,'admin_activity_report_channel_id',channel.id); await saveBotSetting(client,'admin_activity_report_private',String(channel.isPrivate)); await saveBotSetting(client,'admin_activity_report_enabled','true'); await updateAction(client,id,'admin:admins:activity_report'); await audit(client,id,channel.id,'admin_activity_report_channel_connected',{title:channel.title}); return send(id,`کانال «${channel.title}» متصل شد و گزارش‌ها فعال شدند.`,adminActivityReportKeyboard());
+    }
     if (isAdmin(id) && (me.action_state?.startsWith('beauty:name:') || me.action_state?.startsWith('beauty:message:')) && isReservedEditorLabel(value, s)) { await updateAction(client, id, null); me.action_state = null; }
 
     if (isAdmin(id) && me.action_state?.startsWith('beauty:name:')) {
@@ -1915,16 +2405,78 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:set:')) {
       const key = me.action_state.slice('admin:set:'.length);
-      if (!['welcome_message', 'connected_message'].includes(key)) return send(id, 'تنظیم نامعتبر است.', adminMainKeyboard());
+      if (!['welcome_message', 'connected_message'].includes(key)) return send(id, 'تنظیم نامعتبر است.', adminMainKeyboard({},id));
       if (!value) return send(id, 'پیام نمی‌تواند خالی باشد. دوباره بفرست.');
       await client.query("INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [key, value.slice(0, 4000)]);
       await updateAction(client, id, null);
-      return send(id, 'پیام با موفقیت ذخیره شد.', adminMainKeyboard());
+      return send(id, 'پیام با موفقیت ذخیره شد.', adminMainKeyboard({},id));
     }
-    if (isAdmin(id) && me.action_state === 'admin:broadcast') {
-      if (!value) return send(id, 'متن پیام همگانی نمی‌تواند خالی باشد.');
+    if (isAdmin(id) && (me.action_state === 'admin:broadcast' || me.action_state === 'admin:broadcast:message')) {
+      if (value === 'برگشت') { await updateAction(client, id, null); return broadcastStatsPanel(client, id); }
+      const incoming = meta?.message;
+      if (!incoming?.message_id) return send(id, 'لطفاً خود پیام را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true));
+      const draft = await broadcastCampaign(client, id, incoming);
+      await updateAction(client, id, `admin:broadcast:segments:${draft.id}`);
+      return send(id, `پیام دریافت شد.
+
+حالا گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ را می‌توانی همزمان انتخاب کنی.
+🟢 فعال  🔴 غیرفعال`, broadcastAudienceSegmentsKeyboard(draft.id, draft.audience));
+    }
+    if (isAdmin(id) && me.action_state === 'admin:broadcast:report_channel') {
+      if (value === 'اتصال/تغییر کانال') { await updateAction(client,id,'admin:broadcast:report_channel_target'); return send(id,'آیدی عددی یا @نام‌کاربری کانال اختصاصی گزارش پیام‌های همگانی را بفرست. ربات باید ادمین کانال و دارای دسترسی ارسال پیام باشد.',replyKeyboard([['بازگشت']],true)); }
+      if (value === 'قطع اتصال کانال') { await saveBotSetting(client,'broadcast_report_channel_id',''); await saveBotSetting(client,'broadcast_report_channel_private','false'); return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard()); }
+      if (value === 'بازگشت پیام همگانی' || value === 'بازگشت') { await updateAction(client,id,null); return broadcastStatsPanel(client,id); }
+      return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard());
+    }
+    if (isAdmin(id) && me.action_state === 'admin:broadcast:report_channel_target') {
+      const channel=await validateMandatoryReportChannel(value);
+      if (channel === false) return send(id,'دریافت اطلاعات کانال از تلگرام انجام نشد؛ دوباره تلاش کن.',replyKeyboard([['بازگشت']],true));
+      if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
+      await saveBotSetting(client,'broadcast_report_channel_id',channel.id); await saveBotSetting(client,'broadcast_report_channel_private',String(channel.isPrivate)); await updateAction(client,id,'admin:broadcast:report_channel');
+      return send(id,`کانال اختصاصی گزارش پیام‌های همگانی «${channel.title}» متصل شد.`,broadcastReportChannelKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_title:')) {
+      const campaignId = Number(me.action_state.split(':').pop());
+      if (!value || value.length > 80) return send(id, 'نام پیام آماده باید بین ۱ تا ۸۰ نویسه باشد.');
+      await client.query('INSERT INTO broadcast_templates(owner_id,title,campaign_id) VALUES($1,$2,$3)', [id, value, campaignId]);
+      await client.query('UPDATE broadcast_campaigns SET saved=TRUE,updated_at=NOW() WHERE id=$1 AND created_by=$2', [campaignId, id]);
       await updateAction(client, id, null);
-      return broadcastText(client, value, id);
+      return send(id, await broadcastDraftText(client, campaignId, 'پیام آماده ذخیره شد.'), broadcastConfirmKeyboard(campaignId, true));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_schedule:')) {
+      const templateId = Number(me.action_state.split(':').pop()); const date = parseJalaliDateTime(value);
+      if (!date) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/7/10-20:00.');
+      const row = (await client.query('SELECT campaign_id FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id])).rows[0];
+      if (!row) return send(id, 'پیام آماده پیدا نشد.');
+      await client.query('UPDATE broadcast_campaigns SET scheduled_at=$2,updated_at=NOW() WHERE id=$1', [row.campaign_id, date]); await updateAction(client, id, null); return broadcastTemplatePanel(client, id, templateId);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:template_count:')) {
+      const templateId = Number(me.action_state.split(':').pop()); const row = (await client.query('SELECT campaign_id FROM broadcast_templates WHERE id=$1 AND owner_id=$2', [templateId, id])).rows[0];
+      if (!row) return send(id, 'پیام آماده پیدا نشد.');
+      if (value === 'همه') await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1', [row.campaign_id]); else if (/^\d+$/.test(value) && Number(value) > 0) await client.query('UPDATE broadcast_campaigns SET target_limit=$2,updated_at=NOW() WHERE id=$1', [row.campaign_id, Number(value)]); else return send(id, 'تعداد نامعتبر است؛ عدد مثبت یا «همه» بفرست.');
+      await updateAction(client, id, null); return broadcastTemplatePanel(client, id, templateId);
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:schedule:')) {
+      const idRaw = me.action_state.split(':').pop(); const date = parseJalaliDateTime(value);
+      if (!date) return send(id, 'قالب زمان نامعتبر است؛ نمونه: 1405/7/10-20:00.');
+      await client.query('UPDATE broadcast_campaigns SET scheduled_at=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2', [Number(idRaw), id, date]);
+      await updateAction(client, id, `admin:broadcast:delete:${idRaw}`);
+      return send(id, 'آیا تایم حذف خودکار به این پیام اضافه شود؟', broadcastDeleteKeyboard(Number(idRaw)));
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:delete_time:')) {
+      const idRaw = me.action_state.split(':').pop(); const seconds = parseDuration(value);
+      if (!seconds || seconds <= 0) return send(id, 'زمان نامعتبر است؛ نمونه: 1d3h45m.');
+      await client.query('UPDATE broadcast_campaigns SET delete_after_seconds=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2', [Number(idRaw), id, seconds]);
+      await updateAction(client, id, `admin:broadcast:count:${idRaw}`);
+      return send(id, 'تعداد گیرندگان را انتخاب کن؛ این ارسال مستقل است و ذخیره‌سازی اختیاری است.', broadcastCountKeyboard());
+    }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:broadcast:count:')) {
+      const idRaw = me.action_state.split(':').pop();
+      if (value === 'برگشت') { await updateAction(client,id,`admin:broadcast:delete:${idRaw}`); return send(id,'آیا تایم حذف خودکار به این پیام اضافه شود؟',broadcastDeleteKeyboard(Number(idRaw))); }
+      if (value === 'همه' || value === 'ارسال برای همه') { await client.query('UPDATE broadcast_campaigns SET target_limit=NULL,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات ارسال آماده است؛ برای شروع، «ارسال مستقیم» را بزن. ذخیره در پیام‌های آماده اختیاری است.'),broadcastConfirmKeyboard(Number(idRaw))); }
+      if (value === 'تعداد دلخواه' || value === 'تعداد مشخص') return send(id,'تعداد موردنظر را به‌صورت عدد صحیح بفرست.',replyKeyboard([['برگشت']],true));
+      if (!/^\d+$/.test(value) || Number(value) < 1) return send(id,'تعداد نامعتبر است؛ یک عدد مثبت بفرست.',broadcastCountKeyboard());
+      await client.query('UPDATE broadcast_campaigns SET target_limit=$3,updated_at=NOW() WHERE id=$1 AND created_by=$2',[Number(idRaw),id,Number(value)]); await updateAction(client,id,null); return send(id,await broadcastDraftText(client,Number(idRaw),'تنظیمات ارسال آماده است؛ برای شروع، «ارسال مستقیم» را بزن. ذخیره در پیام‌های آماده اختیاری است.'),broadcastConfirmKeyboard(Number(idRaw)));
     }
     if (isAdmin(id) && me.action_state === 'admin:user_control_hub') {
       if (value === 'کنترل مکالمات') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
@@ -1933,13 +2485,13 @@ async function handleText(id, text, meta = {}) {
       if (value === 'لیست بن شده ها') { await updateAction(client, id, 'admin:banned_list'); return send(id, await bannedListText(client), bannedListKeyboard()); }
       if (value === 'لیست بلاکی ها') { await updateAction(client, id, 'admin:blocked_list'); return sendBlockedList(client, id); }
       if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
-      if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
+      if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'یکی از گزینه‌های کنترل کاربران را انتخاب کن.', userControlKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:control') {
       if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
-      if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
+      if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'کنترل ربات', controlKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:finance_panel') {
@@ -1947,7 +2499,7 @@ async function handleText(id, text, meta = {}) {
       if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
       if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, botFinanceKeyboard()); }
       if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}\nفهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-      if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}\nفهرست ولت‌ها را بفرست.`, botFinanceKeyboard()); }
+      if (value === 'مدیریت ولت' || value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
       if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}\nشماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
       if (value === 'کنترل ظاهری') { await updateAction(client, id, 'admin:finance:appearance'); return send(id, `وضعیت پرداختی‌ها: ${await botSettingValue(client, 'finance_enabled', 'false') === 'true' ? 'فعال' : 'غیرفعال'}\nاز گزینه زیر برای تغییر وضعیت استفاده کن.`, financeAppearanceKeyboard()); }
@@ -1978,7 +2530,7 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('admin:bonus:amount:')) { const [, , , key, messageId] = me.action_state.split(':'); const amount = Number(value); if (!BONUS_KEYS.includes(key) || !Number.isInteger(amount) || amount < 0 || amount > 1000000) return send(id, 'مقدار باید عدد صحیح بین ۰ تا ۱٬۰۰۰٬۰۰۰ باشد.'); await client.query('UPDATE bonus_settings SET amount=$2,updated_at=NOW() WHERE bonus_key=$1', [key, amount]); await updateAction(client, id, null); const row = await bonusRow(client, key); const text = bonusDetailText(row); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text, reply_markup: bonusDetailKeyboard(row).reply_markup }); return; } catch {} } return send(id, text, bonusDetailKeyboard(row)); }
     if (isAdmin(id) && me.action_state === 'admin:bonus') { if(value==='بازگشت'){await updateAction(client,id,'admin:manocoin');return send(id,'مانوکوین',manoCoinAdminKeyboard());} if(!/^\d+$/.test(value)) return send(id,'مقدار بونوس باید عدد باشد.'); await saveBotSetting(client,'referral_bonus_coins',String(Number(value))); await updateAction(client,id,'admin:manocoin'); return send(id,'بونوس ذخیره شد.',manoCoinAdminKeyboard()); }
     if (isAdmin(id) && me.action_state?.startsWith('admin:referral:staged_amount:')) { const key=me.action_state.split(':')[3]; if(value==='بازگشت'){await updateAction(client,id,'admin:referral');return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard());} if(!REFERRAL_CONDITION_ORDER.includes(key) || !/^\d+$/.test(value)) return send(id,'مقدار باید عدد صحیح و غیرمنفی باشد.'); const amount=Number(value); const total=Math.max(0,Number(await botSettingValue(client,'referral_reward_coins','5'))||0); const amounts=await referralStageAmounts(client); const nextTotal=Object.entries(amounts).reduce((sum,[k,n])=>sum+(k===key?amount:n),0); if(nextTotal>total) return send(id,`مجموع سهم‌ها نمی‌تواند از ${total} مانوکوین بیشتر شود. مقدار مانده فعلی: ${Math.max(0,total-(nextTotal-amount))} مانوکوین.`); amounts[key]=amount; await saveBotSetting(client,'referral_stage_amounts',JSON.stringify(amounts)); await updateAction(client,id,'admin:referral'); return send(id,await referralStagedText(client),referralStagedKeyboard()); }
-    if (isAdmin(id) && me.action_state === 'admin:referral:time') { if(value==='بازگشت'){await updateAction(client,id,'admin:referral');return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard());} const sec=parseDuration(value); if(sec===null || sec<=0) return send(id,'زمان نامعتبر است؛ مثل 30M یا 1H.',replyKeyboard([['بازگشت']],true)); await saveBotSetting(client,'referral_time_seconds',String(sec)); await updateAction(client,id,'admin:referral'); return send(id,`زمان شرطی روی ${durationLabel(sec)} تنظیم شد.`,referralAdminKeyboard()); }
+    if (isAdmin(id) && me.action_state === 'admin:referral:time') { if(value==='بازگشت'){await updateAction(client,id,'admin:referral');return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard());} const sec=parseDuration(value); if(sec===null || sec<=0) return send(id,'زمان نامعتبر است؛ مثل 30M یا 1H.',replyKeyboard([['بازگشت']],true)); await saveBotSetting(client,'referral_time_seconds',String(sec)); const conditions=await referralConditions(client); conditions.time=true; await saveBotSetting(client,'referral_conditions',JSON.stringify(conditions)); await updateAction(client,id,'admin:referral'); return send(id,`زمان شرطی روی ${durationLabel(sec)} تنظیم شد.`,referralAdminKeyboard()); }
     if (isAdmin(id) && me.action_state === 'admin:referral:reward') {
       if (value === 'بازگشت') { await updateAction(client,id,'admin:referral'); return send(id,'تنظیمات زیرمجموعه',referralAdminKeyboard()); }
       if (!/^\d+$/.test(value) || Number(value)<0 || Number(value)>1000000) return send(id,'مقدار باید عدد صحیح بین صفر تا یک میلیون باشد.'); const stagedAssigned=await referralStageTotal(client); if(Number(value)<stagedAssigned) return send(id,`مقدار جدید نمی‌تواند کمتر از مجموع سهم‌های پله‌ای (${stagedAssigned} مانوکوین) باشد.`); await saveBotSetting(client,'referral_reward_coins',String(Number(value))); await updateAction(client,id,'admin:referral'); return send(id,'مقدار کوین زیرمجموعه ذخیره شد.',referralAdminKeyboard());
@@ -1995,6 +2547,17 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('admin:finance:card:add:confirm:')) { const raw=me.action_state.slice('admin:finance:card:add:confirm:'); const split=raw.lastIndexOf(':'); const name=decodeURIComponent(raw.slice(0,split)); const identity=decodeURIComponent(raw.slice(split+1)); if(value==='بازگشت'){await updateAction(client,id,'admin:finance:cards');return sendCardAdminPanel(client,id);} if(value!=='تایید') return send(id,'برای ثبت نهایی «تایید» را بفرست.',replyKeyboard([['تایید'],['بازگشت']],true)); const adminId=/^\d+$/.test(identity)?Number(identity):null; const adminRow=adminId?(await client.query('SELECT username FROM users WHERE telegram_id=$1',[adminId])).rows[0]:null; const username=adminId?(adminRow?.username||null):identity; await client.query('INSERT INTO payment_cards(card_number,admin_id,admin_label,admin_username,enabled,button_enabled) VALUES($1,$2,$3,$4,TRUE,TRUE)',['',adminId,name,username]); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
     if (isAdmin(id) && me.action_state?.startsWith('admin:finance:card:change:')) { const identity=value.replace(/^@/,''); if(!/^\d{3,20}$/.test(identity) && !/^[A-Za-z0-9_]{3,32}$/.test(identity)) return send(id,'آیدی عددی یا @username معتبر بفرست.'); const cardId=Number(me.action_state.split(':').pop()); const adminId=/^\d+$/.test(identity)?Number(identity):null; const adminRow=adminId?(await client.query('SELECT username FROM users WHERE telegram_id=$1',[adminId])).rows[0]:null; await client.query('UPDATE payment_cards SET admin_id=$2,admin_username=$3,updated_at=NOW() WHERE id=$1',[cardId,adminId,adminId?(adminRow?.username||null):identity]); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
     if (isAdmin(id) && me.action_state === 'admin:finance:card:text') { if(value==='بازگشت'){await updateAction(client,id,'admin:finance:cards');return sendCardAdminPanel(client,id);} await saveBotSetting(client,'finance_card_text',value.slice(0,4000)); await updateAction(client,id,'admin:finance:cards'); return sendCardAdminPanel(client,id); }
+    if (me.action_state?.startsWith('admin:wallet')) { const handled = await handleWalletText(client, id, value, me.action_state); if (handled !== false) return handled; }
+    if (isAdmin(id) && (me.action_state === 'admin:finance:wallets' || me.action_state === 'admin:finance_panel')) {
+      if (value === '➕ افزودن ولت') { await updateAction(client, id, 'admin:wallet:add:name'); return send(id, 'نام نمایشی ولت را بفرست.', walletBackReplyKeyboard()); }
+      if (value === '📢 کانال گزارش') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
+      if (value === '💵 منبع قیمت دلار') { await updateAction(client, id, 'admin:wallet:usd_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_usd_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
+      if (value === '🪙 منبع قیمت ارزدیجیتال') { await updateAction(client, id, 'admin:wallet:asset_source'); return send(id, `منبع فعلی: ${await botSettingValue(client, 'crypto_asset_price_source', '')}\nمنبع جدید را بفرست.`, walletBackReplyKeyboard()); }
+      if (value === '⚙️ اعتباردهی خودکار') return sendWalletMonitorPanel(client, id);
+      if (value === 'تنظیم کانال') { await updateAction(client, id, 'admin:wallet:channel'); return send(id, 'شناسه یا آیدی کانال گزارش را بفرست.', walletChannelReplyKeyboard()); }
+      if (value === 'حذف کانال') { await saveBotSetting(client, 'crypto_report_channel_id', ''); return sendWalletPanel(client, id); }
+      if (value === 'برگشت' || value === 'بازگشت') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+    }
     if (isAdmin(id) && /^admin:finance:(price|gateways|wallets|cards)$/.test(me.action_state || '')) {
       const financeNav = new Set(['وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'درگاه ها', 'ولت ها', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت کنترل ربات', 'بازگشت امور مالی', 'بازگشت']);
       if (financeNav.has(value)) {
@@ -2005,8 +2568,7 @@ async function handleText(id, text, meta = {}) {
 قیمت جدید را بفرست.`, botFinanceKeyboard()); }
         if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}
 فهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
-        if (value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return send(id, `ولت‌های فعلی: ${await botSettingValue(client, 'finance_wallets', 'تنظیم نشده')}
-فهرست یا توضیح ولت‌ها را بفرست.`, botFinanceKeyboard()); }
+        if (value === 'مدیریت ولت' || value === 'ولت ها') { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
         if (value === 'امور کارت' || value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return sendCardAdminPanel(client, id); }
       if (value === 'شماره کارت ها') { await updateAction(client, id, 'admin:finance:cards'); return send(id, `شماره کارت‌های فعلی: ${await botSettingValue(client, 'finance_cards', 'تنظیم نشده')}
 شماره کارت‌ها و نام صاحب کارت را بفرست.`, botFinanceKeyboard()); }
@@ -2017,10 +2579,10 @@ async function handleText(id, text, meta = {}) {
       const key = me.action_state.split(':')[2]; if (!value) return send(id, 'مقدار نمی‌تواند خالی باشد.', botFinanceKeyboard());
       await saveBotSetting(client, `finance_${key === 'price' ? 'coin_price' : key}`, value.slice(0, 1000)); const nextFinanceState = me.action_state === 'admin:finance:price' ? 'admin:manocoin' : 'admin:finance_panel'; await updateAction(client, id, nextFinanceState); return send(id, 'تنظیم امور مالی ذخیره شد.', nextFinanceState === 'admin:manocoin' ? manoCoinKeyboard() : botFinanceKeyboard());
     }
+    if (isAdmin(id) && me.action_state === 'admin:finance_panel' && (value === 'مدیریت ولت' || value === 'ولت ها')) { await updateAction(client, id, 'admin:finance:wallets'); return sendWalletPanel(client, id); }
     if (isAdmin(id) && me.action_state === 'admin:finance') {
       if (value === 'گزارش مالی') return send(id, await financialReport(client), userFinanceKeyboard());
       if (value === 'هزینه اتصال') { const costs = { chat_cost_any: await botSettingValue(client, 'chat_cost_any', '0'), chat_cost_male: await botSettingValue(client, 'chat_cost_male', '0'), chat_cost_female: await botSettingValue(client, 'chat_cost_female', '0') }; return send(id, 'هزینهٔ اتصال موفق را برای هر نوع انتخاب کن:', chatCostInlineKeyboard(costs)); }
-      if (value === 'تنظیم دیلی کوین') { await updateAction(client, id, 'admin:daily_coin'); return send(id, `تنظیمات دیلی کوین\nمقدار فعلی: ${await botSettingValue(client, 'daily_coin_amount', '20')}\nدستور فعلی: ${await botSettingValue(client, 'daily_coin_command', '/daily')}\nریست فعلی: ${await botSettingValue(client, 'daily_coin_reset', '24H')}`, dailyCoinKeyboard()); }
       if (value === 'بازگشت کنترل کاربران' || value === 'برگشت') { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
       return send(id, 'یکی از گزینه‌های کنترل مالی را انتخاب کن.', userFinanceKeyboard());
     }
@@ -2030,7 +2592,7 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state === 'admin:banned_list') {
       if (value === 'بازگشت کنترل کاربران') { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
-      if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
+      if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, await bannedListText(client), bannedListKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:user_control_lookup') {
@@ -2086,6 +2648,8 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('admin:ban:')) {
       const targetId = me.action_state.split(':')[2]; if (value === 'رفع') await client.query('UPDATE users SET banned_until=NULL,ban_reason=NULL,updated_at=NOW() WHERE telegram_id=$1', [targetId]); else { const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب بن نامعتبر است؛ مثل 1H یا 7D. برای 7D عدد روز را بفرست: 168H.'); await adminBanUser(client, targetId, seconds); } await audit(client, id, targetId, value === 'رفع' ? 'unban' : 'ban', { value }); await updateAction(client, id, `admin:user_control:${targetId}`); const panel = await adminUserPanel(client, id, targetId); return send(id, panel.text, panel.markup);
     }
+    if (me.action_state?.startsWith('admin:gift') && !isAdmin(id)) { await updateAction(client, id, null); return send(id, 'این بخش فقط برای مدیریت ربات است.'); }
+    if (isAdmin(id) && me.action_state?.startsWith('admin:gift:') && value === 'بازگشت') { await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id); }
     if (isAdmin(id) && me.action_state === 'admin:gifts') {
       if (value === 'برگشت مانوکوین' || value === 'برگشت') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
       if (value === 'ایجاد') { await updateAction(client, id, 'admin:gift:type'); return send(id, 'نوع هدیه را انتخاب کن:', giftTypeKeyboard()); }
@@ -2168,22 +2732,26 @@ async function handleText(id, text, meta = {}) {
       if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.');
       const found = await client.query('SELECT telegram_id,status,gender,coins,created_at FROM users WHERE telegram_id=$1', [value]);
       await updateAction(client, id, null);
-      if (!found.rows[0]) return send(id, 'کاربری با این آیدی پیدا نشد.', adminMainKeyboard());
+      if (!found.rows[0]) return send(id, 'کاربری با این آیدی پیدا نشد.', adminMainKeyboard({},id));
       const u = found.rows[0];
-      return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nمانو کوین: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard());
+      return send(id, `کاربر ${u.telegram_id}\nوضعیت: ${u.status}\nجنسیت: ${u.gender || 'ثبت نشده'}\nمانو کوین: ${u.coins || 0}\nعضویت: ${iranDate(u.created_at)}`, adminMainKeyboard({},id));
     }
-    if (isAdmin(id) && privateActionId === 'back') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s)); }
+    if (isAdmin(id) && privateActionId === 'back') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
 if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی')) return handleTechnicalAction(id, client, value, me.action_state, s, privateActionId);
     const privateAction = isAdmin(id) ? visiblePrivateAction(value, s) : null;
-    if (privateAction === 'ads') return send(id, appearanceFeedback(privateAppearance(s), 'ads', 'مدیریت تبلیغات'), adsKeyboard(s));
+    if (isAdmin(id) && ['ارسال پیام🔺', '📢 پیام همگانی', 'پیام همگانی'].includes(value)) { await updateAction(client, id, 'admin:broadcast:message'); return send(id, 'پیام همگانی را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true)); }
+    if (privateAction === 'ads') { await updateAction(client, id, 'admin:ads'); return send(id, 'تبلیغات\n\nیکی از بخش‌های تبلیغاتی را انتخاب کن:', adsKeyboard(s)); }
+    if (isAdmin(id) && value === 'کمپین‌های قبلی') return broadcastCampaignsPanel(client, id);
+    if (isAdmin(id) && value === 'پیام آمادهⓂ️') return broadcastTemplatesPanel(client, id);
+    if (isAdmin(id) && value === 'کانال گزارش👁‍🗨') { await updateAction(client,id,'admin:broadcast:report_channel'); return send(id,await broadcastReportChannelText(client),broadcastReportChannelKeyboard()); }
     if (privateAction === 'control') { await updateAction(client, id, 'admin:control'); return send(id, appearanceFeedback(privateAppearance(s), 'control', 'کنترل ربات'), controlKeyboard(s)); }
     if (value === 'کنترل کاربر' || value === 'کنترل کاربران') { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
     if (privateAction === 'users') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, appearanceFeedback(privateAppearance(s), 'users', 'آیدی عددی کاربر را بفرست.')); }
-    if (privateAction === 'status') { const stats = await botStatus(client); return send(id, stats, adminMainKeyboard(s)); }
+    if (privateAction === 'status') { const stats = await botStatus(client); return send(id, stats, adminMainKeyboard(s,id)); }
     if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, appearanceFeedback(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard(s)); }
     if (privateAction === 'admins') return send(id, `${appearanceFeedback(privateAppearance(s), 'admins', 'مدیران فعلی')}
 
-${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
+${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s,id));
     if (privateAction === 'exit') { await updateAction(client, id, null); return send(id, appearanceFeedback(privateAppearance(s), 'exit', 'از پنل مدیریت خارج شدی.'), mainKeyboard(s)); }
     const publicAction = dynamicPublicAction(value, s);
     if (publicAction === 'connect') { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
@@ -2193,15 +2761,15 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
     if (publicAction === 'plus') return sendPlus(id, s);
     if (isAdmin(id) && value === s.profile_button) return sendProfile(id, s);
     if (isAdmin(id) && value === 'پروفایل من') return sendProfile(id, s);
-    if (isAdmin(id) && value === 'تبلیغات') return send(id, 'مدیریت تبلیغات', adsKeyboard());
+    if (isAdmin(id) && (value === 'تبلیغات' || value === '📢 پیام همگانی')) { await updateAction(client, id, 'admin:broadcast:message'); return send(id, 'پیام همگانی را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true)); }
     if (isAdmin(id) && (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی')) { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
-    if (isAdmin(id) && value === 'افزودن ادمین') { await updateAction(client,id,'admin:finance:card:add:name'); return send(id,'نام نمایشی ادمین کارت به کارت را بفرست.',replyKeyboard([['بازگشت']],true)); }
+    if (isAdmin(id) && (value === 'امور ادمین' || value === 'افزودن ادمین')) { if (!hasAdminPermission(id, 'admins')) return send(id,'مجوز مدیریت ادمین‌ها برای حساب شما فعال نیست.'); await updateAction(client,id,'admin:admins'); return sendAdminManagement(client,id); }
     if (isAdmin(id) && value === 'کنترل ربات') { await updateAction(client, id, 'admin:control'); return send(id, 'کنترل ربات', controlKeyboard()); }
     if (isAdmin(id) && (value === 'کنترل کاربر' || value === 'کنترل کاربران')) { await updateAction(client, id, 'admin:user_control_hub'); return send(id, 'کنترل کاربران', userControlKeyboard()); }
     if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');
     if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
     if (isAdmin(id) && (privateActionId === 'templates' || value === 'قالب‌های آماده')) { await updateAction(client, id, 'appearance:choose'); return send(id, 'قالب آماده را برای کدام بخش اعمال می‌کنی؟', replyKeyboard([['پابلیک'], ['پرایویسی'], ['بازگشت']], true)); }
-    if (isAdmin(id) && value === 'وضعیت ربات') { const stats = await botStatus(client); return send(id, stats, adminMainKeyboard()); }
+    if (isAdmin(id) && value === 'وضعیت ربات') { const stats = await botStatus(client); return send(id, stats, adminMainKeyboard({},id)); }
     if (isAdmin(id) && value === 'گزارش‌ها') {
       await updateAction(client, id, 'admin:reports_menu');
       const r = await client.query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS open FROM reports");
@@ -2225,8 +2793,8 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       await updateAction(client, id, 'admin:reports_channel');
       return send(id, 'اتصال کانال برداشته شد؛ پست‌های قبلی در کانال حذف نمی‌شوند و از این به بعد به‌روزرسانی نخواهند شد.', reportChannelKeyboard());
     }
-    if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard());
-    if (isAdmin(id) && (privateActionId === 'join' || value === 'جویین اجباری')) { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
+    if (isAdmin(id) && value === 'مدیران') return send(id, `مدیران فعلی\n\n${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard({},id));
+    if (isAdmin(id) && (privateActionId === 'join' || value === 'جویین اجباری' || value === '📌 جویین اجباری')) { await updateAction(client, id, null); return send(id, 'مدیریت جویین اجباری', mandatoryJoinKeyboard()); }
     if (isAdmin(id) && value === 'افزودن') { await updateAction(client, id, 'mandatory:type'); return send(id, 'نوع جویین اجباری را انتخاب کن.', mandatoryTypeKeyboard()); }
     if (isAdmin(id) && value === 'وضعیت') {
       await updateAction(client, id, 'mandatory:status');
@@ -2286,7 +2854,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
       }
       await updateAction(client, id, 'mandatory:schedule_list'); return sendMandatoryScheduleList(client, id, r.rowCount ? `زمان منبع ${code} تغییر کرد.` : 'کد پیگیری در فهرست زمان‌بندی پیدا نشد.');
     }
-    if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
+    if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard({},id)); }
     if (isAdmin(id) && me.action_state === 'mandatory:type') {
       const type = mandatoryTypeKey(value); if (!type) return send(id, 'یک نوع معتبر انتخاب کن.', mandatoryTypeKeyboard());
       if (type === 'channel' || type === 'group') { await updateAction(client, id, `mandatory:visibility:${type}`); return send(id, `نوع ${mandatoryTypeLabel(type)} را انتخاب کن.`, mandatoryVisibilityKeyboard()); }
@@ -2342,16 +2910,16 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s));
         return send(id, mandatoryAppearanceText(await settings(client)), mandatoryAppearanceKeyboard());
       }
     }
-    if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
+    if (isAdmin(id) && value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard({},id)); }
 
-    if (isAdmin(id) && (privateActionId === 'broadcast' || value === 'پیام همگانی')) { await updateAction(client, id, 'admin:broadcast'); return send(id, 'متن پیام همگانی را بفرست. نسخهٔ متنی فعال است؛ ارسال رسانه در مرحلهٔ بعد اضافه می‌شود.'); }
-    if (isAdmin(id) && (privateActionId === 'welcome' || value === 'پیام خوش‌آمد')) { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
-    if (isAdmin(id) && (privateActionId === 'connection_ad' || value === 'تبلیغ اتصال')) { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
-    if (isAdmin(id) && (privateActionId === 'mid_ad' || value === 'تبلیغ میان مکالمه')) return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard(s));
+    if (isAdmin(id) && (privateActionId === 'broadcast' || value === 'پیام همگانی')) { await updateAction(client, id, 'admin:broadcast:message'); return send(id, 'پیام همگانی را بفرست؛ متن، عکس، ویدیو، گیف، استیکر، فایل، آهنگ، ویس و سایر انواع پیام پشتیبانی می‌شوند.', replyKeyboard([['برگشت']], true)); }
+    if (isAdmin(id) && (privateActionId === 'welcome' || value === 'پیام خوش‌آمد' || value === '👋 پیام خوش‌آمد')) { await updateAction(client, id, 'admin:set:welcome_message'); return send(id, 'متن پیام خوش‌آمد جدید را بفرست.'); }
+    if (isAdmin(id) && (privateActionId === 'connection_ad' || value === 'تبلیغ اتصال' || value === '🔗 تبلیغ اتصال')) { await updateAction(client, id, 'admin:set:connected_message'); return send(id, 'متن پیام هنگام اتصال را بفرست.'); }
+    if (isAdmin(id) && (privateActionId === 'mid_ad' || value === 'تبلیغ میان مکالمه' || value === '💬 تبلیغ میان مکالمه')) return send(id, 'تبلیغ میان مکالمه در پنل فعال است؛ زمان‌بندی خودکار آن در مرحلهٔ بعد اضافه می‌شود.', adsKeyboard(s));
     if (isAdmin(id) && (privateActionId === 'public_appearance' || value === 'بخش ظاهری پابلیک')) return sendAppearanceEditor(id, client, 'public');
     if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
     if (isAdmin(id) && (privateActionId === 'toggle' || value === 'روشن/خاموش کردن ربات')) { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard(s)); }
-    if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard()); }
+    if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard({},id)); }
     if (isAdmin(id) && (privateActionId === 'exit' || value === 'خروج از پنل')) { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
     if (publicActionId === 'profile' || value === 'پروفایل من') return sendProfile(id, s);
     if (publicActionId === 'emoji' || value === 'ظاهر ایموجی پلاس') {
@@ -2485,18 +3053,38 @@ async function activeBanFor(id) {
 }
 function bannedMessage(row) { return `حساب شما توسط مدیریت بن شده است.\nبن تا: ${iranDate(row.banned_until)}\nدر این مدت امکان استفاده از ربات را نداری.`; }
 
+async function processNativeReaction(update) {
+  const reaction = update?.message_reaction;
+  if (!reaction?.chat?.id || !reaction?.user?.id || !reaction?.message_id) return false;
+  const actorId = Number(reaction.user.id);
+  const client = await pool.connect();
+  try {
+    const setting = await client.query("SELECT value FROM bot_settings WHERE key='chat_permissions'");
+    let permissions = DEFAULT_CHAT_PERMISSIONS;
+    try { permissions = { ...DEFAULT_CHAT_PERMISSIONS, ...JSON.parse(setting.rows[0]?.value || '{}') }; } catch {}
+    const mapped = (await client.query('SELECT sender_id,sender_message_id FROM chat_reply_message_map WHERE recipient_id=$1 AND recipient_message_id=$2 LIMIT 1', [actorId, reaction.message_id])).rows[0];
+    if (!mapped || permissions.reaction === false) return true;
+    const next = Array.isArray(reaction.new_reaction) ? reaction.new_reaction : [];
+    try { await telegram('setMessageReaction', { chat_id: mapped.sender_id, message_id: mapped.sender_message_id, reaction: next, is_big: false }); } catch (error) { console.error('native_reaction_mirror_error', String(error?.message || error).slice(0, 180)); }
+    return true;
+  } finally { client.release(); }
+}
+
 async function processUpdate(update) {
   const inserted = await pool.query('INSERT INTO processed_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING update_id', [update.update_id]);
   if (!inserted.rowCount) return;
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
-  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl)) {
+  const reportChannelId = callback?.message?.chat?.id ? await pool.query("SELECT value FROM bot_settings WHERE key='broadcast_report_channel_id'").then(r => r.rows[0]?.value || '') : '';
+  const broadcastReportControl = Boolean(reportChannelId && String(callback?.message?.chat?.id) === String(reportChannelId) && callbackData.startsWith('broadcast:'));
+  if (callback?.from && (callback.message?.chat?.type === 'private' || mandatoryAdminControl || broadcastReportControl)) {
     await answerCallback(callback.id);
     const callbackId = Number(callback.from.id);
     if (!isAdmin(callbackId)) { const ban = await activeBanFor(callbackId); if (ban) { await send(callbackId, bannedMessage(ban)); return; } }
     await handleCallback(Number(callback.from.id), callbackData, callback); return;
   }
+  if (update.message_reaction) { await processNativeReaction(update); return; }
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
   const id = Number(message.from.id); const text = String(message.text || message.caption || '').trim(); const forwardedUserId = contactTargetIdFromMessage(message); if (!text && !forwardedUserId && !message.photo && !message.video && !message.voice && !message.audio && !message.document && !message.sticker) return;
@@ -2529,7 +3117,7 @@ async function processUpdate(update) {
       if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);
       if (command === '/start') return handleStart(id, payload || null);
       if (command === '/help') return handleStart(id);
-    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { await updateAction(c, id, null); const s = await settings(c); return send(id, `${privateAppearance(s).message}\n\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard(s)); } finally { c.release(); } }
+    if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { await updateAction(c, id, null); const s = await settings(c); return send(id, `${privateAppearance(s).message}\n\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard(s,id)); } finally { c.release(); } }
     return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
   }
   return handleText(id, text, { forwardedUserId, message });
@@ -2563,6 +3151,32 @@ export async function runCryptoDepositScan() {
       getSetting: (key, fallback) => botSettingValue(client, key, fallback),
       onPurchaseCredited: async ({ userId }) => { const grantClient = await pool.connect(); try { const grant = await completeReferralCondition(grantClient, userId, 'purchase'); if (grant.granted) await notifyReferralGrant(grant, userId); } finally { grantClient.release(); } },
     });
+  } finally { client.release(); }
+}
+export async function runBroadcastJobs() {
+  await ensureRuntimeSchema();
+  return runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send });
+}
+export async function runReferralTimeRewards() {
+  await ensureRuntimeSchema();
+  const client = await pool.connect();
+  try {
+    const conditions = await referralConditions(client);
+    if (conditions.time !== true) return { scanned: 0, rewarded: 0, disabled: true };
+    const seconds = Math.max(1, Number(await botSettingValue(client, 'referral_time_seconds', '1800')) || 1800);
+    const rows = await client.query(`SELECT u.telegram_id FROM users u
+      WHERE u.referred_by IS NOT NULL AND u.referral_started_at IS NOT NULL
+        AND u.referral_started_at <= NOW() - ($1::double precision * INTERVAL '1 second')
+        AND NOT EXISTS (SELECT 1 FROM referral_progress p WHERE p.newcomer_id=u.telegram_id AND p.condition_key='time')
+      ORDER BY u.referral_started_at ASC LIMIT 100`, [seconds]);
+    let rewarded = 0;
+    for (const row of rows.rows) {
+      try {
+        const grant = await completeReferralCondition(client, Number(row.telegram_id), 'time');
+        if (grant.granted) { rewarded += 1; await notifyReferralGrant(grant, Number(row.telegram_id)); }
+      } catch (error) { console.error('referral_time_reward_error', row.telegram_id, String(error?.message || error).slice(0, 200)); }
+    }
+    return { scanned: rows.rowCount, rewarded, seconds };
   } finally { client.release(); }
 }
 export async function runMandatoryLifecycle() {
