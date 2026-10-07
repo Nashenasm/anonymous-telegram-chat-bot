@@ -370,7 +370,13 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       const [, action, raw] = callbackData.split(':'); const messageId = Number(raw);
       if (action === 'page') return sendInbox(id, messageId, callbackQuery);
       if (action === 'view') { const row = (await pool.query("SELECT m.id,m.body,l.link_name FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash WHERE m.id=$1 AND m.recipient_id=$2 AND m.status='pending'", [messageId, Number(id)])).rows[0]; return row ? updateInline(id, `✉️ پیام ناشناس\n\n${row.body}\n\n▫️ از لینک: ${row.link_name}`, inboxActions(row.id), callbackQuery) : updateInline(id, 'این پیام دیگر در صندوق فعال نیست.', backMarkup('alink:menu'), callbackQuery); }
-      if (action === 'reply') { await setState(id, `anon_inbox_reply:${messageId}`); return updateInline(id, '💬 پاسخ خود را بفرست؛ برای لغو «بازگشت» را بزن.', { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } }, callbackQuery); }
+      if (action === 'reply') {
+        const row = (await pool.query("SELECT sender_id,link_hash FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND direction='incoming'", [messageId, Number(id)])).rows[0];
+        if (!row) return updateInline(id, 'این پیام دیگر فعال نیست.', backMarkup('alink:menu'), callbackQuery);
+        const linkHash = Buffer.isBuffer(row.link_hash) ? row.link_hash.toString('hex') : Buffer.from(row.link_hash).toString('hex');
+        await setState(id, `anon_direct_reply:${row.sender_id}:${linkHash}`);
+        return updateInline(id, '💬 پاسخ خود را بفرست؛ این پاسخ مستقیم ارسال می‌شود و به فعال‌بودن صندوق وابسته نیست. برای لغو «بازگشت» را بزن.', { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } }, callbackQuery);
+      }
       if (action === 'block') { const row = (await pool.query("SELECT sender_id FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND status='pending'", [messageId, Number(id)])).rows[0]; if (row) { await createAnonymousBlock(pool, id, row.sender_id); await markInboxMessage(pool, messageId, id, 'blocked'); } return updateInline(id, '🚫 کاربر بلاک شد و پیام از صندوق فعال خارج شد.', linkMenuKeyboard(), callbackQuery); }
       return true;
     }
@@ -426,7 +432,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     if (!parsed || !parsed.name.startsWith('anon_')) return false;
     const body = typeof text === 'string' ? text.trim() : '';
     const sid = String(id);
-    if (parsed && (parsed.name === 'anon_menu' || parsed.name === 'anon_new_name' || parsed.name === 'anon_inbox_reply' || parsed.name === 'anon_outbox_reply' || parsed.name === 'anon_rename_link' || parsed.name === 'anon_revoke_confirm')) return handlePanelText(sid, body, state);
+    if (parsed && (parsed.name === 'anon_menu' || parsed.name === 'anon_new_name' || parsed.name === 'anon_inbox_reply' || parsed.name === 'anon_direct_reply' || parsed.name === 'anon_outbox_reply' || parsed.name === 'anon_rename_link' || parsed.name === 'anon_revoke_confirm')) return handlePanelText(sid, body, state);
     switch (parsed.name) {
       case 'anon_compose':
         return compose(sid, parsed.id, body);
@@ -499,7 +505,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     const isBack = body === '↩️ بازگشت' || body === 'بازگشت' || body === 'انصراف';
     if (isBack) {
       if (state === 'anon_menu') { await setState(id, null); return send(id, BACK_MSG, await mainKbFor(id)); }
-      if (state === 'anon_new_name' || state === 'anon_inbox_reply' || String(state || '').startsWith('anon_outbox_reply:') || String(state || '').startsWith('anon_rename_link:') || String(state || '').startsWith('anon_revoke_confirm:')) { await setState(id, 'anon_menu'); return send(id, 'مدیریت لینک ناشناس', linkMenuKeyboard()); }
+      if (state === 'anon_new_name' || state === 'anon_inbox_reply' || String(state || '').startsWith('anon_direct_reply:') || String(state || '').startsWith('anon_outbox_reply:') || String(state || '').startsWith('anon_rename_link:') || String(state || '').startsWith('anon_revoke_confirm:')) { await setState(id, 'anon_menu'); return send(id, 'مدیریت لینک ناشناس', linkMenuKeyboard()); }
       await setState(id, null); return send(id, BACK_MSG, await mainKbFor(id));
     }
     const renameMatch = /^anon_rename_link:(\w+)$/.exec(state || '');
@@ -531,6 +537,16 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       await markInboxMessage(pool, messageId, id, 'replied');
       await setState(id, 'anon_menu');
       await send(original.sender_id, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, inboxActions(replyRow.id));
+      return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
+    }
+    const directReplyMatch = /^anon_direct_reply:(\d+):([0-9a-f]{64})$/.exec(state || '');
+    if (directReplyMatch) {
+      if (!body || body.length > MAX_LEN) return send(id, LEN_MSG, { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } });
+      const targetId = Number(directReplyMatch[1]);
+      if (await pairIsBlocked(pool, id, targetId)) { await setState(id, 'anon_menu'); return send(id, SAFE_RESPONSES.blocked, linkMenuKeyboard()); }
+      const replyRow = await createOutboxReply(pool, { senderId: id, recipientId: targetId, linkHash: Buffer.from(directReplyMatch[2], 'hex'), body });
+      await setState(id, 'anon_menu');
+      await send(targetId, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, inboxActions(replyRow.id));
       return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
     }
     const outboxReplyMatch = /^anon_outbox_reply:(\d+)$/.exec(state || '');

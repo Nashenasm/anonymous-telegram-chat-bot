@@ -54,6 +54,12 @@ function harness(initial = {}) {
         for (const id of params[0] || []) states.set(String(id), null);
         return { rows: [], rowCount: (params[0] || []).length };
       }
+      if (sql.includes('SELECT sender_id,link_hash FROM anonymous_inbox_messages')) {
+        return { rows: [{ sender_id: 100, link_hash: Buffer.alloc(32, 7) }] };
+      }
+      if (sql.includes('INSERT INTO anonymous_inbox_messages') && sql.includes('RETURNING id')) {
+        return { rows: [{ id: 8 }], rowCount: 1 };
+      }
       return { rows: [], rowCount: 0 };
     }),
   };
@@ -181,6 +187,15 @@ describe('anonymous deep-link flow', () => {
     expect(send).toHaveBeenCalledWith('100', 'پیام ناشناس:\nپاسخ', expect.any(Object));
     expect(states.get('100')).toBe('anon_last:200');
     expect(states.get('200')).toBe('anon_wait:100');
+  });
+
+  it('sends a received-message reply directly without requiring a pending inbox row', async () => {
+    const { flow, states, send } = harness();
+    await expect(flow.handleCallback(200, 'ainbox:reply:7')).resolves.toBeUndefined();
+    expect(states.get('200')).toBe(`anon_direct_reply:100:${'07'.repeat(32)}`);
+    await expect(flow.handleText(200, 'پاسخ مستقیم', states.get('200'))).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledWith(100, '💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\nپاسخ مستقیم', expect.objectContaining({ reply_markup: expect.any(Object) }));
+    expect(states.get('200')).toBe('anon_menu');
   });
 
   it('routes inline reply and block actions only for the current anonymous conversation', async () => {
