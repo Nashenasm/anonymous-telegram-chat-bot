@@ -42,6 +42,8 @@ export async function ensureBroadcastSchema(client) {
     source_chat_id BIGINT NOT NULL,
     source_message_id BIGINT NOT NULL,
     message_kind TEXT NOT NULL DEFAULT 'unknown',
+    preserve_forward BOOLEAN NOT NULL DEFAULT FALSE,
+    protect_content BOOLEAN NOT NULL DEFAULT TRUE,
     audience JSONB NOT NULL DEFAULT '{}'::jsonb,
     scheduled_at TIMESTAMPTZ,
     delete_after_seconds INTEGER,
@@ -79,6 +81,8 @@ export async function ensureBroadcastSchema(client) {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
   await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS admin_chat_id BIGINT');
+  await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS preserve_forward BOOLEAN NOT NULL DEFAULT FALSE');
+  await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS protect_content BOOLEAN NOT NULL DEFAULT TRUE');
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_campaigns_schedule_idx ON broadcast_campaigns(status, scheduled_at)');
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_deliveries_status_idx ON broadcast_deliveries(campaign_id, status)');
 }
@@ -158,11 +162,12 @@ export async function prepareBroadcastTargets(client, campaignId, audience, limi
 }
 
 export async function copyBroadcastMessage(telegramCall, campaign, userId) {
-  return telegramCall('copyMessage', {
+  const method = campaign.preserve_forward ? 'forwardMessage' : 'copyMessage';
+  return telegramCall(method, {
     chat_id: userId,
     from_chat_id: campaign.source_chat_id,
     message_id: campaign.source_message_id,
-    protect_content: true,
+    protect_content: campaign.protect_content !== false,
   });
 }
 
@@ -192,24 +197,24 @@ async function publishBroadcastReport(client, telegramCall, campaignId) {
   if (!row) return;
   const counts = (await client.query(`SELECT
     COUNT(*)::int AS total,
-    COUNT(*) FILTER (WHERE d.status='sent')::int AS sent,
+    COUNT(*) FILTER (WHERE d.status IN ('sent','deleted'))::int AS sent,
     COUNT(*) FILTER (WHERE d.status='failed')::int AS failed,
     COUNT(*) FILTER (WHERE d.status='pending')::int AS pending,
     COUNT(*) FILTER (WHERE d.status='deleted')::int AS deleted,
     COUNT(*) FILTER (WHERE u.gender='male' AND u.plus_expires_at > NOW())::int AS plus_male,
-    COUNT(*) FILTER (WHERE u.gender='male' AND u.plus_expires_at > NOW() AND d.status='sent')::int AS plus_male_sent,
+    COUNT(*) FILTER (WHERE u.gender='male' AND u.plus_expires_at > NOW() AND d.status IN ('sent','deleted'))::int AS plus_male_sent,
     COUNT(*) FILTER (WHERE u.gender='female' AND u.plus_expires_at > NOW())::int AS plus_female,
-    COUNT(*) FILTER (WHERE u.gender='female' AND u.plus_expires_at > NOW() AND d.status='sent')::int AS plus_female_sent,
+    COUNT(*) FILTER (WHERE u.gender='female' AND u.plus_expires_at > NOW() AND d.status IN ('sent','deleted'))::int AS plus_female_sent,
     COUNT(*) FILTER (WHERE u.gender='male' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW())::int AS regular_male,
-    COUNT(*) FILTER (WHERE u.gender='male' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status='sent')::int AS regular_male_sent,
+    COUNT(*) FILTER (WHERE u.gender='male' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status IN ('sent','deleted'))::int AS regular_male_sent,
     COUNT(*) FILTER (WHERE u.gender='female' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW())::int AS regular_female,
-    COUNT(*) FILTER (WHERE u.gender='female' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status='sent')::int AS regular_female_sent,
+    COUNT(*) FILTER (WHERE u.gender='female' AND COALESCE(u.plus_expires_at,NOW()-INTERVAL '1 second') <= NOW() AND d.status IN ('sent','deleted'))::int AS regular_female_sent,
     COUNT(*) FILTER (WHERE u.created_at >= NOW()-INTERVAL '48 hours')::int AS recent,
-    COUNT(*) FILTER (WHERE u.created_at >= NOW()-INTERVAL '48 hours' AND d.status='sent')::int AS recent_sent,
+    COUNT(*) FILTER (WHERE u.created_at >= NOW()-INTERVAL '48 hours' AND d.status IN ('sent','deleted'))::int AS recent_sent,
     COUNT(*) FILTER (WHERE u.status IN ('waiting','chatting'))::int AS online,
-    COUNT(*) FILTER (WHERE u.status IN ('waiting','chatting') AND d.status='sent')::int AS online_sent,
+    COUNT(*) FILTER (WHERE u.status IN ('waiting','chatting') AND d.status IN ('sent','deleted'))::int AS online_sent,
     COUNT(*) FILTER (WHERE u.status NOT IN ('waiting','chatting'))::int AS offline,
-    COUNT(*) FILTER (WHERE u.status NOT IN ('waiting','chatting') AND d.status='sent')::int AS offline_sent,
+    COUNT(*) FILTER (WHERE u.status NOT IN ('waiting','chatting') AND d.status IN ('sent','deleted'))::int AS offline_sent,
     COUNT(*) FILTER (WHERE u.banned_until IS NOT NULL AND u.banned_until > NOW())::int AS blocked
     FROM broadcast_deliveries d JOIN users u ON u.telegram_id=d.user_id WHERE d.campaign_id=$1`, [row.id])).rows[0] || {};
   const pair = (sent, total) => `${Number(sent || 0)}/${Number(total || 0)}`;
@@ -237,7 +242,7 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
   const result = { started: 0, sent: 0, failed: 0, deleted: 0, completed: 0 };
   try {
     await ensureBroadcastSchema(client);
-    const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns WHERE report_channel_id IS NOT NULL AND status IN ('scheduled','running','cancelled','completed','deleting','deleted') ORDER BY updated_at DESC,id DESC LIMIT 50`);
+    const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns WHERE (report_channel_id IS NOT NULL OR admin_message_id IS NOT NULL) AND status IN ('scheduled','running','cancelled','completed','deleting','deleted') ORDER BY updated_at DESC,id DESC LIMIT 50`);
     for (const report of waitingReports.rows) await publishBroadcastReport(client, telegramCall, report.id);
     const due = await client.query(`SELECT * FROM broadcast_campaigns WHERE status='scheduled' AND scheduled_at <= NOW() ORDER BY scheduled_at,id LIMIT 10`);
     for (const row of due.rows) {
@@ -279,7 +284,7 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
         catch (error) { await client.query("UPDATE broadcast_deliveries SET error_text=$3 WHERE campaign_id=$1 AND user_id=$2", [campaign.id, row.user_id, String(error?.message || error).slice(0, 500)]); }
       }
       const left = await client.query("SELECT COUNT(*)::int AS count FROM broadcast_deliveries WHERE campaign_id=$1 AND status='sent'", [campaign.id]);
-      if (!Number(left.rows[0]?.count)) await client.query("UPDATE broadcast_campaigns SET status='deleted',deleted_count=$2,updated_at=NOW() WHERE id=$1", [campaign.id, result.deleted]);
+      if (!Number(left.rows[0]?.count)) await client.query("UPDATE broadcast_campaigns SET status='deleted',deleted_count=$2,updated_at=NOW() WHERE id=$1", [campaign.id, deletedForCampaign]);
     }
     return result;
   } finally { client.release(); }

@@ -2,7 +2,7 @@ export const CHAT_PERMISSION_LABELS = {
   photo: 'عکس', gif: 'گیف', video: 'فیلم', text: 'متن', sticker: 'استیکر', emoji: 'ایموجی',
   telegram_link: 'لینک t.me', mention: 'تگ @', english: 'کلمات انگلیسی', profanity: 'الفاظ رکیک',
   voice: 'ویس', music: 'آهنگ', reply: 'ریپلای پیام', timed_photo: 'عکس تایم دار', instagram_link: 'لینک اینستا', website_link: 'لینک سایت', app: 'اپلیکیشن',
-  file: 'فایل', location: 'موقعیت مکانی', contact: 'مخاطب', reaction: 'ری‌اکشن روی پیام',
+  file: 'فایل', location: 'موقعیت مکانی', contact: 'مخاطب', reaction: 'ری‌اکشن روی پیام', privacy: 'حریم خصوصی🫸',
 };
 export const DEFAULT_CHAT_PERMISSIONS = Object.fromEntries(Object.keys(CHAT_PERMISSION_LABELS).map(k => [k, !['profanity'].includes(k)]));
 export function parseDuration(value) {
