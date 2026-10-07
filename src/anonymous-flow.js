@@ -530,7 +530,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       const replyRow = await createOutboxReply(pool, { senderId: id, recipientId: original.sender_id, linkHash: original.link_hash, body });
       await markInboxMessage(pool, messageId, id, 'replied');
       await setState(id, 'anon_menu');
-      await send(original.sender_id, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, outboxActions(replyRow.id));
+      await send(original.sender_id, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, inboxActions(replyRow.id));
       return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
     }
     const outboxReplyMatch = /^anon_outbox_reply:(\d+)$/.exec(state || '');
