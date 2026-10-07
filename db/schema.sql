@@ -110,8 +110,12 @@ CREATE TABLE IF NOT EXISTS anonymous_inbox_messages (
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','replied','blocked')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   responded_at TIMESTAMPTZ,
+  inbox_archived_at TIMESTAMPTZ,
+  outbox_archived_at TIMESTAMPTZ,
   CHECK (sender_id <> recipient_id)
 );
+ALTER TABLE anonymous_inbox_messages ADD COLUMN IF NOT EXISTS inbox_archived_at TIMESTAMPTZ;
+ALTER TABLE anonymous_inbox_messages ADD COLUMN IF NOT EXISTS outbox_archived_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS anonymous_inbox_recipient_idx ON anonymous_inbox_messages(recipient_id,direction,status,id DESC);
 CREATE INDEX IF NOT EXISTS anonymous_inbox_sender_idx ON anonymous_inbox_messages(sender_id,direction,status,id DESC);
 

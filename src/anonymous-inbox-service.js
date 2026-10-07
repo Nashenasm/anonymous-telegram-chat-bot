@@ -92,7 +92,7 @@ export async function queueInboxMessage(pool, { senderId, recipientId, linkKey, 
 export async function listInbox(pool, recipientId, offset = 0, limit = 10) {
   const result = await pool.query(`SELECT m.id,m.sender_id,m.body,m.created_at,l.link_name
     FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash
-    WHERE m.recipient_id=$1 AND m.direction='incoming' AND m.status='pending'
+    WHERE m.recipient_id=$1 AND m.status='pending' AND m.inbox_archived_at IS NULL
     ORDER BY m.id DESC LIMIT $2 OFFSET $3`, [normalizeId(recipientId), limit, Math.max(0, offset)]);
   return result.rows;
 }
@@ -100,9 +100,21 @@ export async function listInbox(pool, recipientId, offset = 0, limit = 10) {
 export async function listOutbox(pool, senderId, offset = 0, limit = 10) {
   const result = await pool.query(`SELECT m.id,m.recipient_id,m.body,m.created_at,m.direction,m.status,l.link_name
     FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash
-    WHERE m.sender_id=$1
+    WHERE m.sender_id=$1 AND m.status='pending' AND m.outbox_archived_at IS NULL
     ORDER BY m.id DESC LIMIT $2 OFFSET $3`, [normalizeId(senderId), limit, Math.max(0, offset)]);
   return result.rows;
+}
+
+export async function archiveInbox(pool, recipientId) {
+  const result = await pool.query(`UPDATE anonymous_inbox_messages SET inbox_archived_at=now()
+    WHERE recipient_id=$1 AND status='pending' AND inbox_archived_at IS NULL`, [normalizeId(recipientId)]);
+  return result.rowCount || 0;
+}
+
+export async function archiveOutbox(pool, senderId) {
+  const result = await pool.query(`UPDATE anonymous_inbox_messages SET outbox_archived_at=now()
+    WHERE sender_id=$1 AND status='pending' AND outbox_archived_at IS NULL`, [normalizeId(senderId)]);
+  return result.rowCount || 0;
 }
 
 export async function getOutboxMessage(pool, id, senderId) {
@@ -120,7 +132,7 @@ export async function blockOutboxMessage(pool, id, senderId) {
 
 export async function markInboxMessage(pool, id, recipientId, status) {
   if (!['replied', 'blocked'].includes(status)) throw new Error('Invalid inbox status');
-  const result = await pool.query(`UPDATE anonymous_inbox_messages SET status=$3,responded_at=now() WHERE id=$1 AND recipient_id=$2 AND direction='incoming' AND status='pending' RETURNING *`, [Number(id), normalizeId(recipientId), status]);
+  const result = await pool.query(`UPDATE anonymous_inbox_messages SET status=$3,responded_at=now() WHERE id=$1 AND recipient_id=$2 AND status='pending' RETURNING *`, [Number(id), normalizeId(recipientId), status]);
   return result.rows[0] || null;
 }
 

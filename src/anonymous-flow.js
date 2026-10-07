@@ -10,7 +10,7 @@ import {
 } from './anonymous-link-service.js';
 import { applyCoinDelta } from './finance-ledger.js';
 import { BONUS_DEFINITIONS, claimBonus } from './bonus-service.js';
-import { createUserLink, getOrCreateUserLinks, listUserLinks, setLinkStatus, renameUserLink, resolveLinkDetails, queueInboxMessage, listInbox, listOutbox, getOutboxMessage, blockOutboxMessage, markInboxMessage, createOutboxReply } from './anonymous-inbox-service.js';
+import { createUserLink, getOrCreateUserLinks, listUserLinks, setLinkStatus, renameUserLink, resolveLinkDetails, queueInboxMessage, listInbox, listOutbox, archiveInbox, archiveOutbox, getOutboxMessage, blockOutboxMessage, markInboxMessage, createOutboxReply } from './anonymous-inbox-service.js';
 
 const CANCEL_WORDS = ['انصراف', 'بازگشت'];
 const MAX_LEN = 4096;
@@ -352,6 +352,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       const [, action, raw] = callbackData.split(':');
       const messageId = Number(raw);
       if (action === 'page') return sendOutbox(id, messageId, callbackQuery);
+      if (action === 'clear') { await archiveOutbox(pool, id); return sendOutbox(id, 0, callbackQuery); }
       if (action === 'reply') {
         const row = await getOutboxMessage(pool, messageId, id);
         if (!row) return updateInline(id, 'این پاسخ دیگر فعال نیست.', backMarkup('alink:menu'), callbackQuery);
@@ -369,6 +370,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     if (callbackData.startsWith('ainbox:')) {
       const [, action, raw] = callbackData.split(':'); const messageId = Number(raw);
       if (action === 'page') return sendInbox(id, messageId, callbackQuery);
+      if (action === 'clear') { await archiveInbox(pool, id); return sendInbox(id, 0, callbackQuery); }
       if (action === 'view') { const row = (await pool.query("SELECT m.id,m.body,l.link_name FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash WHERE m.id=$1 AND m.recipient_id=$2 AND m.status='pending'", [messageId, Number(id)])).rows[0]; return row ? updateInline(id, `✉️ پیام ناشناس\n\n${row.body}\n\n▫️ از لینک: ${row.link_name}`, inboxActions(row.id), callbackQuery) : updateInline(id, 'این پیام دیگر در صندوق فعال نیست.', backMarkup('alink:menu'), callbackQuery); }
       if (action === 'reply') {
         // A reply sent by the link owner is stored as outgoing for the owner,
@@ -377,7 +379,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
         const row = (await pool.query('SELECT sender_id,link_hash FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2', [messageId, Number(id)])).rows[0];
         if (!row) return updateInline(id, 'این پیام دیگر فعال نیست.', backMarkup('alink:menu'), callbackQuery);
         const linkHash = Buffer.isBuffer(row.link_hash) ? row.link_hash.toString('hex') : Buffer.from(row.link_hash).toString('hex');
-        await setState(id, `anon_direct_reply:${row.sender_id}:${linkHash}`);
+        await setState(id, `anon_direct_reply:${messageId}:${row.sender_id}:${linkHash}`);
         return updateInline(id, '💬 پاسخ خود را بفرست؛ این پاسخ مستقیم ارسال می‌شود و به فعال‌بودن صندوق وابسته نیست. برای لغو «بازگشت» را بزن.', { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } }, callbackQuery);
       }
       if (action === 'block') { const row = (await pool.query("SELECT sender_id FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND status='pending'", [messageId, Number(id)])).rows[0]; if (row) { await createAnonymousBlock(pool, id, row.sender_id); await markInboxMessage(pool, messageId, id, 'blocked'); } return updateInline(id, '🚫 کاربر بلاک شد و پیام از صندوق فعال خارج شد.', linkMenuKeyboard(), callbackQuery); }
@@ -542,12 +544,14 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       await send(original.sender_id, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, inboxActions(replyRow.id));
       return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
     }
-    const directReplyMatch = /^anon_direct_reply:(\d+):([0-9a-f]{64})$/.exec(state || '');
+    const directReplyMatch = /^anon_direct_reply:(\d+):(\d+):([0-9a-f]{64})$/.exec(state || '');
     if (directReplyMatch) {
       if (!body || body.length > MAX_LEN) return send(id, LEN_MSG, { reply_markup: { inline_keyboard: [[{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]] } });
-      const targetId = Number(directReplyMatch[1]);
+      const messageId = Number(directReplyMatch[1]);
+      const targetId = Number(directReplyMatch[2]);
       if (await pairIsBlocked(pool, id, targetId)) { await setState(id, 'anon_menu'); return send(id, SAFE_RESPONSES.blocked, linkMenuKeyboard()); }
-      const replyRow = await createOutboxReply(pool, { senderId: id, recipientId: targetId, linkHash: Buffer.from(directReplyMatch[2], 'hex'), body });
+      const replyRow = await createOutboxReply(pool, { senderId: id, recipientId: targetId, linkHash: Buffer.from(directReplyMatch[3], 'hex'), body });
+      await markInboxMessage(pool, messageId, id, 'replied');
       await setState(id, 'anon_menu');
       await send(targetId, `💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\n${body}`, inboxActions(replyRow.id));
       return send(id, '✅ پاسخ ارسال شد.', linkMenuKeyboard());
@@ -569,6 +573,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     const text = rows.length ? rows.map((r) => `✉️ ${r.body}\n▫️ از: ${r.link_name}\n▫️ ${new Date(r.created_at).toLocaleString('fa-IR')}`).join('\n\n') : 'صندوق دریافتت خالی است.';
     const buttons = rows.map((r) => [{ text: `💬 مدیریت پیام ${r.id}`, callback_data: `ainbox:view:${r.id}` }]);
     if (rows.length === 10) buttons.push([{ text: '📜 پیام‌های قدیمی‌تر', callback_data: `ainbox:page:${offset + 10}` }]);
+    buttons.push([{ text: '🧹 پاکسازی صندوق دریافت', callback_data: 'ainbox:clear' }]);
     buttons.push([{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
     return updateInline(id, `📥 صندوق دریافت\n\n${text}`, { reply_markup: { inline_keyboard: buttons } }, callbackQuery);
   };
@@ -576,6 +581,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
     const rows = await listOutbox(pool, id, offset);
     const text = rows.length ? rows.map((r) => `📨 ${r.body}\n▫️ از لینک: ${r.link_name}\n▫️ ${new Date(r.created_at).toLocaleString('fa-IR')}`).join('\n\n') : 'صندوق ارسال خالی است.';
     const buttons = rows.length === 10 ? [[{ text: '📜 پیام‌های قدیمی‌تر', callback_data: `aout:page:${offset + 10}` }]] : [];
+    buttons.push([{ text: '🧹 پاکسازی صندوق ارسال', callback_data: 'aout:clear' }]);
     buttons.push([{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
     return updateInline(id, `📤 صندوق ارسال\n\n${text}`, { reply_markup: { inline_keyboard: buttons } }, callbackQuery);
   };
