@@ -53,4 +53,19 @@ describe('anonymous inbox and multi-link service', () => {
     await expect(createUserLink(pool, 100, 'چهارم', 'bot-token', 'my_bot')).resolves.toMatchObject({ limited: true, limit: 3 });
     expect(calls.some(([sql]) => sql.includes('FOR UPDATE'))).toBe(true);
   });
+
+  it('returns a short callback key while retaining the full token key', async () => {
+    const full = 'a'.repeat(64);
+    const short = full.slice(0, 40);
+    const { pool } = poolWith(async (sql) => {
+      if (sql.includes('SELECT plus_expires_at')) return { rows: [{ plus_expires_at: null }], rowCount: 1 };
+      if (sql.includes('COUNT(*)')) return { rows: [{ count: 0 }], rowCount: 1 };
+      if (sql.includes('INSERT INTO anon_links')) return { rows: [{ token_key: full, callback_key: short, token_value: 'b'.repeat(64), link_name: 'لینک تست', status: 'active', created_at: new Date() }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+    const result = await createUserLink(pool, 100, 'لینک تست', 'bot-token', 'my_bot');
+    expect(result.token_key).toHaveLength(64);
+    expect(result.callback_key).toHaveLength(40);
+    expect(result.url).toContain('?start=');
+  });
 });

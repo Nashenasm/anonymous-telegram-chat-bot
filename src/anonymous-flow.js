@@ -332,7 +332,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       if (action === 'list') { await setState(id, 'anon_menu'); return sendLinkList(id); }
       if (action === 'new') { await setState(id, 'anon_new_name'); return send(id, '✏️ نام لینک جدید را بفرست؛ برای نام تصادفی «تصادفی» بنویس.', { reply_markup: { inline_keyboard: [[{ text: '🎲 نام تصادفی', callback_data: 'alink:random' }], [{ text: '↩️ بازگشت', callback_data: 'alink:list' }]] } }); }
       if (action === 'random') { await setState(id, 'anon_new_name'); return handlePanelText(id, 'تصادفی', 'anon_new_name'); }
-      if (action === 'view') { const row = (await pool.query("SELECT token_value,link_name,status FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex')=$2 AND status<>'revoked'", [Number(id), key])).rows[0]; if (!row) return send(id, 'این لینک پیدا نشد.', backMarkup('alink:list')); const username = await ensureBotUsername(); return sendLink(id, `🔗 ${row.link_name}\nوضعیت: ${row.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\nhttps://t.me/${String(username).replace(/^@+/, '')}?start=${row.token_value}`, linkControls(key, row.status)); }
+      if (action === 'view') { const row = (await pool.query("SELECT token_value,link_name,status FROM anon_links WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked'", [Number(id), key])).rows[0]; if (!row) return send(id, 'این لینک پیدا نشد.', backMarkup('alink:list')); const username = await ensureBotUsername(); return sendLink(id, `🔗 ${row.link_name}\nوضعیت: ${row.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\nhttps://t.me/${String(username).replace(/^@+/, '')}?start=${row.token_value}`, linkControls(key, row.status)); }
       if (action === 'close' || action === 'open') { const row = await setLinkStatus(pool, id, key, action === 'close' ? 'closed' : 'active'); return send(id, row ? `✅ لینک «${row.link_name}» ${action === 'close' ? 'بسته' : 'باز'} شد.` : 'عملیات روی لینک انجام نشد.', backMarkup('alink:list')); }
       if (action === 'rename') { await setState(id, `anon_rename_link:${key}`); return send(id, 'نام جدید لینک را بفرست.', backMarkup('alink:list')); }
       if (action === 'revoke') { await setState(id, `anon_revoke_confirm:${key}`); return send(id, '⚠️ باطل‌سازی دائمی است و لینک دیگر قابل بازگشت نیست. تأیید می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: '✅ بله، باطل کن', callback_data: `alink:revoke_yes:${key}` }, { text: '↩️ انصراف', callback_data: 'alink:list' }]] } }); }
@@ -469,7 +469,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
   const sendLinkList = async (id) => {
     const username = await ensureBotUsername();
     const links = await getOrCreateUserLinks(pool, id, process.env.TELEGRAM_BOT_TOKEN, username);
-    const keyboard = links.map((row) => [{ text: `${row.status === 'active' ? '🟢' : '⚪'} ${row.link_name}`, callback_data: `alink:view:${row.token_key}` }]);
+    const keyboard = links.map((row) => [{ text: `${row.status === 'active' ? '🟢' : '⚪'} ${row.link_name}`, callback_data: `alink:view:${row.callback_key || row.token_key.slice(0, 40)}` }]);
     keyboard.push([{ text: '➕ لینک جدید', callback_data: 'alink:new' }], [{ text: '↩️ بازگشت', callback_data: 'alink:menu' }]);
     return send(id, `🗂 لینک های من\n\n${links.length ? links.map((x, i) => `${i + 1}. ${x.status === 'active' ? 'فعال' : 'بسته'} — ${x.link_name}`).join('\n') : 'هنوز لینکی نساخته‌ای.'}`, { reply_markup: { inline_keyboard: keyboard } });
   };
@@ -497,7 +497,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       const result = await createUserLink(pool, id, body === 'تصادفی' || body === 'بدون نام' ? '' : body, process.env.TELEGRAM_BOT_TOKEN, username);
       await setState(id, 'anon_menu');
       if (result.limited) return send(id, `ظرفیت ساخت لینک تکمیل است؛ سقف حساب شما ${result.limit} لینک است.`, linkMenuKeyboard());
-      return sendLink(id, `✅ لینک جدید ساخته شد\n\n🔗 ${result.link_name}\n${result.url}`, linkControls(result.token_key, 'active'));
+      return sendLink(id, `✅ لینک جدید ساخته شد\n\n🔗 ${result.link_name}\n${result.url}`, linkControls(result.callback_key || result.token_key.slice(0, 40), 'active'));
     }
     const replyMatch = /^anon_inbox_reply:(\d+)$/.exec(state || '');
     if (replyMatch) {
@@ -573,7 +573,7 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       if (!links.length) return replyWith('ظرفیت ساخت لینک تکمیل است. کاربران عادی حداکثر ۳ و کاربران Plus حداکثر ۱۰ لینک دارند.');
       await setState(sid, 'anon_menu');
       for (const link of links) {
-        await sendLink(sid, `🔗 ${link.link_name}\nوضعیت: ${link.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\n${link.url || `https://t.me/${username}?start=${link.token_key}`}`, linkControls(link.token_key, link.status));
+        await sendLink(sid, `🔗 ${link.link_name}\nوضعیت: ${link.status === 'active' ? '🟢 فعال' : '⚪ بسته'}\n\n${link.url || `https://t.me/${username}?start=${link.token_key}`}`, linkControls(link.callback_key || link.token_key.slice(0, 40), link.status));
       }
       await send(sid, linkMenuText(), linkMenuKeyboard());
       return true;

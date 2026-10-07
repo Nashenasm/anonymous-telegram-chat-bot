@@ -17,7 +17,7 @@ export function linkLimitForUser(user) {
 
 export async function listUserLinks(pool, userId, { includeClosed = true } = {}) {
   const statusClause = includeClosed ? "status IN ('active','closed')" : "status='active'";
-  const result = await pool.query(`SELECT encode(token_hash,'hex') AS token_key, token_value, token_hash, link_name, status, created_at, closed_at
+  const result = await pool.query(`SELECT encode(token_hash,'hex') AS token_key, substring(encode(token_hash,'hex') from 1 for 40) AS callback_key, token_value, token_hash, link_name, status, created_at, closed_at
     FROM anon_links WHERE telegram_id=$1 AND ${statusClause} ORDER BY created_at ASC`, [normalizeId(userId)]);
   return result.rows;
 }
@@ -34,7 +34,7 @@ export async function createUserLink(pool, userId, name, botToken, username) {
     const limit = linkLimitForUser(user);
     const count = Number((await client.query("SELECT COUNT(*)::int AS count FROM anon_links WHERE telegram_id=$1 AND status IN ('active','closed')", [id])).rows[0]?.count || 0);
     if (count >= limit) return { limited: true, limit };
-    const row = (await client.query(`INSERT INTO anon_links(token_hash,token_value,telegram_id,link_name,status) VALUES($1,$2,$3,$4,'active') RETURNING encode(token_hash,'hex') AS token_key,token_value,link_name,status,created_at`, [digest, token, id, safeName])).rows[0];
+    const row = (await client.query(`INSERT INTO anon_links(token_hash,token_value,telegram_id,link_name,status) VALUES($1,$2,$3,$4,'active') RETURNING encode(token_hash,'hex') AS token_key,substring(encode(token_hash,'hex') from 1 for 40) AS callback_key,token_value,link_name,status,created_at`, [digest, token, id, safeName])).rows[0];
     return { row, token };
   });
   if (result.limited) return result;
@@ -63,14 +63,14 @@ export async function resolveLinkDetails(pool, rawToken) {
 export async function setLinkStatus(pool, userId, tokenKey, status) {
   if (!['active', 'closed', 'revoked'].includes(status)) throw new Error('Invalid link status');
   const result = await pool.query(`UPDATE anon_links SET status=$3,closed_at=CASE WHEN $3='closed' THEN now() ELSE NULL END,revoked_at=CASE WHEN $3='revoked' THEN now() ELSE revoked_at END
-    WHERE telegram_id=$1 AND encode(token_hash,'hex')=$2 AND status<>'revoked' RETURNING encode(token_hash,'hex') AS token_key,link_name,status`, [normalizeId(userId), String(tokenKey), status]);
+    WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked' RETURNING encode(token_hash,'hex') AS token_key,substring(encode(token_hash,'hex') from 1 for 40) AS callback_key,link_name,status`, [normalizeId(userId), String(tokenKey), status]);
   return result.rows[0] || null;
 }
 
 export async function renameUserLink(pool, userId, tokenKey, name) {
   const safeName = String(name || '').trim().slice(0, 48);
   if (!safeName) return null;
-  const result = await pool.query(`UPDATE anon_links SET link_name=$3 WHERE telegram_id=$1 AND encode(token_hash,'hex')=$2 AND status<>'revoked' RETURNING encode(token_hash,'hex') AS token_key,link_name,status`, [normalizeId(userId), String(tokenKey), safeName]);
+  const result = await pool.query(`UPDATE anon_links SET link_name=$3 WHERE telegram_id=$1 AND encode(token_hash,'hex') LIKE $2 || '%' AND status<>'revoked' RETURNING encode(token_hash,'hex') AS token_key,substring(encode(token_hash,'hex') from 1 for 40) AS callback_key,link_name,status`, [normalizeId(userId), String(tokenKey), safeName]);
   return result.rows[0] || null;
 }
 
