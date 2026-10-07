@@ -371,7 +371,10 @@ export function createAnonymousFlow({ pool, send, sendLink = send, sendAsUser = 
       if (action === 'page') return sendInbox(id, messageId, callbackQuery);
       if (action === 'view') { const row = (await pool.query("SELECT m.id,m.body,l.link_name FROM anonymous_inbox_messages m JOIN anon_links l ON l.token_hash=m.link_hash WHERE m.id=$1 AND m.recipient_id=$2 AND m.status='pending'", [messageId, Number(id)])).rows[0]; return row ? updateInline(id, `✉️ پیام ناشناس\n\n${row.body}\n\n▫️ از لینک: ${row.link_name}`, inboxActions(row.id), callbackQuery) : updateInline(id, 'این پیام دیگر در صندوق فعال نیست.', backMarkup('alink:menu'), callbackQuery); }
       if (action === 'reply') {
-        const row = (await pool.query("SELECT sender_id,link_hash FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2 AND direction='incoming'", [messageId, Number(id)])).rows[0];
+        // A reply sent by the link owner is stored as outgoing for the owner,
+        // but it is still a received message for this recipient. Ownership of
+        // recipient_id is the invariant that matters for this button.
+        const row = (await pool.query('SELECT sender_id,link_hash FROM anonymous_inbox_messages WHERE id=$1 AND recipient_id=$2', [messageId, Number(id)])).rows[0];
         if (!row) return updateInline(id, 'این پیام دیگر فعال نیست.', backMarkup('alink:menu'), callbackQuery);
         const linkHash = Buffer.isBuffer(row.link_hash) ? row.link_hash.toString('hex') : Buffer.from(row.link_hash).toString('hex');
         await setState(id, `anon_direct_reply:${row.sender_id}:${linkHash}`);

@@ -190,8 +190,9 @@ describe('anonymous deep-link flow', () => {
   });
 
   it('sends a received-message reply directly without requiring a pending inbox row', async () => {
-    const { flow, states, send } = harness();
+    const { flow, pool, states, send } = harness();
     await expect(flow.handleCallback(200, 'ainbox:reply:7')).resolves.toBeUndefined();
+    expect(pool.query.mock.calls.some(([sql]) => sql.includes("direction='incoming'"))).toBe(false);
     expect(states.get('200')).toBe(`anon_direct_reply:100:${'07'.repeat(32)}`);
     await expect(flow.handleText(200, 'پاسخ مستقیم', states.get('200'))).resolves.toBeUndefined();
     expect(send).toHaveBeenCalledWith(100, '💬 پاسخ جدیدی به پیام ناشناس شما رسید:\n\nپاسخ مستقیم', expect.objectContaining({ reply_markup: expect.any(Object) }));
