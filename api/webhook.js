@@ -1539,7 +1539,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     try { s = await settings(c); } finally { c.release(); }
     return flowFor(s).handleCallback(id, data, callbackQuery);
   }
-  if (data.startsWith('alink:') || data.startsWith('ainbox:')) {
+  if (data.startsWith('alink:') || data.startsWith('ainbox:') || data.startsWith('aout:')) {
     const c = await pool.connect();
     let s;
     try { s = await settings(c); } finally { c.release(); }
