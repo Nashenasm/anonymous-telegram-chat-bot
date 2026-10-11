@@ -2020,7 +2020,7 @@ async function handleMandatoryAudienceCallback(id, data, callbackQuery) {
         return editAudienceCallback(callbackQuery, id, `${message}\n\n${mandatoryAudienceReviewText(draft)}`, mandatoryAudienceReviewKeyboard());
       }
     }
-    return send(id, 'این گزینه معتبر نیست.');
+    return send(id, 'این گزینه معتبر نیست.', chatKeyboard(s, isAdmin(id)));
   } finally { client.release(); }
 }
 
@@ -3100,7 +3100,9 @@ async function processUpdate(update) {
   if (!inserted.rowCount) return;
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
-  if (callback?.game_short_name === 'Coin_rush') {
+  const callbackGameName = String(callback?.game_short_name || '').trim();
+  if (callbackGameName.toLowerCase() === 'coin_rush') {
+    console.info('coin_rush_play_callback', { game_short_name: callbackGameName, user_id: callback.from?.id });
     if (!isAdmin(Number(callback.from?.id))) {
       const ban = await activeBanFor(Number(callback.from?.id));
       if (ban) { await send(Number(callback.from.id), bannedMessage(ban)); return; }
