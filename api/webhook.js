@@ -255,7 +255,7 @@ function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(pub
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
 function chatKeyboard(settings, liveControl = false) { const base = screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)] ]); const extras = []; if (settings.mid_chat_games_enabled !== 'false') extras.push('بازی'); if (settings.mid_chat_ideas_enabled !== 'false') extras.push('ایده صحبت'); extras.push('هدیه دادن'); if (liveControl) extras.push('کنترل این کاربر'); return replyKeyboard([...base, ...(extras.length ? [extras] : [])]); }
-function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '✅ حقیقت یا جرئت', callback_data: 'game:truth-or-dare' }], [{ text: '🪙 Coin Rush (تست)', url: 'https://bot.manochat.xyz/game/coin-rush.html' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
+function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '✅ حقیقت یا جرئت', callback_data: 'game:truth-or-dare' }], [{ text: '🪙 Coin Rush', callback_data: 'game:coin-rush' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
@@ -1775,6 +1775,10 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('gift:view:') && isAdmin(id)) { const code = data.slice('gift:view:'.length); const row = (await sClient.query('SELECT * FROM gift_codes WHERE code=$1', [code])).rows[0]; if (!row) return send(id, 'این کد دیگر وجود ندارد.', giftManagementKeyboard()); return send(id, `کد هدیه: ${row.code}\nوضعیت: ${giftStatus(row)}\nمانو کوین: ${row.coins}\nمانو پلاس: ${row.plus_days} روز\nاستفاده: ${row.uses}${row.max_uses ? `/${row.max_uses}` : ''}\nانقضا: ${row.expires_at ? iranDate(row.expires_at) : 'بدون انقضا'}`, giftCodeKeyboard(code)); }
     if (data.startsWith('gift:cancel:') && isAdmin(id)) { const code = data.slice('gift:cancel:'.length); await sClient.query('UPDATE gift_codes SET expires_at=NOW() WHERE code=$1', [code]); await audit(sClient, id, null, 'gift_code_cancel', { code }); await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data.startsWith('gift:increase:') && isAdmin(id)) { const code = data.slice('gift:increase:'.length); await updateAction(sClient, id, `admin:gift:increase:${code}`); return send(id, 'افزایش را با قالب «کوین,روز پلاس» بفرست؛ مثال: 100,0 یا 0,30.'); }
+    if (data === 'game:coin-rush' && me.status === 'chatting' && me.partner_id) {
+      await telegram('sendGame', { chat_id: id, game_short_name: 'Coin_rush' });
+      return true;
+    }
     if (data === 'game:truth-or-dare' && me.status === 'chatting' && me.partner_id) {
       await send(Number(me.partner_id), '🎲 طرف مقابل درخواست بازی «حقیقت یا جرئت» داده است. قبول می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: 'قبول', callback_data: `game:accept:${id}` }, { text: 'رد', callback_data: `game:reject:${id}` }]] } });
       return send(id, 'درخواست بازی برای طرف مقابل ارسال شد.', chatKeyboard(s, isAdmin(id)));
@@ -3077,6 +3081,14 @@ async function processUpdate(update) {
   if (!inserted.rowCount) return;
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
+  if (callback?.game_short_name === 'Coin_rush') {
+    if (!isAdmin(Number(callback.from?.id))) {
+      const ban = await activeBanFor(Number(callback.from?.id));
+      if (ban) { await send(Number(callback.from.id), bannedMessage(ban)); return; }
+    }
+    await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: 'https://bot.manochat.xyz/game/coin-rush.html' });
+    return;
+  }
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
   const reportChannelId = callback?.message?.chat?.id ? await pool.query("SELECT value FROM bot_settings WHERE key='broadcast_report_channel_id'").then(r => r.rows[0]?.value || '') : '';
   const broadcastReportControl = Boolean(reportChannelId && String(callback?.message?.chat?.id) === String(reportChannelId) && callbackData.startsWith('broadcast:'));
