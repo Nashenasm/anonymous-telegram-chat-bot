@@ -14,7 +14,7 @@ describe('mid-chat duel games', () => {
     const page = fs.readFileSync(new URL('../game/duel.html', import.meta.url), 'utf8');
     expect(server).toContain('/api/game/');
     expect(webhook).toContain('createDuelSession');
-    expect(webhook).toContain('game_short_name: game.shortName');
+    expect(webhook).toContain('sendDuelGame(requester, gameType)');
     expect(page).toContain('/api/game/action');
     expect(page).toContain('گفت‌وگوی داخل بازی');
   });
