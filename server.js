@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import webhook from './api/webhook.js';
+import webhook, { coinRushApi, ensureCoinRushRuntimeSchema } from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
 import cryptoJobs from './api/crypto-jobs.js';
 import mandatoryTrack from './api/mandatory-track.js';
@@ -25,6 +25,18 @@ const server = http.createServer(async (req, res) => {
       return res.end('game_not_found');
     }
   }
+  const requestUrl = new URL(req.url, 'http://localhost');
+  if (requestUrl.pathname.startsWith('/api/coin-rush/')) {
+    try { await ensureCoinRushRuntimeSchema(); } catch (error) { console.error('coin_rush_schema_error', error?.message || error); res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_unavailable' })); }
+    let body = {};
+    if (req.method === 'POST') {
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > maxBody) break; }
+      try { body = JSON.parse(raw || '{}'); } catch { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'invalid_json' })); }
+    }
+    try { return await coinRushApi({ method: req.method, query: Object.fromEntries(requestUrl.searchParams), body }, res); }
+    catch (error) { console.error('coin_rush_api_error', error?.message || error); res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_error' })); }
+  }
   if (req.url === '/api/mandatory-jobs') {
     const response = {
       statusCode: 200,
@@ -45,7 +57,6 @@ const server = http.createServer(async (req, res) => {
     catch (error) { console.error('crypto_jobs_server_error', error?.message || error); if (!res.writableEnded) { res.writeHead(500); res.end(JSON.stringify({ ok: false })); } }
     return;
   }
-  const requestUrl = new URL(req.url, 'http://localhost');
   if (requestUrl.pathname === '/api/mandatory-track') {
     const response = {
       statusCode: 200,

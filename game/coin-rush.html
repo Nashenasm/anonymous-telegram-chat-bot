@@ -1,47 +1,39 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>Coin Rush | ManoChat</title>
-  <style>
-    :root{color-scheme:dark;--bg:#10131d;--panel:#191e2d;--gold:#ffd166;--cyan:#6ee7f9;--muted:#aeb8cc}
-    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 50% 0,#293353 0,#10131d 55%);font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#fff;overflow:hidden}
-    .wrap{width:min(94vw,520px);margin:auto;padding:22px 0}.brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.brand h1{font-size:25px;margin:0;letter-spacing:-.5px}.tag{color:var(--cyan);font-size:12px;font-weight:700;letter-spacing:1px}
-    .stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-bottom:12px}.stat{background:#ffffff0d;border:1px solid #ffffff18;border-radius:16px;padding:10px;text-align:center}.stat b{display:block;font-size:22px;color:var(--gold)}.stat span{font-size:11px;color:var(--muted)}
-    #arena{position:relative;height:min(70vh,520px);min-height:390px;border:1px solid #ffffff1c;border-radius:26px;background:linear-gradient(145deg,#ffffff0d,#ffffff03);box-shadow:0 20px 80px #0006;overflow:hidden;touch-action:manipulation}
-    #arena:before{content:"";position:absolute;inset:0;background-image:linear-gradient(#ffffff08 1px,transparent 1px),linear-gradient(90deg,#ffffff08 1px,transparent 1px);background-size:34px 34px;opacity:.45}
-    #hint{position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);padding:28px;line-height:1.8;pointer-events:none}.start{pointer-events:auto;border:0;border-radius:999px;padding:13px 28px;font-weight:800;font-size:16px;color:#19130b;background:linear-gradient(135deg,#ffe29a,#ffb703);box-shadow:0 10px 25px #ffb70333;cursor:pointer}
-    .coin{position:absolute;width:62px;height:62px;border-radius:50%;border:3px solid #fff8;background:radial-gradient(circle at 35% 30%,#fff3a8 0 12%,#ffd166 30%,#e09b16 100%);box-shadow:0 0 0 5px #ffd16622,0 8px 20px #0007;display:grid;place-items:center;font-size:27px;cursor:pointer;animation:pop .12s ease-out;user-select:none}.coin:active{transform:scale(.84)}
-    @keyframes pop{from{transform:scale(.2) rotate(-20deg);opacity:0}to{transform:scale(1) rotate(0);opacity:1}}.float{position:absolute;color:#ffe6a2;font-weight:900;pointer-events:none;animation:float 650ms ease-out forwards}@keyframes float{to{transform:translateY(-45px);opacity:0}}
-    #result{display:none;position:absolute;inset:0;background:#10131de8;backdrop-filter:blur(7px);place-items:center;text-align:center;padding:24px}.card{background:var(--panel);border:1px solid #ffffff1c;border-radius:22px;padding:25px;width:min(90%,350px)}.card h2{margin:0 0 10px}.big{font-size:52px;color:var(--gold);font-weight:900;margin:6px}.small{color:var(--muted);font-size:13px;margin-bottom:18px}.actions{display:flex;gap:9px;justify-content:center;flex-wrap:wrap}.secondary{border:1px solid #ffffff25;background:#ffffff0d;color:#fff;border-radius:999px;padding:12px 19px;font-weight:700;cursor:pointer}
-    footer{text-align:center;color:#7f8ba4;font-size:11px;padding:12px}
-  </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Coin Rush دو نفره | ManoChat</title>
+<style>
+:root{color-scheme:dark;--bg:#0c1020;--panel:#171d31;--line:#ffffff1b;--gold:#ffd166;--cyan:#67e8f9;--pink:#fb7185;--muted:#aab4cc}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% 0,#293b63 0,#0c1020 52%);font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#fff}.wrap{width:min(94vw,560px);margin:auto;padding:18px 0 24px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.eyebrow{font-size:11px;color:var(--cyan);font-weight:800;letter-spacing:1.5px}.title{font-size:26px;font-weight:900;margin:2px 0}.room{font-size:11px;color:var(--muted);direction:ltr}.scores{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}.score{position:relative;background:#ffffff0c;border:1px solid var(--line);border-radius:18px;padding:11px 13px;overflow:hidden}.score:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--cyan)}.score.opponent:before{background:var(--pink)}.score .label{color:var(--muted);font-size:11px}.score b{display:block;font-size:30px;color:var(--gold);line-height:1.1;margin-top:3px}.score .state{font-size:11px;color:#dbeafe}.bar{height:6px;background:#ffffff12;border-radius:8px;margin-top:7px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),#818cf8);transition:width .2s}.opponent .bar i{background:linear-gradient(90deg,var(--pink),#f59e0b)}#status{background:#ffffff0b;border:1px solid var(--line);border-radius:14px;padding:10px 13px;text-align:center;color:#dbeafe;font-size:13px;margin-bottom:10px}.arena{position:relative;height:min(66vh,470px);min-height:360px;border:1px solid var(--line);border-radius:26px;background:linear-gradient(145deg,#ffffff0d,#ffffff03);box-shadow:0 18px 70px #0008;overflow:hidden;touch-action:manipulation}.arena:before{content:"";position:absolute;inset:0;background-image:linear-gradient(#ffffff07 1px,transparent 1px),linear-gradient(90deg,#ffffff07 1px,transparent 1px);background-size:34px 34px}.coin{position:absolute;width:64px;height:64px;border-radius:50%;border:3px solid #fff9;background:radial-gradient(circle at 35% 28%,#fff4a3 0 12%,#ffd166 30%,#d58c0e 100%);box-shadow:0 0 0 6px #ffd16620,0 8px 22px #0008;display:grid;place-items:center;font-size:28px;cursor:pointer;animation:pop .12s ease-out;z-index:2}.coin:active{transform:scale(.82)}@keyframes pop{from{transform:scale(.2) rotate(-20deg);opacity:0}to{transform:scale(1);opacity:1}}.overlay{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:20px;background:#0c1020d9;backdrop-filter:blur(8px);z-index:4}.card{width:min(92%,380px);background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:24px;box-shadow:0 18px 55px #0008}.card h2{margin:0 0 9px;font-size:22px}.card p{color:var(--muted);line-height:1.8;font-size:13px;margin:8px 0 18px}.btn{border:0;border-radius:999px;padding:13px 25px;font-weight:900;font-size:15px;cursor:pointer;background:linear-gradient(135deg,#ffe29a,#ffb703);color:#211708;box-shadow:0 10px 24px #ffb70333}.btn:disabled{opacity:.45;cursor:wait}.ghost{margin-top:10px;background:#ffffff0d;color:#fff;border:1px solid var(--line);box-shadow:none}.result{font-size:44px;color:var(--gold);font-weight:900}.tiny{font-size:11px;color:#7f8ba4;text-align:center;margin-top:11px}.hide{display:none!important}.spark{position:absolute;color:#ffe6a2;font-weight:900;pointer-events:none;z-index:3;animation:float .65s ease-out forwards}@keyframes float{to{transform:translateY(-45px);opacity:0}}
+</style>
 </head>
-<body>
-  <main class="wrap">
-    <div class="brand"><div><div class="tag">MANOCHAT MINI GAME</div><h1>Coin Rush</h1></div><div>🪙</div></div>
-    <section class="stats"><div class="stat"><b id="score">0</b><span>امتیاز</span></div><div class="stat"><b id="time">30</b><span>ثانیه</span></div><div class="stat"><b id="best">0</b><span>رکورد</span></div></section>
-    <section id="arena" aria-label="زمین بازی">
-      <div id="hint"><div><p>در ۳۰ ثانیه هرچه سکهٔ بیشتری بگیری امتیازت بالاتر می‌رود.</p><button class="start" id="start">شروع بازی</button></div></div>
-      <div id="result"><div class="card"><h2>بازی تمام شد</h2><div class="big" id="final">0</div><div class="small" id="recordText">امتیاز تو ثبت شد.</div><div class="actions"><button class="start" id="again">دوباره بازی کن</button><button class="secondary" id="close">بستن</button></div></div></div>
-    </section>
-    <footer>نسخهٔ تستی — امتیازها فعلاً فقط روی همین دستگاه ذخیره می‌شوند.</footer>
-  </main>
-  <script>
-    (() => {
-      const arena=document.getElementById('arena'), hint=document.getElementById('hint'), result=document.getElementById('result');
-      const scoreEl=document.getElementById('score'), timeEl=document.getElementById('time'), bestEl=document.getElementById('best');
-      const finalEl=document.getElementById('final'), recordText=document.getElementById('recordText');
-      let score=0,time=30,timer=null,active=false,coin=null;
-      const key='manochat_coin_rush_best'; let best=Number(localStorage.getItem(key)||0); bestEl.textContent=best;
-      function placeCoin(){ if(!active)return; coin?.remove(); coin=document.createElement('button'); coin.className='coin'; coin.type='button'; coin.textContent='🪙'; const maxX=Math.max(4,arena.clientWidth-70),maxY=Math.max(4,arena.clientHeight-70); coin.style.left=Math.round(4+Math.random()*maxX)+'px'; coin.style.top=Math.round(4+Math.random()*maxY)+'px'; coin.addEventListener('click',hit,{once:true}); arena.appendChild(coin); }
-      function hit(e){ if(!active)return; score++; scoreEl.textContent=score; const f=document.createElement('span'); f.className='float'; f.textContent='+1'; f.style.left=e.target.offsetLeft+22+'px'; f.style.top=e.target.offsetTop+4+'px'; arena.appendChild(f); setTimeout(()=>f.remove(),700); placeCoin(); }
-      function finish(){active=false;clearInterval(timer);timer=null;coin?.remove();coin=null;finalEl.textContent=score;if(score>best){best=score;localStorage.setItem(key,String(best));bestEl.textContent=best;recordText.textContent='رکورد جدید ثبت شد!';}else recordText.textContent='امتیاز تو ثبت شد.';result.style.display='grid';}
-      function start(){score=0;time=30;active=true;scoreEl.textContent='0';timeEl.textContent='30';hint.style.display='none';result.style.display='none';placeCoin();timer=setInterval(()=>{time--;timeEl.textContent=time;if(time<=0)finish()},1000)}
-      document.getElementById('start').onclick=start;document.getElementById('again').onclick=start;document.getElementById('close').onclick=()=>{result.style.display='none';hint.style.display='grid';scoreEl.textContent='0';timeEl.textContent='30'};
-      window.addEventListener('resize',()=>{if(active)placeCoin()});
-    })();
-  </script>
-</body>
-</html>
+<body><main class="wrap">
+<header class="top"><div><div class="eyebrow">MANOCHAT DUEL ROOM</div><div class="title">Coin Rush</div><div class="room" id="room">room</div></div><div style="font-size:34px">🪙</div></header>
+<section class="scores"><div class="score"><span class="label">تو</span><b id="mine">0</b><span class="state" id="mineState">آماده نیستی</span><div class="bar"><i id="mineBar"></i></div></div><div class="score opponent"><span class="label">طرف مقابل</span><b id="other">0</b><span class="state" id="otherState">در حال ورود...</span><div class="bar"><i id="otherBar"></i></div></div></section>
+<div id="status">در حال اتصال به اتاق بازی...</div>
+<section class="arena" id="arena"><div id="overlay" class="overlay"><div class="card"><h2 id="overlayTitle">اتاق بازی</h2><p id="overlayText">در حال بررسی حضور هر دو بازیکن...</p><button id="ready" class="btn">آماده‌ام</button><button id="leave" class="btn ghost">خروج</button></div></div></section>
+<div class="tiny">مسابقه ۳۰ ثانیه‌ای است؛ امتیاز هر دو نفر زنده به‌روزرسانی می‌شود.</div>
+</main>
+<script>
+(()=>{
+ const q=new URLSearchParams(location.search), room=q.get('room'), player=q.get('player'), token=q.get('token');
+ const $=id=>document.getElementById(id), arena=$('arena'), overlay=$('overlay'), ready=$('ready'), leave=$('leave');
+ let state=null, poll=null, coin=null, playing=false, maxScore=1;
+ $('room').textContent=room?`اتاق ${room.slice(0,8)}`:'اتاق نامعتبر';
+ const valid=room&&player&&token;
+ async function api(action){const r=await fetch('/api/coin-rush/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room,player,token,action})});if(!r.ok)throw new Error('api');const j=await r.json();return j.state}
+ async function load(){if(!valid){fail('لینک بازی ناقص است. از داخل دعوت جدید وارد شوید.');return}try{const r=await fetch(`/api/coin-rush/state?room=${encodeURIComponent(room)}&player=${encodeURIComponent(player)}&token=${encodeURIComponent(token)}`);if(!r.ok)throw new Error('session');const j=await r.json();render(j.state)}catch{fail('اتاق بازی پیدا نشد یا منقضی شده است. یک دعوت جدید بسازید.')}}
+ function fail(t){$('status').textContent=t;ready.disabled=true;overlay.classList.remove('hide');$('overlayTitle').textContent='بازی در دسترس نیست';$('overlayText').textContent=t}
+ function render(s){state=s;maxScore=Math.max(1,s.score,s.opponentScore);$('mine').textContent=s.score;$('other').textContent=s.opponentScore;$('mineBar').style.width=Math.min(100,s.score/maxScore*100)+'%';$('otherBar').style.width=Math.min(100,s.opponentScore/maxScore*100)+'%';$('mineState').textContent=s.ready?'آماده':'آماده نیستی';$('otherState').textContent=s.opponentReady?'آماده است':'در حال آماده‌شدن...';
+  if(s.status==='waiting'){playing=false;overlay.classList.remove('hide');$('overlayTitle').textContent=s.opponentReady?'هر دو آماده‌اید':'منتظر طرف مقابل';$('overlayText').textContent=s.opponentReady?'روی «آماده‌ام» بزن تا شمارش معکوس شروع شود.':'طرف مقابل هنوز وارد اتاق نشده یا آماده نشده است.';ready.textContent=s.ready?'منتظر شروع...':'آماده‌ام';ready.disabled=s.ready; $('status').textContent=s.opponentReady?'طرف مقابل آماده است؛ نوبت توست.':'حضور طرف مقابل در اتاق ثبت شد.';return}
+  if(s.status==='active'){overlay.classList.add('hide');const left=s.remainingMs??0;if(s.countdownMs>0){playing=false;$('status').textContent=`شروع بازی تا ${Math.ceil(s.countdownMs/1000)}...`;removeCoin();}else if(left>0){playing=true;$('status').textContent=`${Math.ceil(left/1000)} ثانیه باقی مانده`;if(!coin)spawn();}else{playing=false;removeCoin()}return}
+  if(s.status==='finished'){playing=false;removeCoin();overlay.classList.remove('hide');const result=s.score===s.opponentScore?'مساوی شد!':s.score>s.opponentScore?'بردی!':'این دور را باختی';$('overlayTitle').textContent='🏁 '+result;$('overlayText').textContent=`نتیجه نهایی: تو ${s.score} — طرف مقابل ${s.opponentScore}`;$('status').textContent='مسابقه تمام شد';ready.textContent='بستن';ready.disabled=false;return}
+  if(s.status==='cancelled')fail('این اتاق بازی بسته شده است.');
+ }
+ function spawn(){if(!playing||coin)return;coin=document.createElement('button');coin.className='coin';coin.type='button';coin.textContent='🪙';coin.style.left=Math.round(5+Math.random()*Math.max(5,arena.clientWidth-76))+'px';coin.style.top=Math.round(5+Math.random()*Math.max(5,arena.clientHeight-76))+'px';coin.onclick=async e=>{if(!playing)return;const x=document.createElement('span');x.className='spark';x.textContent='+1';x.style.left=coin.offsetLeft+24+'px';x.style.top=coin.offsetTop+6+'px';arena.appendChild(x);setTimeout(()=>x.remove(),700);removeCoin();try{render(await api('hit'))}catch{}if(playing)setTimeout(spawn,110)};arena.appendChild(coin)}
+ function removeCoin(){coin?.remove();coin=null}
+ ready.onclick=async()=>{if(state?.status==='finished'){location.reload();return}ready.disabled=true;try{render(await api('ready'))}catch{fail('اتصال به اتاق بازی قطع شد.')}};
+ leave.onclick=async()=>{try{await api('leave')}catch{}window.close();overlay.classList.add('hide');$('status').textContent='از بازی خارج شدی.'};
+ load();poll=setInterval(load,700);window.addEventListener('beforeunload',()=>clearInterval(poll));
+})();
+</script></body></html>

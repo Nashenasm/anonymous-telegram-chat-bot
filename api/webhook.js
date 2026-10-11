@@ -16,6 +16,7 @@ import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureB
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
 import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
 import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
+import { coinRushAction, coinRushState, createCoinRushSession, ensureCoinRushSchema, latestCoinRushSession } from '../src/coin-rush-service.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -139,6 +140,7 @@ async function ensureRuntimeSchema() {
         await client.query('ALTER TABLE anonymous_inbox_messages ADD COLUMN IF NOT EXISTS outbox_archived_at TIMESTAMPTZ');
         await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_recipient_idx ON anonymous_inbox_messages(recipient_id,direction,status,id DESC)');
         await client.query('CREATE INDEX IF NOT EXISTS anonymous_inbox_sender_idx ON anonymous_inbox_messages(sender_id,direction,status,id DESC)');
+        await ensureCoinRushSchema(client);
         await client.query("INSERT INTO bot_settings(key,value) VALUES ('chat_permissions',$1),('finance_card_text','متن واریز کارت به کارت تنظیم نشده است.'),('finance_crypto_text','برای واریز ارز دیجیتال، شبکه و آدرس کیف پول را از مدیریت دریافت کنید.'),('finance_stars_text','پرداخت با Telegram Stars پس از انتخاب این روش و راهنمایی مدیریت انجام می‌شود.'),('referral_reward_coins','5'),('referral_time_seconds','1800'),('referral_bonus_coins','0'),('referral_power_enabled','true'),('referral_staged_enabled','false'),('referral_stage_amounts','{}'),('referral_conditions','{\"join\":false,\"connect\":false,\"time\":false,\"purchase\":false,\"plus\":false,\"referral\":false}'),('min_chat_duration','15S'),('spam_consecutive_limit','3'),('spam_delay','2S') ON CONFLICT (key) DO NOTHING", [JSON.stringify(DEFAULT_CHAT_PERMISSIONS)]);
         await ensureBonusDefaults(client);
         const unblock = await client.query("SELECT value FROM bot_settings WHERE key='unblock_all_v1'");
@@ -1794,6 +1796,7 @@ async function handleCallback(id, data, callbackQuery = null) {
         await send(requester, '❌ درخواست بازی Coin Rush رد شد.');
         return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id)));
       }
+      await createCoinRushSession(pool, requester, id);
       await telegram('sendGame', { chat_id: requester, game_short_name: 'Coin_rush' });
       await telegram('sendGame', { chat_id: id, game_short_name: 'Coin_rush' });
       return send(id, '🪙 بازی برای هر دو نفر ارسال شد؛ روی Play بزنید.', chatKeyboard(s, isAdmin(id)));
@@ -3107,7 +3110,12 @@ async function processUpdate(update) {
       const ban = await activeBanFor(Number(callback.from?.id));
       if (ban) { await send(Number(callback.from.id), bannedMessage(ban)); return; }
     }
-    await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: 'https://bot.manochat.xyz/game/coin-rush.html' });
+    const session = await latestCoinRushSession(pool, Number(callback.from?.id));
+    if (!session) {
+      await telegram('answerCallbackQuery', { callback_query_id: callback.id, text: 'اتاق بازی منقضی شده است؛ یک درخواست جدید بفرستید.', show_alert: true });
+      return;
+    }
+    await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: `https://bot.manochat.xyz/game/coin-rush.html?room=${encodeURIComponent(session.room_id)}&player=${encodeURIComponent(callback.from.id)}&token=${encodeURIComponent(session.access_token)}` });
     return;
   }
   const mandatoryAdminControl = /^mandatory:(details|activate|schedule|pause|cancel|resume):/.test(callbackData);
@@ -3156,6 +3164,35 @@ async function processUpdate(update) {
     return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
   }
   return handleText(id, text, { forwardedUserId, message });
+}
+
+export async function ensureCoinRushRuntimeSchema() {
+  const client = await pool.connect();
+  try { await ensureCoinRushSchema(client); } finally { client.release(); }
+}
+
+function coinRushApiJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  return res.end(JSON.stringify(payload));
+}
+
+export async function coinRushApi(req, res) {
+  const source = req.method === 'GET' ? req.query : req.body;
+  const room = String(source?.room || '').trim();
+  const token = String(source?.token || '').trim();
+  const player = Number(source?.player);
+  if (!room || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
+  if (req.method === 'GET') {
+    const state = await coinRushState(pool, room, token, player);
+    return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' });
+  }
+  if (req.method === 'POST') {
+    const action = String(source?.action || '');
+    if (!['ready', 'hit', 'leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' });
+    const state = await coinRushAction(pool, room, token, player, action);
+    return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' });
+  }
+  return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
 export default async function handler(req, res) {
