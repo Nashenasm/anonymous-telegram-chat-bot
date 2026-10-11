@@ -427,6 +427,24 @@ async function sendLink(chatId, text, replyMarkup) {
   const markup = replyMarkup?.reply_markup || replyMarkup;
   return telegram('sendMessage', { chat_id: chatId, text, protect_content: false, ...(markup ? { reply_markup: markup } : {}) });
 }
+async function sendDuelGame(chatId, gameType) {
+  const game = DUEL_GAMES[gameType];
+  const candidates = [game.shortName, ...(game.aliases || [])];
+  let lastError;
+  for (const gameShortName of candidates) {
+    try {
+      const result = await telegram('sendGame', { chat_id: chatId, game_short_name: gameShortName });
+      console.info('duel_game_sent', { game_type: gameType, game_short_name: gameShortName, chat_id: chatId });
+      return result;
+    } catch (error) {
+      lastError = error;
+      console.error('duel_game_name_rejected', { game_type: gameType, game_short_name: gameShortName, chat_id: chatId, error: error.message });
+      if (!/wrong game short name/i.test(String(error.message || ''))) throw error;
+    }
+  }
+  throw lastError;
+}
+
 async function sendDocument(chatId, filePath, filename, caption = '') {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const form = new FormData();
@@ -1790,8 +1808,14 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (!requesterRow || requesterRow.status !== 'chatting' || Number(requesterRow.partner_id) !== id) return send(id, 'این مکالمه دیگر فعال نیست.', chatKeyboard(s, isAdmin(id)));
       if (decision === 'reject') { await send(requester, `❌ درخواست بازی «${game.title}» رد شد.`); return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id))); }
       const session = await createDuelSession(pool, gameType, requester, id);
-      await telegram('sendGame', { chat_id: requester, game_short_name: game.shortName });
-      await telegram('sendGame', { chat_id: id, game_short_name: game.shortName });
+      try {
+        await sendDuelGame(requester, gameType);
+        await sendDuelGame(id, gameType);
+      } catch (error) {
+        const names = [game.shortName, ...(game.aliases || [])].join(' / ');
+        await send(requester, `⚠️ بازی «${game.title}» هنوز در BotFather برای این ربات فعال نیست. نام کوتاه مورد انتظار: ${names}`);
+        return send(id, `⚠️ نام بازی در BotFather پیدا نشد. نام کوتاه مورد انتظار: ${names}`, chatKeyboard(s, isAdmin(id)));
+      }
       return send(id, `${game.emoji} بازی «${game.title}» ساخته شد؛ روی Play بزنید.`, chatKeyboard(s, isAdmin(id)));
     }
     if (data === 'game:coin-rush' && me.status === 'chatting' && me.partner_id) {
@@ -3112,7 +3136,7 @@ async function processUpdate(update) {
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const callbackGameName = String(callback?.game_short_name || '').trim();
-  const duelGame = Object.entries(DUEL_GAMES).find(([, game]) => game.shortName.toLowerCase() === callbackGameName.toLowerCase());
+  const duelGame = Object.entries(DUEL_GAMES).find(([, game]) => [game.shortName, ...(game.aliases || [])].some(name => name.toLowerCase() === callbackGameName.toLowerCase()));
   if (duelGame) {
     const [gameType] = duelGame;
     const session = await latestDuelSession(pool, Number(callback.from?.id), gameType);
