@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 export const DUEL_GAMES = {
   ludo: { title: 'منچ', emoji: '🎲', shortName: 'ludo', aliases: [] },
-  chess: { title: 'شطرنج', emoji: '♟️', shortName: 'chest_play', aliases: ['chess_play'] },
+  chess: { title: 'شطرنج', emoji: '♟️', shortName: 'chest_game', aliases: ['chest_play', 'chess_play'] },
   cards: { title: 'پاسور', emoji: '🂡', shortName: 'card', aliases: ['cards'] },
   truth: { title: 'حقیقت یا جرئت', emoji: '🎭', shortName: 'Truth_or_dare', aliases: ['truth_or_dare'] },
 };

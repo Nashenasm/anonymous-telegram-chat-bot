@@ -10,11 +10,12 @@ const port = Number(process.env.PORT || 3000);
 const maxBody = 1024 * 1024;
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
+  const requestUrl = new URL(req.url, 'http://localhost');
+  if (req.method === 'GET' && requestUrl.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'anonymous-telegram-chat' }));
   }
-  if (req.method === 'GET' && req.url === '/game/coin-rush.html') {
+  if (req.method === 'GET' && requestUrl.pathname === '/game/coin-rush.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'coin-rush.html'));
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
@@ -25,7 +26,7 @@ const server = http.createServer(async (req, res) => {
       return res.end('game_not_found');
     }
   }
-  if (req.method === 'GET' && req.url === '/game/duel.html') {
+  if (req.method === 'GET' && requestUrl.pathname === '/game/duel.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'duel.html'));
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
@@ -36,7 +37,7 @@ const server = http.createServer(async (req, res) => {
       return res.end('game_not_found');
     }
   }
-  const duelUrl = new URL(req.url, 'http://localhost');
+  const duelUrl = requestUrl;
   if (duelUrl.pathname.startsWith('/api/game/')) {
     try { await ensureDuelRuntimeSchema(); } catch (error) { console.error('duel_schema_error', error?.message || error); res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_unavailable' })); }
     let body = {};
@@ -48,7 +49,6 @@ const server = http.createServer(async (req, res) => {
     try { return await duelApi({ method: req.method, query: Object.fromEntries(duelUrl.searchParams), body }, res); }
     catch (error) { console.error('duel_api_error', error?.message || error); res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: error?.message || 'game_error' })); }
   }
-  const requestUrl = new URL(req.url, 'http://localhost');
   if (requestUrl.pathname.startsWith('/api/coin-rush/')) {
     try { await ensureCoinRushRuntimeSchema(); } catch (error) { console.error('coin_rush_schema_error', error?.message || error); res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_unavailable' })); }
     let body = {};
