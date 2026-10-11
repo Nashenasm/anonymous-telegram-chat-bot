@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
 
 export const DUEL_GAMES = {
-  ludo: { title: 'منچ', emoji: '🎲', shortName: 'ManoLudo' },
-  chess: { title: 'شطرنج', emoji: '♟️', shortName: 'ManoChess' },
-  cards: { title: 'پاسور', emoji: '🂡', shortName: 'ManoCards' },
-  truth: { title: 'حقیقت یا جرئت', emoji: '🎭', shortName: 'ManoTruthDare' },
+  ludo: { title: 'منچ', emoji: '🎲', shortName: 'manoludo' },
+  chess: { title: 'شطرنج', emoji: '♟️', shortName: 'manochess' },
+  cards: { title: 'پاسور', emoji: '🂡', shortName: 'manocards' },
+  truth: { title: 'حقیقت یا جرئت', emoji: '🎭', shortName: 'manotruthdare' },
 };
 
 const MAX_CHAT_LENGTH = 300;
