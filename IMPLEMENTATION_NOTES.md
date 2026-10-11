@@ -79,6 +79,6 @@ The three non-default themes now provide screen-by-screen copy, labels, feedback
 
 The shared duel room now supports Ludo, Chess, Cards, and Truth or Dare with two-sided acceptance, server-authoritative turn/state validation, expiration, and an in-game chat feed. The HTML5 client is available at `/game/duel.html`; JSON endpoints are `/api/game/state` and `/api/game/action`.
 
-Create these four games in @BotFather and keep the exact short names `ManoLudo`, `ManoChess`, `ManoCards`, and `ManoTruthDare`. The bot sends the matching `sendGame` message after the partner accepts. Upload the matching artwork from `game/assets/` as each game's image. The game preview URL is `https://bot.manochat.xyz/game/duel.html`.
+Create these four games in @BotFather and keep the exact lowercase short names `manoludo`, `manochess`, `manocards`, and `manotruthdare`. The bot sends the matching `sendGame` message after the partner accepts. Upload the matching artwork from `game/assets/` as each game's image. The game preview URL is `https://bot.manochat.xyz/game/duel.html`.
 
 Classic Telegram Games provide the launch callback and score context. The live multiplayer room and in-game chat are handled by the bot server through a validated room token; bot tokens are never exposed to the browser.
