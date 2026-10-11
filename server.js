@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import webhook, { coinRushApi, ensureCoinRushRuntimeSchema } from './api/webhook.js';
+import webhook, { coinRushApi, ensureCoinRushRuntimeSchema, duelApi, ensureDuelRuntimeSchema } from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
 import cryptoJobs from './api/crypto-jobs.js';
 import mandatoryTrack from './api/mandatory-track.js';
@@ -24,6 +24,29 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       return res.end('game_not_found');
     }
+  }
+  if (req.method === 'GET' && req.url === '/game/duel.html') {
+    try {
+      const html = await fs.readFile(path.join(process.cwd(), 'game', 'duel.html'));
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      return res.end(html);
+    } catch (error) {
+      console.error('duel_game_file_error', error?.message || error);
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('game_not_found');
+    }
+  }
+  const duelUrl = new URL(req.url, 'http://localhost');
+  if (duelUrl.pathname.startsWith('/api/game/')) {
+    try { await ensureDuelRuntimeSchema(); } catch (error) { console.error('duel_schema_error', error?.message || error); res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_unavailable' })); }
+    let body = {};
+    if (req.method === 'POST') {
+      let raw = '';
+      for await (const chunk of req) { raw += chunk; if (raw.length > maxBody) break; }
+      try { body = JSON.parse(raw || '{}'); } catch { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'invalid_json' })); }
+    }
+    try { return await duelApi({ method: req.method, query: Object.fromEntries(duelUrl.searchParams), body }, res); }
+    catch (error) { console.error('duel_api_error', error?.message || error); res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: error?.message || 'game_error' })); }
   }
   const requestUrl = new URL(req.url, 'http://localhost');
   if (requestUrl.pathname.startsWith('/api/coin-rush/')) {

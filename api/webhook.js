@@ -17,6 +17,7 @@ import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
 import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
 import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 import { coinRushAction, coinRushState, createCoinRushSession, ensureCoinRushSchema, latestCoinRushSession } from '../src/coin-rush-service.js';
+import { DUEL_GAMES, createDuelSession, duelAction, duelState, ensureDuelSchema, latestDuelSession } from '../src/duel-game-service.js';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -257,7 +258,7 @@ function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(pub
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
 function chatKeyboard(settings, liveControl = false) { const base = screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)] ]); const extras = []; if (settings.mid_chat_games_enabled !== 'false') extras.push('بازی'); if (settings.mid_chat_ideas_enabled !== 'false') extras.push('ایده صحبت'); extras.push('هدیه دادن'); if (liveControl) extras.push('کنترل این کاربر'); return replyKeyboard([...base, ...(extras.length ? [extras] : [])]); }
-function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '✅ حقیقت یا جرئت', callback_data: 'game:truth-or-dare' }], [{ text: '🪙 Coin Rush', callback_data: 'game:coin-rush' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
+function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '🎲 منچ', callback_data: 'game:ludo' }, { text: '♟️ شطرنج', callback_data: 'game:chess' }], [{ text: '🂡 پاسور', callback_data: 'game:cards' }, { text: '🎭 حقیقت یا جرئت', callback_data: 'game:truth' }], [{ text: '🪙 Coin Rush', callback_data: 'game:coin-rush' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
@@ -1777,6 +1778,22 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('gift:view:') && isAdmin(id)) { const code = data.slice('gift:view:'.length); const row = (await sClient.query('SELECT * FROM gift_codes WHERE code=$1', [code])).rows[0]; if (!row) return send(id, 'این کد دیگر وجود ندارد.', giftManagementKeyboard()); return send(id, `کد هدیه: ${row.code}\nوضعیت: ${giftStatus(row)}\nمانو کوین: ${row.coins}\nمانو پلاس: ${row.plus_days} روز\nاستفاده: ${row.uses}${row.max_uses ? `/${row.max_uses}` : ''}\nانقضا: ${row.expires_at ? iranDate(row.expires_at) : 'بدون انقضا'}`, giftCodeKeyboard(code)); }
     if (data.startsWith('gift:cancel:') && isAdmin(id)) { const code = data.slice('gift:cancel:'.length); await sClient.query('UPDATE gift_codes SET expires_at=NOW() WHERE code=$1', [code]); await audit(sClient, id, null, 'gift_code_cancel', { code }); await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data.startsWith('gift:increase:') && isAdmin(id)) { const code = data.slice('gift:increase:'.length); await updateAction(sClient, id, `admin:gift:increase:${code}`); return send(id, 'افزایش را با قالب «کوین,روز پلاس» بفرست؛ مثال: 100,0 یا 0,30.'); }
+    if (data.startsWith('game:') && DUEL_GAMES[data.slice(5)] && me.status === 'chatting' && me.partner_id) {
+      const gameType = data.slice(5); const game = DUEL_GAMES[gameType]; const partnerId = Number(me.partner_id);
+      await send(partnerId, `${game.emoji} طرف مقابلت می‌خواهد بازی «${game.title}» را شروع کند. قبول می‌کنی؟`, { reply_markup: { inline_keyboard: [[{ text: '✅ قبول بازی', callback_data: `duel:${gameType}:accept:${id}` }, { text: '❌ رد کردن', callback_data: `duel:${gameType}:reject:${id}` }]] } });
+      return send(id, `${game.emoji} درخواست بازی «${game.title}» برای طرف مقابل ارسال شد.`, chatKeyboard(s, isAdmin(id)));
+    }
+    if (data.startsWith('duel:') && (data.split(':')[2] === 'accept' || data.split(':')[2] === 'reject')) {
+      const [, gameType, decision, requesterText] = data.split(':'); const requester = Number(requesterText); const game = DUEL_GAMES[gameType];
+      if (!game || !me.partner_id || Number(me.partner_id) !== requester) return send(id, 'این درخواست بازی دیگر معتبر نیست.', chatKeyboard(s, isAdmin(id)));
+      const requesterRow = (await sClient.query('SELECT status,partner_id FROM users WHERE telegram_id=$1', [requester])).rows[0];
+      if (!requesterRow || requesterRow.status !== 'chatting' || Number(requesterRow.partner_id) !== id) return send(id, 'این مکالمه دیگر فعال نیست.', chatKeyboard(s, isAdmin(id)));
+      if (decision === 'reject') { await send(requester, `❌ درخواست بازی «${game.title}» رد شد.`); return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id))); }
+      const session = await createDuelSession(pool, gameType, requester, id);
+      await telegram('sendGame', { chat_id: requester, game_short_name: game.shortName });
+      await telegram('sendGame', { chat_id: id, game_short_name: game.shortName });
+      return send(id, `${game.emoji} بازی «${game.title}» ساخته شد؛ روی Play بزنید.`, chatKeyboard(s, isAdmin(id)));
+    }
     if (data === 'game:coin-rush' && me.status === 'chatting' && me.partner_id) {
       const partnerId = Number(me.partner_id);
       await send(partnerId, '🪙 طرف مقابلت می‌خواهد با تو بازی Coin Rush را شروع کند. قبول می‌کنی؟', {
@@ -1800,15 +1817,6 @@ async function handleCallback(id, data, callbackQuery = null) {
       await telegram('sendGame', { chat_id: requester, game_short_name: 'Coin_rush' });
       await telegram('sendGame', { chat_id: id, game_short_name: 'Coin_rush' });
       return send(id, '🪙 بازی برای هر دو نفر ارسال شد؛ روی Play بزنید.', chatKeyboard(s, isAdmin(id)));
-    }
-    if (data === 'game:truth-or-dare' && me.status === 'chatting' && me.partner_id) {
-      await send(Number(me.partner_id), '🎲 طرف مقابل درخواست بازی «حقیقت یا جرئت» داده است. قبول می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: 'قبول', callback_data: `game:accept:${id}` }, { text: 'رد', callback_data: `game:reject:${id}` }]] } });
-      return send(id, 'درخواست بازی برای طرف مقابل ارسال شد.', chatKeyboard(s, isAdmin(id)));
-    }
-    if (data.startsWith('game:accept:') || data.startsWith('game:reject:')) {
-      const requester = Number(data.split(':')[2]); if (!me.partner_id || Number(me.partner_id) !== requester) return send(id, 'این درخواست دیگر معتبر نیست.', chatKeyboard(s, isAdmin(id)));
-      if (data.startsWith('game:reject:')) { await send(requester, 'درخواست بازی رد شد.'); return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id))); }
-      await send(requester, '🎲 بازی حقیقت یا جرئت شروع شد؛ نوبت با درخواست‌دهنده است.'); return send(id, '🎲 بازی شروع شد؛ نوبت طرف مقابل است.', chatKeyboard(s, isAdmin(id)));
     }
     if (data.startsWith('idea:')) {
       const ideas = { today: 'اتفاق امروزت چه چیزی بود که ارزش تعریف کردن داشته باشد؟', childhood: 'یک خاطره شیرین یا عجیب از کودکی تعریف کن.', recent: 'عجیب‌ترین اتفاق اخیرت چه بوده؟' };
@@ -3104,6 +3112,14 @@ async function processUpdate(update) {
   const callback = update.callback_query;
   const callbackData = String(callback?.data || '');
   const callbackGameName = String(callback?.game_short_name || '').trim();
+  const duelGame = Object.entries(DUEL_GAMES).find(([, game]) => game.shortName.toLowerCase() === callbackGameName.toLowerCase());
+  if (duelGame) {
+    const [gameType] = duelGame;
+    const session = await latestDuelSession(pool, Number(callback.from?.id), gameType);
+    if (!session) { await telegram('answerCallbackQuery', { callback_query_id: callback.id, text: 'اتاق بازی منقضی شده است؛ یک درخواست جدید بفرستید.', show_alert: true }); return; }
+    await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: `https://bot.manochat.xyz/game/duel.html?room=${encodeURIComponent(session.room_id)}&player=${encodeURIComponent(callback.from.id)}&token=${encodeURIComponent(session.access_token)}` });
+    return;
+  }
   if (callbackGameName.toLowerCase() === 'coin_rush') {
     console.info('coin_rush_play_callback', { game_short_name: callbackGameName, user_id: callback.from?.id });
     if (!isAdmin(Number(callback.from?.id))) {
@@ -3171,6 +3187,11 @@ export async function ensureCoinRushRuntimeSchema() {
   try { await ensureCoinRushSchema(client); } finally { client.release(); }
 }
 
+export async function ensureDuelRuntimeSchema() {
+  const client = await pool.connect();
+  try { await ensureDuelSchema(client); } finally { client.release(); }
+}
+
 function coinRushApiJson(res, status, payload) {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   return res.end(JSON.stringify(payload));
@@ -3192,6 +3213,15 @@ export async function coinRushApi(req, res) {
     const state = await coinRushAction(pool, room, token, player, action);
     return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' });
   }
+  return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
+}
+
+export async function duelApi(req, res) {
+  const source = req.method === 'GET' ? req.query : req.body;
+  const room = String(source?.room || '').trim(); const token = String(source?.token || '').trim(); const player = Number(source?.player);
+  if (!room || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
+  if (req.method === 'GET') { const state = await duelState(pool, room, token, player); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
+  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','draw','truth','chat','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
