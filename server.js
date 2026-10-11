@@ -1,4 +1,6 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import webhook from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
 import cryptoJobs from './api/crypto-jobs.js';
@@ -11,6 +13,17 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'anonymous-telegram-chat' }));
+  }
+  if (req.method === 'GET' && req.url === '/game/coin-rush.html') {
+    try {
+      const html = await fs.readFile(path.join(process.cwd(), 'game', 'coin-rush.html'));
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      return res.end(html);
+    } catch (error) {
+      console.error('game_file_error', error?.message || error);
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('game_not_found');
+    }
   }
   if (req.url === '/api/mandatory-jobs') {
     const response = {
