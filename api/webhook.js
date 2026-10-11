@@ -1776,8 +1776,27 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('gift:cancel:') && isAdmin(id)) { const code = data.slice('gift:cancel:'.length); await sClient.query('UPDATE gift_codes SET expires_at=NOW() WHERE code=$1', [code]); await audit(sClient, id, null, 'gift_code_cancel', { code }); await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data.startsWith('gift:increase:') && isAdmin(id)) { const code = data.slice('gift:increase:'.length); await updateAction(sClient, id, `admin:gift:increase:${code}`); return send(id, 'افزایش را با قالب «کوین,روز پلاس» بفرست؛ مثال: 100,0 یا 0,30.'); }
     if (data === 'game:coin-rush' && me.status === 'chatting' && me.partner_id) {
+      const partnerId = Number(me.partner_id);
+      await send(partnerId, '🪙 طرف مقابلت می‌خواهد با تو بازی Coin Rush را شروع کند. قبول می‌کنی؟', {
+        reply_markup: { inline_keyboard: [[
+          { text: '✅ قبول بازی', callback_data: `game:coin-accept:${id}` },
+          { text: '❌ رد کردن', callback_data: `game:coin-reject:${id}` },
+        ]] },
+      });
+      return send(id, '🪙 درخواست بازی برای طرف مقابل ارسال شد؛ بعد از قبول، بازی برای هر دو نفر باز می‌شود.', chatKeyboard(s, isAdmin(id)));
+    }
+    if (data.startsWith('game:coin-accept:') || data.startsWith('game:coin-reject:')) {
+      const requester = Number(data.split(':')[2]);
+      if (!me.partner_id || Number(me.partner_id) !== requester) return send(id, 'این درخواست بازی دیگر معتبر نیست.', chatKeyboard(s, isAdmin(id)));
+      const requesterRow = (await sClient.query('SELECT status,partner_id FROM users WHERE telegram_id=$1', [requester])).rows[0];
+      if (!requesterRow || requesterRow.status !== 'chatting' || Number(requesterRow.partner_id) !== id) return send(id, 'این مکالمه دیگر فعال نیست.', chatKeyboard(s, isAdmin(id)));
+      if (data.startsWith('game:coin-reject:')) {
+        await send(requester, '❌ درخواست بازی Coin Rush رد شد.');
+        return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id)));
+      }
+      await telegram('sendGame', { chat_id: requester, game_short_name: 'Coin_rush' });
       await telegram('sendGame', { chat_id: id, game_short_name: 'Coin_rush' });
-      return true;
+      return send(id, '🪙 بازی برای هر دو نفر ارسال شد؛ روی Play بزنید.', chatKeyboard(s, isAdmin(id)));
     }
     if (data === 'game:truth-or-dare' && me.status === 'chatting' && me.partner_id) {
       await send(Number(me.partner_id), '🎲 طرف مقابل درخواست بازی «حقیقت یا جرئت» داده است. قبول می‌کنی؟', { reply_markup: { inline_keyboard: [[{ text: 'قبول', callback_data: `game:accept:${id}` }, { text: 'رد', callback_data: `game:reject:${id}` }]] } });
