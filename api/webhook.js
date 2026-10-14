@@ -157,7 +157,7 @@ async function ensureRuntimeSchema() {
           ('mandatory_join_message','برای استفاده از ربات، ابتدا در منابع اجباری عضو شو. با دکمه‌های عضویت وارد شو و سپس «بررسی عضویت» را بزن.'),
           ('mandatory_join_button_label','عضویت در منبع'), ('mandatory_verify_button_label','بررسی عضویت'),
           ('mandatory_join_button_layout','single'), ('mandatory_join_show_source_tags','true'),
-          ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15'), ('mid_chat_games_enabled', 'true'), ('mid_chat_ideas_enabled', 'true'), ('block_duration', '7D'), ('chat_cost_any', '0'), ('chat_cost_male', '0'), ('chat_cost_female', '0'), ('daily_coin_amount', '20'), ('daily_coin_command', '/daily'), ('daily_coin_reset', '24H'), ('appearance_public_enabled', 'true'), ('appearance_private_enabled', 'true'), ('appearance_public', '{}'), ('appearance_private', '{}')
+          ('mid_chat_ad_enabled', 'false'), ('mid_chat_ad_minutes', '15'), ('mid_chat_games_enabled', 'true'), ('mid_chat_ideas_enabled', 'true'), ('game_ludo_enabled', 'true'), ('game_chess_enabled', 'true'), ('game_cards_enabled', 'true'), ('game_truth_enabled', 'true'), ('game_coin_rush_enabled', 'true'), ('game_ludo_help_enabled', 'true'), ('game_ludo_sound_enabled', 'true'), ('block_duration', '7D'), ('chat_cost_any', '0'), ('chat_cost_male', '0'), ('chat_cost_female', '0'), ('daily_coin_amount', '20'), ('daily_coin_command', '/daily'), ('daily_coin_reset', '24H'), ('appearance_public_enabled', 'true'), ('appearance_private_enabled', 'true'), ('appearance_public', '{}'), ('appearance_private', '{}')
           ON CONFLICT (key) DO NOTHING`);
         await client.query("ALTER TABLE mandatory_sources ADD COLUMN IF NOT EXISTS audience JSONB NOT NULL DEFAULT '{\"regular_female\":true,\"regular_male\":true,\"plus_female\":true,\"plus_male\":true}'::jsonb");
         await client.query(`INSERT INTO bot_settings(key,value) VALUES
@@ -258,7 +258,19 @@ function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(pub
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
 function chatKeyboard(settings, liveControl = false) { const base = screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)] ]); const extras = []; if (settings.mid_chat_games_enabled !== 'false') extras.push('بازی'); if (settings.mid_chat_ideas_enabled !== 'false') extras.push('ایده صحبت'); extras.push('هدیه دادن'); if (liveControl) extras.push('کنترل این کاربر'); return replyKeyboard([...base, ...(extras.length ? [extras] : [])]); }
-function entertainmentKeyboard(kind) { return { reply_markup: { inline_keyboard: kind === 'games' ? [[{ text: '🎲 منچ', callback_data: 'game:ludo' }, { text: '♟️ شطرنج', callback_data: 'game:chess' }], [{ text: '🂡 پاسور', callback_data: 'game:cards' }, { text: '🎭 حقیقت یا جرئت', callback_data: 'game:truth' }], [{ text: '🪙 Coin Rush', callback_data: 'game:coin-rush' }]] : [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } }; }
+function entertainmentKeyboard(kind, settings = {}) {
+  if (kind !== 'games') return { reply_markup: { inline_keyboard: [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } };
+  const enabled = key => settings[key] !== 'false';
+  const games = [
+    enabled('game_ludo_enabled') && { text: '🎲 منچ', callback_data: 'game:ludo' },
+    enabled('game_chess_enabled') && { text: '♟️ شطرنج', callback_data: 'game:chess' },
+    enabled('game_cards_enabled') && { text: '🂡 پاسور', callback_data: 'game:cards' },
+    enabled('game_truth_enabled') && { text: '🎭 حقیقت یا جرئت', callback_data: 'game:truth' },
+    enabled('game_coin_rush_enabled') && { text: '🪙 Coin Rush', callback_data: 'game:coin-rush' },
+  ].filter(Boolean);
+  const rows = []; for (let i = 0; i < games.length; i += 2) rows.push(games.slice(i, i + 2));
+  return { reply_markup: { inline_keyboard: rows.length ? rows : [[{ text: 'بازی‌ها فعلاً غیرفعال هستند', callback_data: 'game:disabled' }]] } };
+}
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
@@ -365,7 +377,24 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
   } catch (error) { if (error.message !== 'recipient_missing' && error.message !== 'insufficient_coins') await client.query('ROLLBACK'); if (error.message === 'insufficient_coins') throw error; if (error.message === 'recipient_missing') throw error; throw error; }
 }
 function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { return { reply_markup: { inline_keyboard: permissionKeyboard(permissions).map(item => [{ text: item.label, callback_data: `conversation:permission:${item.key}` }]).concat([[{ text: 'بازگشت', callback_data: 'conversation:back' }]]) } }; }
-function entertainmentAdminKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `${settings.mid_chat_games_enabled !== 'false' ? '✅' : '❌'} بازی`, callback_data: 'conversation:entertainment:games' }, { text: `${settings.mid_chat_ideas_enabled !== 'false' ? '✅' : '❌'} ایده صحبت`, callback_data: 'conversation:entertainment:ideas' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
+function entertainmentAdminKeyboard(settings = {}) {
+  const flag = key => settings[key] !== 'false' ? '✅' : '❌';
+  return { reply_markup: { inline_keyboard: [
+    [{ text: `${flag('mid_chat_games_enabled')} بازی`, callback_data: 'conversation:entertainment:games' }, { text: `${flag('mid_chat_ideas_enabled')} ایده صحبت`, callback_data: 'conversation:entertainment:ideas' }],
+    [{ text: 'بازگشت', callback_data: 'conversation:back' }]
+  ] } };
+}
+function gamesAdminKeyboard(settings = {}) {
+  const flag = key => settings[key] !== 'false' ? '✅' : '❌';
+  return { reply_markup: { inline_keyboard: [
+    [{ text: `${flag('mid_chat_games_enabled')} خاموش/روشن کل بازی‌ها`, callback_data: 'conversation:entertainment:games_toggle' }],
+    [{ text: `${flag('game_ludo_enabled')} منچ`, callback_data: 'conversation:entertainment_game:ludo' }, { text: `${flag('game_chess_enabled')} شطرنج`, callback_data: 'conversation:entertainment_game:chess' }],
+    [{ text: `${flag('game_cards_enabled')} پاسور`, callback_data: 'conversation:entertainment_game:cards' }, { text: `${flag('game_truth_enabled')} حقیقت/جرئت`, callback_data: 'conversation:entertainment_game:truth' }],
+    [{ text: `${flag('game_coin_rush_enabled')} Coin Rush`, callback_data: 'conversation:entertainment_game:coin-rush' }],
+    [{ text: 'بستن اتاق‌های فعال بازی', callback_data: 'conversation:entertainment:close_sessions' }],
+    [{ text: 'بازگشت به سرگرمی میان چت', callback_data: 'conversation:entertainment:back' }]
+  ] } };
+}
 function spamAdminKeyboard() { return replyKeyboard([['تعداد پیام متوالی'], ['تاخیر بین پیام‌ها'], ['بازگشت کنترل مکالمات']], true); }
 function spamInlineKeyboard(settings = {}) { return { reply_markup: { inline_keyboard: [[{ text: `تعداد متوالی: ${settings.spam_consecutive_limit || 3}`, callback_data: 'conversation:spam:limit' }, { text: `تاخیر: ${settings.spam_delay || '2S'}`, callback_data: 'conversation:spam:delay' }], [{ text: 'بازگشت', callback_data: 'conversation:back' }]] } }; }
 function giftManagementKeyboard() { return replyKeyboard([['ایجاد'], ['دیلی کوین'], ['بازگشت مانوکوین']], true); }
@@ -1615,7 +1644,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('chatgift:coin:')) { const delta = data.split(':')[2]; if (delta === 'custom') { await updateAction(sClient, id, 'chatgift:coin_custom'); return send(id, 'مقدار دلخواه را به‌صورت عدد مثبت بفرست.'); } const current = Number(String(me.action_state || '').split(':')[2]) || 10; const next = Math.max(1, current + Number(delta)); await updateAction(sClient, id, `chatgift:coins:${next}`); return editAudienceCallback(callbackQuery, id, 'چه مقدار مانو کوین می‌خواهی هدیه بدهی؟', chatGiftCoinKeyboard(next)); }
     if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${amount} مانو کوین ارسال شد.` : `هدیهٔ ${amount} مانو کوین ثبت شد، اما اعلان آن به طرف مقابل نرسید و برای جلوگیری از ارسال دوباره، عملیات بسته شد.`, { reply_markup: { inline_keyboard: [] } }); }
     if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.` : 'هدیه ثبت شد، اما اعلان آن به طرف مقابل نرسید و عملیات بسته شد.', { reply_markup: { inline_keyboard: [] } }); }
-    if (isAdmin(id) && data === 'conversation:back') { await updateAction(sClient, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
+    if (isAdmin(id) && data === 'conversation:back') { await updateAction(sClient, id, 'admin:conversation_control'); return editAudienceCallback(callbackQuery, id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
     if (isAdmin(id) && data.startsWith('conversation:permission:')) {
       const key = data.slice('conversation:permission:'.length); const current = JSON.parse(await botSettingValue(sClient, 'chat_permissions', JSON.stringify(DEFAULT_CHAT_PERMISSIONS)) || '{}');
       if (!Object.hasOwn(CHAT_PERMISSION_LABELS, key)) return send(id, 'مجوز نامعتبر است.');
@@ -1624,10 +1653,26 @@ async function handleCallback(id, data, callbackQuery = null) {
       return editAudienceCallback(callbackQuery, id, 'مجوزهای چت', permissionInlineKeyboard({ ...DEFAULT_CHAT_PERMISSIONS, ...current }));
     }
     if (isAdmin(id) && data.startsWith('conversation:cost:')) { const preference = data.slice('conversation:cost:'.length); if (!['any','male','female'].includes(preference)) return send(id, 'نوع انتخاب نامعتبر است.'); await updateAction(sClient, id, `admin:chat_cost:${preference}`); return send(id, `هزینهٔ هر اتصال موفق برای «${preference === 'any' ? 'مهم نیست' : preference === 'male' ? 'پسر' : 'دختر'}» را به مانو کوین بفرست.`); }
+    if (isAdmin(id) && data === 'conversation:entertainment:back') { const updated = await settings(sClient); return editAudienceCallback(callbackQuery, id, 'تنظیمات سرگرمی میان چت', entertainmentAdminKeyboard(updated)); }
+    if (isAdmin(id) && data === 'conversation:entertainment:games') { const updated = await settings(sClient); return editAudienceCallback(callbackQuery, id, 'کنترل بازی‌ها', gamesAdminKeyboard(updated)); }
+    if (isAdmin(id) && data.startsWith('conversation:entertainment_game:')) {
+      const kind = data.slice('conversation:entertainment_game:'.length);
+      const gameKeys = { ludo: 'game_ludo_enabled', chess: 'game_chess_enabled', cards: 'game_cards_enabled', truth: 'game_truth_enabled', 'coin-rush': 'game_coin_rush_enabled', ludo_help: 'game_ludo_help_enabled', ludo_sound: 'game_ludo_sound_enabled' };
+      const key = gameKeys[kind]; if (!key) return send(id, 'گزینه بازی نامعتبر است.');
+      const next = (await botSettingValue(sClient, key, 'true')) !== 'true'; await saveBotSetting(sClient, key, String(next));
+      const updated = await settings(sClient);
+      return editAudienceCallback(callbackQuery, id, `تنظیمات بازی به‌روزرسانی شد.\n${key}: ${next ? 'فعال' : 'غیرفعال'}`, gamesAdminKeyboard(updated));
+    }
+    if (isAdmin(id) && data === 'conversation:entertainment:close_sessions') {
+      const closed = await sClient.query("UPDATE duel_game_sessions SET status='cancelled', updated_at=NOW() WHERE status IN ('waiting','active')");
+      let coinClosed = 0; try { coinClosed = (await sClient.query("UPDATE coin_rush_sessions SET status='cancelled', updated_at=NOW() WHERE status IN ('waiting','active')")).rowCount; } catch {}
+      const updated = await settings(sClient);
+      return editAudienceCallback(callbackQuery, id, `اتاق‌های فعال بسته شدند.\nبازی‌های دونفره: ${closed.rowCount}\nCoin Rush: ${coinClosed}`, gamesAdminKeyboard(updated));
+    }
     if (isAdmin(id) && data.startsWith('conversation:entertainment:')) {
-      const kind = data.slice('conversation:entertainment:'.length); const key = kind === 'games' ? 'mid_chat_games_enabled' : kind === 'ideas' ? 'mid_chat_ideas_enabled' : null;
+      const kind = data.slice('conversation:entertainment:'.length); const key = kind === 'games_toggle' ? 'mid_chat_games_enabled' : kind === 'ideas' ? 'mid_chat_ideas_enabled' : null;
       if (!key) return send(id, 'گزینه نامعتبر است.'); const next = (await botSettingValue(sClient, key, 'true')) !== 'true'; await saveBotSetting(sClient, key, String(next));
-      const updated = await settings(sClient); const active = await sClient.query("SELECT telegram_id FROM users WHERE status='chatting'"); for (const row of active.rows) { try { await send(row.telegram_id, 'منوی مکالمه به‌روزرسانی شد.', chatKeyboard(updated, isAdmin(row.telegram_id))); } catch {} } return send(id, 'تنظیمات سرگرمی میان چت', entertainmentAdminKeyboard(updated));
+      const updated = await settings(sClient); const active = await sClient.query("SELECT telegram_id FROM users WHERE status='chatting'"); for (const row of active.rows) { try { await send(row.telegram_id, 'منوی مکالمه به‌روزرسانی شد.', chatKeyboard(updated, isAdmin(row.telegram_id))); } catch {} } return editAudienceCallback(callbackQuery, id, kind === 'games_toggle' ? 'کنترل بازی‌ها' : 'تنظیمات سرگرمی میان چت', kind === 'games_toggle' ? gamesAdminKeyboard(updated) : entertainmentAdminKeyboard(updated));
     }
     if (isAdmin(id) && data === 'conversation:spam:open') { await updateAction(sClient, id, 'admin:spam'); return send(id, 'تنظیمات پیام اسپم را انتخاب کن.', spamAdminKeyboard()); }
     if (isAdmin(id) && (data === 'conversation:spam:limit' || data === 'conversation:spam:delay')) { await updateAction(sClient, id, data.endsWith('limit') ? 'admin:spam:limit' : 'admin:spam:delay'); return send(id, data.endsWith('limit') ? 'تعداد پیام متوالی را بفرست.' : 'تاخیر را با قالب 2S، 1M یا 500S بفرست.'); }
@@ -1797,7 +1842,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('gift:cancel:') && isAdmin(id)) { const code = data.slice('gift:cancel:'.length); await sClient.query('UPDATE gift_codes SET expires_at=NOW() WHERE code=$1', [code]); await audit(sClient, id, null, 'gift_code_cancel', { code }); await updateAction(sClient, id, 'admin:gifts'); return sendGiftManagement(sClient, id); }
     if (data.startsWith('gift:increase:') && isAdmin(id)) { const code = data.slice('gift:increase:'.length); await updateAction(sClient, id, `admin:gift:increase:${code}`); return send(id, 'افزایش را با قالب «کوین,روز پلاس» بفرست؛ مثال: 100,0 یا 0,30.'); }
     if (data.startsWith('game:') && DUEL_GAMES[data.slice(5)] && me.status === 'chatting' && me.partner_id) {
-      const gameType = data.slice(5); const game = DUEL_GAMES[gameType]; const partnerId = Number(me.partner_id);
+      const gameType = data.slice(5); const game = DUEL_GAMES[gameType]; const gameSetting = `game_${gameType.replace('-', '_')}_enabled`; if ((await botSettingValue(sClient, gameSetting, 'true')) === 'false') return send(id, 'این بازی فعلاً توسط مدیریت غیرفعال شده است.', chatKeyboard(s, isAdmin(id))); const partnerId = Number(me.partner_id);
       await send(partnerId, `${game.emoji} طرف مقابلت می‌خواهد بازی «${game.title}» را شروع کند. قبول می‌کنی؟`, { reply_markup: { inline_keyboard: [[{ text: '✅ قبول بازی', callback_data: `duel:${gameType}:accept:${id}` }, { text: '❌ رد کردن', callback_data: `duel:${gameType}:reject:${id}` }]] } });
       return send(id, `${game.emoji} درخواست بازی «${game.title}» برای طرف مقابل ارسال شد.`, chatKeyboard(s, isAdmin(id)));
     }
@@ -1819,6 +1864,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       return send(id, `${game.emoji} بازی «${game.title}» ساخته شد؛ روی Play بزنید.`, chatKeyboard(s, isAdmin(id)));
     }
     if (data === 'game:coin-rush' && me.status === 'chatting' && me.partner_id) {
+      if ((await botSettingValue(sClient, 'game_coin_rush_enabled', 'true')) === 'false') return send(id, 'این بازی فعلاً توسط مدیریت غیرفعال شده است.', chatKeyboard(s, isAdmin(id)));
       const partnerId = Number(me.partner_id);
       await send(partnerId, '🪙 طرف مقابلت می‌خواهد با تو بازی Coin Rush را شروع کند. قبول می‌کنی؟', {
         reply_markup: { inline_keyboard: [[
@@ -3093,7 +3139,7 @@ ${[...adminIds()].join('\n') || 'ثبت نشده'}`, adminMainKeyboard(s,id));
     if ((value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
       const panel = await adminUserPanel(client, id, Number(me.partner_id)); await updateAction(client, id, `admin:user_control:${me.partner_id}`); return send(id, panel.text, panel.markup);
     }
-    if (value === 'بازی' && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games')); }
+    if (value === 'بازی' && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
     if (value === 'ایده صحبت' && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id);
@@ -3141,7 +3187,7 @@ async function processUpdate(update) {
     const [gameType] = duelGame;
     const session = await latestDuelSession(pool, Number(callback.from?.id), gameType);
     if (!session) { await telegram('answerCallbackQuery', { callback_query_id: callback.id, text: 'اتاق بازی منقضی شده است؛ یک درخواست جدید بفرستید.', show_alert: true }); return; }
-    await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: `https://bot.manochat.xyz/game/duel.html?room=${encodeURIComponent(session.room_id)}&player=${encodeURIComponent(callback.from.id)}&token=${encodeURIComponent(session.access_token)}` });
+    const ludoHelp = gameType === 'ludo' ? await botSettingValue(pool, 'game_ludo_help_enabled', 'true') : 'true'; const ludoSound = gameType === 'ludo' ? await botSettingValue(pool, 'game_ludo_sound_enabled', 'true') : 'true'; await telegram('answerCallbackQuery', { callback_query_id: callback.id, url: `https://bot.manochat.xyz/game/duel.html?room=${encodeURIComponent(session.room_id)}&player=${encodeURIComponent(callback.from.id)}&token=${encodeURIComponent(session.access_token)}&help=${ludoHelp === 'false' ? 'off' : 'on'}&sound=${ludoSound === 'false' ? 'off' : 'on'}&v=${Date.now()}` });
     return;
   }
   if (callbackGameName.toLowerCase() === 'coin_rush') {
@@ -3245,7 +3291,7 @@ export async function duelApi(req, res) {
   const room = String(source?.room || '').trim(); const token = String(source?.token || '').trim(); const player = Number(source?.player);
   if (!room || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
   if (req.method === 'GET') { const state = await duelState(pool, room, token, player); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
-  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','draw','truth','chat','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
+  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','roll','draw','truth','chat','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 

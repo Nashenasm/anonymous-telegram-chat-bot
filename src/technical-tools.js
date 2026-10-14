@@ -3,6 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { createWriteStream } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import archiver from 'archiver';
 import { PassThrough } from 'node:stream';
 
@@ -132,59 +135,29 @@ async function cgroupMemoryLimit() {
 }
 async function temporaryDisk() {
   try {
-    const stats = await fs.statfs('/tmp'); const total = Number(stats.blocks) * Number(stats.bsize); const free = Number(stats.bavail) * Number(stats.bsize);
+    const stats = await fs.statfs('/'); const total = Number(stats.blocks) * Number(stats.bsize); const free = Number(stats.bavail) * Number(stats.bsize);
     return { total, free, used: Math.max(0, total - free) };
   } catch { return null; }
 }
 
+async function commandText(command, args = []) {
+  try { const result = await execFileAsync(command, args, { timeout: 5000, maxBuffer: 256 * 1024 }); return String(result.stdout || '').trim(); }
+  catch { return ''; }
+}
+function formatDuration(seconds) { const n=Math.max(0,Math.floor(Number(seconds)||0)); const d=Math.floor(n/86400),h=Math.floor(n%86400/3600),m=Math.floor(n%3600/60); return [d?`${d} روز`:null,h?`${h} ساعت`:null,`${m} دقیقه`].filter(Boolean).join('، '); }
+function percent(value,total) { return total>0 ? `${Math.round(value/total*100)}٪` : 'نامشخص'; }
+
+
 export async function collectServerStatus(pool, telegramCall) {
-  const checkedAt = new Date(); const startedAt = new Date(Date.now() - process.uptime() * 1000);
-  let db = null; let counts = { users: '?', waiting: '?', chatting: '?' }; let dbError = null;
-  try {
-    const dbResult = await pool.query('SELECT current_database() AS database'); db = dbResult.rows[0];
-    const countResult = await pool.query(`SELECT COUNT(*)::int AS users, COUNT(*) FILTER (WHERE status='waiting')::int AS waiting, COUNT(*) FILTER (WHERE status='chatting')::int AS chatting FROM users`);
-    counts = countResult.rows[0] || counts;
-  } catch (error) { dbError = String(error?.message || error).slice(0, 140); }
-  let telegram = '⚪ نامشخص';
-  try { const me = await telegramCall('getMe', {}); telegram = `🟢 وصل است — @${me.username || me.first_name || me.id}`; } catch (error) { telegram = `🔴 وصل نیست — ${String(error?.message || error).slice(0, 120)}`; }
-  const memory = process.memoryUsage(); const memoryLimit = await cgroupMemoryLimit(); const visibleMemoryLimit = memoryLimit || os.totalmem();
-  const memoryLevel = level(memory.rss, visibleMemoryLimit); const disk = await temporaryDisk(); const heapLimit = v8.getHeapStatistics().heap_size_limit;
-  const load = os.loadavg?.()[0]; const cores = os.cpus()?.length || 1;
-  const overall = memoryLevel.icon === '🔴' || dbError || telegram.startsWith('🔴') ? '🔴 نیاز به بررسی' : memoryLevel.icon === '🟡' ? '🟡 فعلاً خوب است، ولی نزدیک سقف شده' : '🟢 همه‌چیز عادی به نظر می‌رسد';
-  const lines = [
-    '📊 گزارش سادهٔ وضعیت ربات',
-    '━━━━━━━━━━━━━━━━',
-    `نتیجهٔ کلی: ${overall}`,
-    `زمان بررسی: ${checkedAt.toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' })}`,
-    '',
-    '🧠 حافظهٔ ربات',
-    `مصرف فعلی: ${humanBytes(memory.rss)} از ${humanBytes(visibleMemoryLimit)}`,
-    `باقی‌ماندهٔ تقریبی: ${humanBytes(Math.max(0, visibleMemoryLimit - memory.rss))}`,
-    `${usageBar(memory.rss, visibleMemoryLimit)}  ${memoryLevel.icon} ${memoryLevel.text}`,
-    memoryLimit ? 'این سقف از محدودیت محیط اجرا خوانده شده است.' : 'سقف دقیق محیط اعلام نشده؛ عدد بالا سقف قابل‌مشاهدهٔ سیستم است.',
-    `حافظهٔ داخلی Node: ${humanBytes(memory.heapUsed)} از ${humanBytes(heapLimit)} استفاده شده`,
-    '',
-    '⚙️ پردازنده',
-    `تعداد هستهٔ قابل‌مشاهده: ${cores}`,
-    `فشار پردازنده در یک دقیقهٔ اخیر: ${Number.isFinite(load) ? load.toFixed(2) : 'نامشخص'} (هرچه کمتر، بهتر)`,
-    '',
-    '💾 فضای موقت سرور',
-    disk ? `مصرف: ${humanBytes(disk.used)} از ${humanBytes(disk.total)} — باقی‌مانده: ${humanBytes(disk.free)}` : 'اطلاعات فضای موقت در این محیط قابل‌خواندن نیست.',
-    disk ? `${usageBar(disk.used, disk.total)} ${level(disk.used, disk.total).icon}` : '',
-    '',
-    '🗄️ دیتابیس',
-    dbError ? `🔴 وصل نشد: ${dbError}` : `🟢 وصل است — ${db?.database || 'نام پایگاه‌داده نامشخص'}`,
-    `کاربران: ${counts.users} | در صف: ${counts.waiting} | در مکالمه: ${counts.chatting}`,
-    '',
-    '🤖 تلگرام', telegram,
-    '',
-    '⏱️ معنی این اعداد',
-    'اگر نوار حافظه به ۹۰٪ برسد، یعنی ربات به سقف نزدیک شده و باید مصرف یا ظرفیت بررسی شود.',
-    'Uptime در Vercel ثابت نیست؛ چون هر اجرای Serverless ممکن است از یک محیط تازه شروع شود.',
-    process.env.VERCEL ? 'محدودیت زمانی این پروژه: webhook حداکثر ۳۰ ثانیه و پنل فنی حداکثر ۱۵ ثانیه برای هر درخواست.' : 'این ربات خارج از Vercel با محدودیت زمانی هاست فعلی اجرا می‌شود.',
-    `شروع این پردازش: ${startedAt.toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' })}`,
-  ];
-  return lines.filter((line, index) => line || lines[index - 1] !== '').join('\n');
+  const checkedAt=new Date(); const totalMem=os.totalmem(); const freeMem=os.freemem(); const usedMem=totalMem-freeMem; const load=os.loadavg?.()[0] || 0; const cores=os.cpus()?.length || 1;
+  let db=null,counts={users:'?',waiting:'?',chatting:'?'},dbError=null;
+  try { db=(await pool.query('SELECT current_database() AS database')).rows[0]; counts=(await pool.query("SELECT COUNT(*)::int AS users, COUNT(*) FILTER (WHERE status='waiting')::int AS waiting, COUNT(*) FILTER (WHERE status='chatting')::int AS chatting FROM users")).rows[0]||counts; } catch(error) { dbError=String(error?.message||error).slice(0,140); }
+  let telegram='⚪ نامشخص'; try { const me=await telegramCall('getMe',{}); telegram=`🟢 وصل است — @${me.username||me.first_name||me.id}`; } catch(error) { telegram=`🔴 وصل نیست — ${String(error?.message||error).slice(0,120)}`; }
+  const disk=await temporaryDisk(); const uptimeSec=os.uptime(); const serviceState=await commandText('systemctl',['is-active','anonymous-telegram-chat.service']); const serviceSince=await commandText('systemctl',['show','anonymous-telegram-chat.service','--property=ActiveEnterTimestamp','--value']); const portState=await commandText('sh',['-lc',"ss -ltn '( sport = :3000 )' | tail -n +2"]); const hostname=os.hostname();
+  const memIcon=usedMem/totalMem>=.9?'🔴':usedMem/totalMem>=.75?'🟡':'🟢'; const loadRatio=load/cores; const loadIcon=loadRatio>=1?'🔴':loadRatio>=.7?'🟡':'🟢'; const diskIcon=disk && disk.used/disk.total>=.9?'🔴':disk && disk.used/disk.total>=.75?'🟡':'🟢'; const serviceIcon=serviceState==='active'?'🟢':'🔴'; const portIcon=portState?'🟢':'🔴';
+  const overall=[serviceState==='active',Boolean(db&&!dbError),Boolean(portState),usedMem/totalMem<.9].every(Boolean)?'🟢 سالم و در حال سرویس‌دهی':'🔴 نیازمند بررسی';
+  const lines=['🖥️ گزارش اختصاصی VPS ربات','━━━━━━━━━━━━━━━━',`وضعیت کلی: ${overall}`,`نام سرور: ${hostname}`,`زمان بررسی: ${checkedAt.toLocaleString('fa-IR',{timeZone:'Asia/Tehran'})}`,'','⚙️ سرویس ربات',`${serviceIcon} anonymous-telegram-chat.service: ${serviceState||'نامشخص'}`,`شروع سرویس: ${serviceSince||'نامشخص'}`,`${portIcon} پورت ۳۰۰۰: ${portState?'در حال listen':'باز نیست'}`,`Uptime سیستم: ${formatDuration(uptimeSec)}`,'','🧠 RAM کل VPS',`مصرف: ${humanBytes(usedMem)} از ${humanBytes(totalMem)} — ${percent(usedMem,totalMem)} ${memIcon}`,`آزاد: ${humanBytes(freeMem)}`,'','⚡ CPU و Load',`هسته‌ها: ${cores}`,`Load یک دقیقه: ${load.toFixed(2)} — نسبت به هسته‌ها: ${(loadRatio*100).toFixed(0)}٪ ${loadIcon}`,'','💾 دیسک ریشه VPS',disk?`مصرف: ${humanBytes(disk.used)} از ${humanBytes(disk.total)} — ${percent(disk.used,disk.total)} ${diskIcon}`:'اطلاعات دیسک خوانده نشد.',disk?`آزاد: ${humanBytes(disk.free)}`:'','', '🗄️ PostgreSQL',dbError?`🔴 خطا: ${dbError}`:`🟢 وصل است — ${db?.database||'نامشخص'}`,`کاربران: ${counts.users} | در صف: ${counts.waiting} | در مکالمه: ${counts.chatting}`,'','🤖 اتصال تلگرام',telegram,'','این گزارش از خود VPS، systemd، RAM/CPU، دیسک، پورت و PostgreSQL خوانده شده است؛ دیگر گزارش Vercel یا Serverless نیست.'];
+  return lines.filter((line,index)=>line||lines[index-1]!=='').join('\n');
 }
 
 export async function removeTempFile(filePath) {

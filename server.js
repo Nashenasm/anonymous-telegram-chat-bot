@@ -18,7 +18,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && requestUrl.pathname === '/game/coin-rush.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'coin-rush.html'));
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0' });
       return res.end(html);
     } catch (error) {
       console.error('game_file_error', error?.message || error);
@@ -29,7 +29,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && requestUrl.pathname === '/game/duel.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'duel.html'));
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0' });
       return res.end(html);
     } catch (error) {
       console.error('duel_game_file_error', error?.message || error);
