@@ -146,7 +146,7 @@ function normalizeLudoPieces(state, playerId) {
   });
   return state.positions[playerId];
 }
-const LUDO_COLOR_OFFSETS = { red: 0, yellow: 13, blue: 26, green: 39 };
+export const LUDO_COLOR_OFFSETS = { red: 0, yellow: 13, blue: 26, green: 39 };
 function ludoPlayerOffset(state, session, playerId) { const color = state?.playerColors?.[String(playerId)]; return LUDO_COLOR_OFFSETS[color] ?? (Number(session.player_one) === Number(playerId) ? 0 : 26); }
 function ludoTrackIndex(state, session, playerId, position) { return (position + ludoPlayerOffset(state, session, playerId)) % 52; }
 function ludoCanMove(piece, roll) { return piece >= 0 ? piece + roll <= LUDO_FINISH : roll === 6; }
