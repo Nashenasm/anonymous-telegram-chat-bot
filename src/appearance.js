@@ -189,18 +189,70 @@ export function normalizeAppearance(section, value) {
   try { return merge(definition.base, typeof value === 'string' ? JSON.parse(value) : (value || {})); } catch { return clone(definition.base); }
 }
 export function templateAppearance(templateId, section) { const template = APPEARANCE_TEMPLATES[templateId] || APPEARANCE_TEMPLATES.default; const appearance = normalizeAppearance(section, template[section]); if (templateId !== 'default') appearance.feedback = { ...appearance.feedback, ...themeFeedback(templateId, section) }; return appearance; }
+const BUTTON_STYLES = new Set(['primary', 'success', 'danger']);
+function telegramKeyboardButton(item) {
+  const text = String(item?.label || item?.id || '').slice(0, 64);
+  if (!text) return '';
+  const button = { text };
+  const emojiId = String(item?.icon_custom_emoji_id || '').trim();
+  if (/^\d{1,20}$/.test(emojiId)) button.icon_custom_emoji_id = emojiId;
+  if (BUTTON_STYLES.has(item?.style)) button.style = item.style;
+  return Object.keys(button).length === 1 ? text : button;
+}
 export function appearanceKeyboard(appearance) {
   const rows = Array.isArray(appearance?.buttons) ? appearance.buttons : [];
-  const labels = rows.flat().filter(button => button?.enabled !== false).map(button => String(button.label || button.id || '').slice(0, 64)).filter(Boolean);
-  if (appearance?.layout === 'single') return labels.map(label => [label]);
-  if (appearance?.layout === 'columns2') { const result = []; for (let i = 0; i < labels.length; i += 2) result.push(labels.slice(i, i + 2)); return result; }
-  return rows.map(row => row.map(button => String(button.label || button.id || '').slice(0, 64)).filter(Boolean)).filter(row => row.length);
+  const buttons = rows.flat().filter(button => button?.enabled !== false).map(telegramKeyboardButton).filter(Boolean);
+  if (appearance?.layout === 'single') return buttons.map(button => [button]);
+  if (appearance?.layout === 'columns2') { const result = []; for (let i = 0; i < buttons.length; i += 2) result.push(buttons.slice(i, i + 2)); return result; }
+  return rows.map(row => row.filter(button => button?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length);
 }
 export function appearanceScreen(appearance, id) { return appearance?.screens?.[id] || {}; }
 export function screenText(appearance, id, fallback) { return String(appearanceScreen(appearance, id).message || fallback); }
-export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); return (screen.buttons?.length ? [screen.buttons.filter(item => item?.enabled !== false).map(item => item.label || item.id)] : fallbackRows); }
+export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); return (screen.buttons?.length ? [screen.buttons.filter(item => item?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)] : fallbackRows); }
 export function appearanceButton(appearance, id, fallback) { for (const row of appearance?.buttons || []) for (const item of row || []) if (item.id === id) return item.label || fallback; return fallback; }
 export function appearanceFeedback(appearance, id, fallback) { return String(appearance?.feedback?.[id] || fallback); }
+function validCustomEmojiEntities(text, entities) {
+  const length = String(text ?? '').length;
+  return (Array.isArray(entities) ? entities : []).filter(entity => entity?.type === 'custom_emoji'
+    && Number.isInteger(entity.offset) && Number.isInteger(entity.length) && entity.offset >= 0 && entity.length > 0
+    && entity.offset + entity.length <= length && String(entity.custom_emoji_id || '').trim())
+    .map(entity => ({ type: 'custom_emoji', offset: entity.offset, length: entity.length, custom_emoji_id: String(entity.custom_emoji_id) }));
+}
+export function captureCustomEmojiEntities(message, contentText) {
+  const rawText = String(message?.text ?? message?.caption ?? '');
+  const trimmed = rawText.trim();
+  const text = String(contentText ?? trimmed).slice(0, 4000);
+  const leadingTrim = rawText.length - rawText.trimStart().length;
+  const sourceEntities = Array.isArray(message?.entities) ? message.entities : (Array.isArray(message?.caption_entities) ? message.caption_entities : []);
+  const shifted = sourceEntities.filter(entity => entity?.type === 'custom_emoji').map(entity => ({
+    ...entity,
+    offset: Number(entity.offset) - leadingTrim,
+  }));
+  return validCustomEmojiEntities(text, shifted);
+}
+function textPayload(text, entities = []) { return { text: String(text ?? ''), entities: validCustomEmojiEntities(text, entities) }; }
+export function screenMessagePayload(appearance, id, fallback) {
+  const screen = appearanceScreen(appearance, id);
+  if (screen.message) return textPayload(screen.message, screen.message_entities);
+  return fallback && typeof fallback === 'object' && Object.hasOwn(fallback, 'text') ? textPayload(fallback.text, fallback.entities) : textPayload(fallback);
+}
+export function feedbackMessagePayload(appearance, id, fallback) {
+  const text = appearance?.feedback?.[id];
+  if (text) return textPayload(text, appearance?.feedback?.[`${id}_entities`]);
+  return fallback && typeof fallback === 'object' && Object.hasOwn(fallback, 'text') ? textPayload(fallback.text, fallback.entities) : textPayload(fallback);
+}
+export function joinTextPayloads(parts, separator = '') {
+  const entries = (Array.isArray(parts) ? parts : [parts]).map(part => part && typeof part === 'object' && Object.hasOwn(part, 'text') ? textPayload(part.text, part.entities) : textPayload(part));
+  let text = '';
+  const entities = [];
+  entries.forEach((entry, index) => {
+    if (index) text += separator;
+    const offset = text.length;
+    text += entry.text;
+    for (const entity of entry.entities) entities.push({ ...entity, offset: entity.offset + offset });
+  });
+  return textPayload(text, entities);
+}
 export function appearanceItems(section, appearance) {
   const items = [{ path: 'title', label: 'عنوان منو', value: appearance.title }, { path: 'message', label: 'متن منو', value: appearance.message }, { path: 'layout', label: 'نوع چیدمان', value: appearance.layout }];
   for (const [screenId, screen] of Object.entries(appearance.screens || {})) {
