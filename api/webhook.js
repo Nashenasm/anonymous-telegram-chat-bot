@@ -8,7 +8,7 @@ import { createAnonymousFlow } from '../src/anonymous-flow.js';
 import { decodeTrackingCode, formatMandatorySourceDetails, getMandatorySourceDetails, getMandatorySourceHistory, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, processMandatoryLifecycle, recordMandatorySourceHistory, syncMandatoryReport, trackingCommand } from '../src/mandatory-service.js';
 import { DEFAULT_MANDATORY_AUDIENCE, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
 import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
-import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, captureCustomEmojiEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
+import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, appearanceButtonObject, appearanceRuntimeButtons, captureCustomEmojiEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
@@ -242,7 +242,7 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
-function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard([...appearanceKeyboard(a), ['اتصال به مخاطب خاص']]); }
+function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
 function profileKeyboard(settings, telegramId) { const numericId = String(telegramId); return { reply_markup: { inline_keyboard: [[{ text: numericId, copy_text: { text: numericId } }], [{ text: settings.back_button || 'بازگشت', callback_data: 'profile:back' }]] } }; }
 function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function emojiKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'emoji', [['ریست ایموجی'], [settings.back_button]]), true); }
@@ -257,7 +257,7 @@ function controlKeyboard() { return replyKeyboard([['امور [آرایش زیب
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
-function chatKeyboard(settings, liveControl = false) { const base = screenKeyboard(publicAppearance(settings), 'chat', [[appearanceButton(publicAppearance(settings), 'disconnect', settings.disconnect_button)] ]); const extras = []; if (settings.mid_chat_games_enabled !== 'false') extras.push('بازی'); if (settings.mid_chat_ideas_enabled !== 'false') extras.push('ایده صحبت'); extras.push('هدیه دادن'); if (liveControl) extras.push('کنترل این کاربر'); return replyKeyboard([...base, ...(extras.length ? [extras] : [])]); }
+function chatKeyboard(settings, liveControl = false) { const appearance = publicAppearance(settings); const raw = appearanceRuntimeButtons(appearance, 'chat'); const rows = Array.isArray(raw?.[0]) ? raw : [raw]; const configured = rows.map(row => row.filter(item => item?.enabled !== false && (item.id !== 'games' || settings.mid_chat_games_enabled !== 'false') && (item.id !== 'ideas' || settings.mid_chat_ideas_enabled !== 'false')).map(appearanceButtonObject).filter(Boolean)).filter(row => row.length); const extras = liveControl ? ['کنترل این کاربر'] : []; return replyKeyboard([...(configured.length ? configured : [[appearanceButton(appearance, 'disconnect', settings.disconnect_button)]]), ...(extras.length ? [extras] : [])]); }
 function entertainmentKeyboard(kind, settings = {}) {
   if (kind !== 'games') return { reply_markup: { inline_keyboard: [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } };
   const enabled = key => settings[key] !== 'false';
@@ -285,7 +285,23 @@ function cardAdminKeyboard(rows=[]) { return { reply_markup: { inline_keyboard: 
 function cardAdminReplyKeyboard() { return replyKeyboard([['افزودن', 'متن کارت'], ['بازگشت امور مالی']], true); }
 function cardAdminPanelKeyboard(card) { return { reply_markup: { inline_keyboard: [[{text:'حذف ادمین',callback_data:`financecard:delete:${card.id}`}],[{text:'تغییر ادمین',callback_data:`financecard:change:${card.id}`}],[{text:`${card.enabled ? '🟢 فعال' : '🔴 غیرفعال'}`,callback_data:`financecard:toggle:${card.id}`}],[{text:`دکمه کارت به کارت ${card.button_enabled ? '🟢' : '🔴'}`,callback_data:`financecard:button:${card.id}`}],[{text:'بازگشت',callback_data:'financecard:list'}]] } }; }
 async function cardPaymentForUser(client,id) { const cards=(await client.query("SELECT * FROM payment_cards WHERE enabled=TRUE AND button_enabled=TRUE ORDER BY id")).rows; if(!cards.length) return send(id,'پرداخت کارت به کارت فعلاً فعال نیست.',{reply_markup:{inline_keyboard:[[{text:'بازگشت',callback_data:'coins:back'}]]}}); const text=await botSettingValue(client,'finance_card_text','متن واریز کارت به کارت تنظیم نشده است.'); const rows=cards.map(c=>[{text:safeCardAdminLabel(c.admin_label),url:c.admin_username?`https://t.me/${String(c.admin_username).replace(/^@/,'')}`:`tg://user?id=${c.admin_id}`}]); rows.push([{text:'بازگشت',callback_data:'coins:back'}]); return send(id,text,{reply_markup:{inline_keyboard:rows}}); }
-function paymentMethodKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'کارت به کارت', callback_data: 'coins:method:card' }], [{ text: 'ارز دیجیتال', callback_data: 'coins:method:crypto' }], [{ text: 'استارز ⭐', callback_data: 'coins:method:stars' }], [{ text: 'بازگشت', callback_data: 'coins:back' }]] } }; }
+async function paymentMethodKeyboard(client) {
+  const methods = [['gateway','درگاه','coins:method:gateway'],['crypto','ارز دیجیتال','coins:method:crypto'],['stars','استارز ⭐','coins:method:stars'],['card','کارت به کارت','coins:method:card']];
+  const rows = [];
+  for (const [key, label, callback] of methods) if (await botSettingValue(client, `finance_${key}_enabled`, 'true') === 'true') rows.push([{ text: label, callback_data: callback }]);
+  rows.push([{ text: 'بازگشت', callback_data: 'coins:back' }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
+async function financeMethodsAdminKeyboard(client) {
+  const methods = [['gateway','درگاه'],['crypto','ارزدیجیتال'],['stars','استارز'],['card','کارت به کارت']];
+  const rows = [];
+  for (const [key, label] of methods) {
+    const enabled = await botSettingValue(client, `finance_${key}_enabled`, 'true') === 'true';
+    rows.push([{ text: `${label} ${enabled ? '🟢' : '🔴'}`, callback_data: `finance:method_toggle:${key}` }]);
+  }
+  rows.push([{ text: 'بازگشت امور مالی', callback_data: 'finance:methods_back' }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
 
 function coinAmountKeyboard(packages = [], customEnabled = true) { const rows = []; for (let i=0;i<packages.length;i+=2) rows.push(packages.slice(i,i+2).map(x => ({ text: `${Number(x).toLocaleString('en-US')} مانوکوین`, callback_data: `coins:amount:${x}` }))); if (customEnabled) rows.push([{ text: 'مقدار دلخواه', callback_data: 'coins:amount:custom' }]); rows.push([{ text: 'بازگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function walletPaymentLabel(w) { const name = String(w.name || '').trim(); const asset = w.asset === 'USDT_TRC20' || w.asset === 'USDT-TRC20' || w.asset === 'USDT' ? 'USDT' : String(w.asset || ''); const network = w.network === 'TRON' ? 'TRC20' : String(w.network || ''); return name || `${asset}-${network}`; }
@@ -293,7 +309,7 @@ function cryptoWalletChoiceKeyboard(wallets = []) { return { reply_markup: { inl
 function money(n, digits = 6) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
 async function selectedCoinAmount(client, id) { const row = (await client.query('SELECT action_state FROM users WHERE telegram_id=$1', [id])).rows[0]; const amount = Number(String(row?.action_state || '').split(':')[2]); return Number.isInteger(amount) && amount > 0 ? amount : 0; }
 async function coinAmountPanel(client, id, callbackQuery = null) { const raw = await botSettingValue(client, 'crypto_coin_packages', '100,200,500,1000'); const packages = [...new Set(String(raw).split(',').map(x => Number(x.trim())).filter(x => Number.isInteger(x) && x > 0))].slice(0, 12); const custom = await botSettingValue(client, 'crypto_custom_amount_enabled', 'true') === 'true'; const text = `🪙 خرید مانوکوین\n\nلطفاً مقدار مانوکوین موردنظر را انتخاب کن.\n\nحداقل خرید: ${await botSettingValue(client, 'crypto_coin_min', '100')}\nحداکثر خرید: ${await botSettingValue(client, 'crypto_coin_max', '1000')}`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, coinAmountKeyboard(packages, custom)) : send(id, text, coinAmountKeyboard(packages, custom)); }
-async function paymentMethodsForAmount(client, id, amount, callbackQuery = null) { await updateAction(client, id, `coins:amount_selected:${amount}`); const text = `✅ مقدار انتخاب شد: ${Number(amount).toLocaleString('en-US')} مانوکوین\n\nحالا روش پرداخت را انتخاب کن:`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, paymentMethodKeyboard()) : send(id, text, paymentMethodKeyboard()); }
+async function paymentMethodsForAmount(client, id, amount, callbackQuery = null) { await updateAction(client, id, `coins:amount_selected:${amount}`); const text = `✅ مقدار انتخاب شد: ${Number(amount).toLocaleString('en-US')} مانوکوین\n\nحالا روش پرداخت را انتخاب کن:`; const markup = await paymentMethodKeyboard(client); return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup); }
 async function liveTomanRates() { try { const r = await fetch('https://api.wallex.ir/v1/markets', { signal: AbortSignal.timeout(10000) }); const j = await r.json(); const symbols = j?.result?.symbols || {}; const usdt = Number(symbols.USDTTMN?.stats?.lastPrice || 0); const trx = Number(symbols.TRXTMN?.stats?.lastPrice || 0); if (usdt > 0 && trx > 0) return { usdt, trx }; } catch {} return { usdt: 0, trx: 0 }; }
 async function cryptoWalletsForPurchase(client) { return (await client.query("SELECT id,name,asset,address,network,monitor_enabled FROM crypto_wallets WHERE enabled=TRUE AND monitor_enabled=TRUE AND asset IN ('TRX','USDT_TRC20','USDT','USDT-TRC20') AND network IN ('TRON','TRC20','TRON/TRC20') ORDER BY id")).rows; }
 async function cryptoWalletChoice(client, id, callbackQuery = null) { const wallets = await cryptoWalletsForPurchase(client); if (!wallets.length) return send(id, 'در حال حاضر ولت USDT روی شبکه TRC20 برای پرداخت فعال نیست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:amount_methods' }]] } }); const text = `💳 نوع ارز دیجیتال و شبکه را انتخاب کن:\n\n${wallets.map(w => `• ${walletPaymentLabel(w)}\n  ارز: ${w.asset === 'USDT_TRC20' || w.asset === 'USDT-TRC20' || w.asset === 'USDT' ? 'USDT' : w.asset}\n  شبکه: ${w.network === 'TRON' ? 'TRC20' : w.network}`).join('\n\n')}`; return callbackQuery ? editAudienceCallback(callbackQuery, id, text, cryptoWalletChoiceKeyboard(wallets)) : send(id, text, cryptoWalletChoiceKeyboard(wallets)); }
@@ -676,6 +692,7 @@ function beautyMessageTarget(appearance, path, itemId) {
     if (appearance.screens?.[nextPath]) return { parent: appearance.screens[nextPath], key: 'message' };
   }
   if (path === 'root' && appearance.feedback && Object.prototype.hasOwnProperty.call(appearance.feedback, itemId)) return { parent: appearance.feedback, key: itemId };
+  if (appearance.screens?.[path]?.feedback && Object.prototype.hasOwnProperty.call(appearance.screens[path].feedback, itemId)) return { parent: appearance.screens[path].feedback, key: itemId };
   if (appearance.screens?.[itemId]) return { parent: appearance.screens[itemId], key: 'message' };
   if (appearance.screens?.[path]) return { parent: appearance.screens[path], key: 'message' };
   return null;
@@ -704,7 +721,7 @@ function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
   const rows = beautyPathRows(appearance, path);
   const items = rows.flat().filter(item => item?.enabled !== false);
   if (!selectedId) {
-    const keyboardRows = rows.map(row => (row || []).filter(item => item?.enabled !== false).map(item => ({ text: item.label || item.id, callback_data: `beauty:${section}:pick:${path}:${item.id}` }))).filter(row => row.length);
+    const keyboardRows = rows.map(row => (row || []).filter(item => item?.enabled !== false).map(item => ({ text: item.label || item.id, ...(item.icon_custom_emoji_id ? { icon_custom_emoji_id: item.icon_custom_emoji_id } : {}), callback_data: `beauty:${section}:pick:${path}:${item.id}` }))).filter(row => row.length);
     keyboardRows.push([{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:${beautyParentPath(path)}` }]);
     return { reply_markup: { inline_keyboard: keyboardRows } };
   }
@@ -713,7 +730,7 @@ function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
   const status = item.enabled === false ? 'OFF🔴' : 'ON🟢';
   return { reply_markup: { inline_keyboard: [
     [{ text: '👆🏻', callback_data: `beauty:${section}:move:up:${path}:${item.id}` }],
-    [{ text: '👈🏻', callback_data: `beauty:${section}:move:left:${path}:${item.id}` }, { text: item.label || item.id, callback_data: `beauty:${section}:noop` }, { text: '👉🏻', callback_data: `beauty:${section}:move:right:${path}:${item.id}` }],
+    [{ text: '👈🏻', callback_data: `beauty:${section}:move:left:${path}:${item.id}` }, { text: item.label || item.id, ...(item.icon_custom_emoji_id ? { icon_custom_emoji_id: item.icon_custom_emoji_id } : {}), callback_data: `beauty:${section}:noop` }, { text: '👉🏻', callback_data: `beauty:${section}:move:right:${path}:${item.id}` }],
     [{ text: '👇🏻', callback_data: `beauty:${section}:move:down:${path}:${item.id}` }],
     [{ text: 'Message❔', callback_data: `beauty:${section}:message:${path}:${item.id}` }, { text: 'Name⭕️', callback_data: `beauty:${section}:name:${path}:${item.id}` }, { text: 'Icon✨', callback_data: `beauty:${section}:icon:${path}:${item.id}` }],
     [{ text: 'Style🎨', callback_data: `beauty:${section}:style:${path}:${item.id}` }],
@@ -742,20 +759,62 @@ function beautyEditorText(section, appearance, path = 'root', selectedId = null,
 function updateAppearanceSetting(client, section, appearance) { const [key, json] = saveAppearanceQuery(section, appearance); return client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, json]); }
 function moveBeautyItem(appearance, path, itemId, direction) {
   const out = JSON.parse(JSON.stringify(appearance));
-  const rows = path === 'root' ? out.buttons : (out.screens?.[path]?.buttons || []);
-  const normalized = path === 'root' ? rows : [rows.flat ? rows.flat() : rows];
-  const grid = path === 'root' ? rows : (Array.isArray(rows[0]) ? rows : [rows]);
+  const isRoot = path === 'root';
+  const rows = isRoot ? (out.buttons || []) : (out.screens?.[path]?.buttons || []);
+  // The rendered root menu may flatten the saved rows. Move according to
+  // the visible grid so Down never becomes an apparent horizontal move.
+  if (isRoot && (out.layout === 'columns2' || out.layout === 'single')) {
+    const columns = out.layout === 'columns2' ? 2 : 1;
+    const flat = rows.flat().filter(Boolean);
+    const index = flat.findIndex(item => item?.id === itemId);
+    if (index < 0) return out;
+    const delta = direction === 'left' ? -1 : direction === 'right' ? 1 : direction === 'up' ? -columns : direction === 'down' ? columns : 0;
+    const target = index + delta;
+    if (target >= 0 && target < flat.length) [flat[index], flat[target]] = [flat[target], flat[index]];
+    out.buttons = [];
+    for (let i = 0; i < flat.length; i += columns) out.buttons.push(flat.slice(i, i + columns));
+    return out;
+  }
+  const nested = isRoot || Array.isArray(rows[0]);
+  if (!isRoot && !nested) {
+    const index = rows.findIndex(item => item?.id === itemId);
+    if (index < 0) return out;
+    if (direction === 'left' || direction === 'right') {
+      const target = index + (direction === 'left' ? -1 : 1);
+      if (target >= 0 && target < rows.length) [rows[index], rows[target]] = [rows[target], rows[index]];
+      out.screens[path].buttons = rows;
+      return out;
+    }
+    if (direction === 'up' || direction === 'down') {
+      // Move only the selected button to its own row. The other buttons keep
+      // their relative order and never get pulled into the selected slot.
+      const selected = rows[index];
+      const remaining = rows.filter((_, i) => i !== index);
+      out.screens[path].buttons = direction === 'down' ? [remaining, [selected]] : [[selected], remaining];
+      return out;
+    }
+    return out;
+  }
+  const grid = rows;
   let r = -1, c = -1;
-  for (let i=0;i<grid.length;i++) for (let j=0;j<(grid[i]||[]).length;j++) if (grid[i][j]?.id === itemId) { r=i; c=j; }
+  for (let i=0; i<grid.length; i += 1) for (let j=0; j<(grid[i] || []).length; j += 1) if (grid[i][j]?.id === itemId) { r=i; c=j; }
   if (r < 0) return out;
-  let nr=r, nc=c;
-  if (direction === 'left') nc=Math.max(0,c-1);
-  if (direction === 'right') nc=Math.min((grid[r]||[]).length-1,c+1);
-  if (direction === 'up') nr=Math.max(0,r-1);
-  if (direction === 'down') nr=Math.min(grid.length-1,r+1);
-  if (direction === 'left' || direction === 'right') [grid[r][c],grid[nr][nc]]=[grid[nr][nc],grid[r][c]];
-  else if (nr !== r) { const target = grid[nr] || (grid[nr]=[]); target.splice(Math.min(nc,target.length),0,grid[r].splice(c,1)[0]); if (!grid[r].length) grid.splice(r,1); }
-  if (path === 'root') out.buttons = grid; else out.screens[path].buttons = Array.isArray(rows[0]) ? grid : grid[0];
+  if (direction === 'left' || direction === 'right') {
+    const target = c + (direction === 'left' ? -1 : 1);
+    if (target >= 0 && target < grid[r].length) [grid[r][c], grid[r][target]] = [grid[r][target], grid[r][c]];
+  } else if (direction === 'up' || direction === 'down') {
+    const targetRow = r + (direction === 'up' ? -1 : 1);
+    if (targetRow >= 0 && targetRow < grid.length && grid[targetRow]?.length) {
+      // Move the selected button into the destination row. Do not swap it
+      // with the destination button: the destination row keeps its buttons,
+      // so two buttons naturally sit beside each other there.
+      const target = grid[targetRow];
+      const [selected] = grid[r].splice(c, 1);
+      target.push(selected);
+      if (!grid[r].length) grid.splice(r, 1);
+    }
+  }
+  if (isRoot) out.buttons = grid; else out.screens[path].buttons = grid;
   return out;
 }
 async function editBeautyMessage(callbackQuery, id, text, markup) { return editAudienceCallback(callbackQuery, id, text, markup); }
@@ -892,12 +951,16 @@ async function financialReport(client) {
   return `گزارش مالی\n\nخرید پلاس در ۳۰ روز اخیر: ${sales.rows[0].count}\nدرآمد ثبت‌شده: ${sales.rows[0].total} مانو کوین\nموجودی کل کاربران: ${coins.rows[0].balance} مانو کوین\nکاربران پلاس فعال: ${plus.rows[0].active}\nچت‌های فعال: ${Math.floor(Number(active.rows[0].active_chats) / 2)}`;
 }
 async function financeStatusText(client) {
-  const [enabled, price, gateways, wallets, cards, plus] = await Promise.all([
+  const [enabled, price, gateways, wallets, cards, gatewayOn, cryptoOn, starsOn, cardOn, plus] = await Promise.all([
     botSettingValue(client, 'finance_enabled', 'false'), botSettingValue(client, 'finance_coin_price', 'تنظیم نشده'),
     botSettingValue(client, 'finance_gateways', 'تنظیم نشده'), botSettingValue(client, 'finance_wallets', 'تنظیم نشده'),
-    botSettingValue(client, 'finance_cards', 'تنظیم نشده'), client.query("SELECT COUNT(*)::int AS n FROM plus_purchases WHERE created_at >= NOW()-INTERVAL '30 days'")
+    botSettingValue(client, 'finance_cards', 'تنظیم نشده'),
+    botSettingValue(client, 'finance_gateway_enabled', 'true'), botSettingValue(client, 'finance_crypto_enabled', 'true'),
+    botSettingValue(client, 'finance_stars_enabled', 'true'), botSettingValue(client, 'finance_card_enabled', 'true'),
+    client.query("SELECT COUNT(*)::int AS n FROM plus_purchases WHERE created_at >= NOW()-INTERVAL '30 days'")
   ]);
-  return `وضعیت بخش پرداختی‌ها\n\nفعال: ${enabled === 'true' ? 'بله' : 'خیر'}\nقیمت مانوکوین: ${price}\nدرگاه‌ها: ${gateways}\nولت‌ها: ${wallets}\nشماره کارت‌ها: ${cards}\nخریدهای ثبت‌شده در ۳۰ روز اخیر: ${plus.rows[0].n}`;
+  const flag = value => value === 'true' ? '🟢 فعال' : '🔴 خاموش';
+  return `وضعیت بخش پرداختی‌ها\n\nفعال: ${enabled === 'true' ? 'بله' : 'خیر'}\n\nدرگاه: ${flag(gatewayOn)}\nارزدیجیتال: ${flag(cryptoOn)}\nاستارز: ${flag(starsOn)}\nکارت به کارت: ${flag(cardOn)}\n\nقیمت مانوکوین: ${price}\nدرگاه‌های ثبت‌شده: ${gateways}\nولت‌ها: ${wallets}\nشماره کارت‌ها: ${cards}\nخریدهای ثبت‌شده در ۳۰ روز اخیر: ${plus.rows[0].n}`;
 }
 async function adminBanUser(client, targetId, seconds) {
   const result = await client.query('SELECT partner_id FROM users WHERE telegram_id=$1', [targetId]);
@@ -1540,7 +1603,7 @@ async function handleStart(id, payload = null) {
       return;
     }
     if (me.status === 'waiting') return send(id, 'وضعیت فعلی: در صف انتظار هستی. به‌محض پیدا شدن فرد سازگار خبر می‌دهم.', waitingKeyboard(s));
-    if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
+    if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s, isAdmin(id)));
     const first = await rewardFirstEntry(id, null, 0, s);
     return send(id, first ? `${publicAppearance(s).message}\n\n🎁 برای ورود اول، ۲۰ مانو کوین هدیه گرفتی.` : publicAppearance(s).message, mainKeyboard(s));
   } finally { if (!released) client.release(); }
@@ -1554,7 +1617,7 @@ async function handleConnect(id) {
       if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
     }
     if (!s.bot_enabled && !isAdmin(id)) return send(id, 'ربات موقتاً خاموش است.');
-    if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s));
+    if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s, isAdmin(id)));
     await updateAction(client, id, 'choose_preference'); return send(id, screenMessagePayload(publicAppearance(s), 'preference', feedbackMessagePayload(publicAppearance(s), 'connect_prompt', 'دوست داری به چه کسی وصل شوی؟')), preferenceKeyboard(s));
   } finally { client.release(); }
 }
@@ -1657,6 +1720,15 @@ async function handleCallback(id, data, callbackQuery = null) {
       return send(id,'عملیات ادمین نامعتبر است.');
     }
     if (data.startsWith('gift:') && !isAdmin(id)) { await updateAction(sClient, id, null); return send(id, 'این بخش فقط برای مدیریت ربات است.'); }
+    if (isAdmin(id) && data.startsWith('finance:method_toggle:')) {
+      const key = data.slice('finance:method_toggle:'.length);
+      if (!['gateway','crypto','stars','card'].includes(key)) return send(id, 'روش پرداخت نامعتبر است.');
+      const settingKey = `finance_${key}_enabled`;
+      const next = (await botSettingValue(sClient, settingKey, 'true')) !== 'true';
+      await saveBotSetting(sClient, settingKey, String(next));
+      return editAudienceCallback(callbackQuery, id, await financeStatusText(sClient), await financeMethodsAdminKeyboard(sClient));
+    }
+    if (isAdmin(id) && data === 'finance:methods_back') return editAudienceCallback(callbackQuery, id, 'امور مالی', botFinanceKeyboard());
     if (isAdmin(id) && data.startsWith('beauty:')) return handleBeautyCallback(id, data, callbackQuery, sClient, s);
     if (isAdmin(id) && data === 'bonus:list') { const rows = await bonusRows(sClient); return editAudienceCallback(callbackQuery, id, bonusListText(rows), bonusListKeyboard(rows)); }
     if (isAdmin(id) && data === 'bonus:back_manocoin') { await updateAction(sClient, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
@@ -1671,6 +1743,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'coins:amount:custom') { await updateAction(sClient, id, 'coins:custom_amount'); return editAudienceCallback(callbackQuery, id, 'مقدار دلخواه مانوکوین را به‌صورت عدد بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:buy' }]] } }); }
     if (data.startsWith('coins:amount:')) { const amount=Number(data.slice('coins:amount:'.length)); const min=Number(await botSettingValue(sClient,'crypto_coin_min','100')); const max=Number(await botSettingValue(sClient,'crypto_coin_max','1000')); if(!Number.isInteger(amount)||amount<min||amount>max) return coinAmountPanel(sClient,id,callbackQuery); return paymentMethodsForAmount(sClient,id,amount,callbackQuery); }
     if (data === 'coins:amount_methods') { const amount=await selectedCoinAmount(sClient,id); return amount ? paymentMethodsForAmount(sClient,id,amount,callbackQuery) : coinAmountPanel(sClient,id,callbackQuery); }
+    if (data === 'coins:method:gateway') { const text = await botSettingValue(sClient, 'finance_gateways', 'اطلاعات درگاه پرداخت هنوز توسط مدیریت ثبت نشده است.'); return send(id, text, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت به روش‌های واریز', callback_data: 'coins:amount_methods' }]] } }); }
     if (data === 'coins:method:card') return cardPaymentForUser(sClient, id);
     if (data === 'coins:method:crypto') { const amount=await selectedCoinAmount(sClient,id); return amount ? cryptoWalletChoice(sClient,id,callbackQuery) : coinAmountPanel(sClient,id,callbackQuery); }
     if (data.startsWith('coins:crypto_wallet:')) { const amount=await selectedCoinAmount(sClient,id); if(!amount) return coinAmountPanel(sClient,id,callbackQuery); return createCryptoPurchase(sClient,id,amount,Number(data.split(':')[2])); }
@@ -1955,10 +2028,10 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'stop') {
       const meNow = await user(sClient, id); if (!meNow?.partner_id) return send(id, 'در حال حاضر در مکالمه‌ای نیستی.', mainKeyboard(s));
       const started = meNow.conversation_started_at ? new Date(meNow.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000;
-      if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s));
+      if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s, isAdmin(id)));
       await updateAction(sClient, id, 'confirm_stop'); return send(id, screenMessagePayload(publicAppearance(s), 'confirm_stop', 'مطمئنی مکالمه قطع بشه؟'), confirmStopKeyboard(s));
     }
-    if (data === 'stop_no') { await updateAction(sClient, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s)); }
+    if (data === 'stop_no') { await updateAction(sClient, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
     if (data === 'stop_yes') {
       const partnerId = await disconnect(id); await updateAction(sClient, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard(s));
     }
@@ -2344,13 +2417,19 @@ function dynamicPrivateAction(value, s) { return appearanceButtonId(value, 'priv
 function visiblePrivateAction(value, s) {
   const appearance = privateAppearance(s); const text = String(value);
   for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && String(item.label) === text) return item.id;
-  for (const screen of Object.values(appearance.screens || {})) for (const item of screen.buttons || []) if (item.enabled !== false && String(item.label) === text) return item.id;
+  for (const screen of Object.values(appearance.screens || {})) {
+    const rows = Array.isArray(screen.buttons?.[0]) ? screen.buttons : [screen.buttons || []];
+    for (const row of rows) for (const item of row || []) if (item?.enabled !== false && String(item.label) === text) return item.id;
+  }
   return null;
 }
 function visiblePublicAction(value, s) {
   const appearance = publicAppearance(s); const text = String(value);
   for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && String(item.label) === text) return item.id;
-  for (const screen of Object.values(appearance.screens || {})) for (const item of screen.buttons || []) if (item.enabled !== false && String(item.label) === text) return item.id;
+  for (const screen of Object.values(appearance.screens || {})) {
+    const rows = Array.isArray(screen.buttons?.[0]) ? screen.buttons : [screen.buttons || []];
+    for (const row of rows) for (const item of row || []) if (item?.enabled !== false && String(item.label) === text) return item.id;
+  }
   const legacy = { [s.connect_button]: 'connect', [s.cancel_button]: 'cancel', [s.disconnect_button]: 'disconnect', [s.profile_button]: 'profile', [s.increase_coins_button]: 'coins', [s.free_coins_button]: 'free_coins', [s.plus_button]: 'plus', [s.back_button]: 'back', 'اتصال به مخاطب خاص': 'contact_special' };
   return legacy[text] || null;
 }
@@ -2358,7 +2437,10 @@ function botKeyboardLabels(s = {}) {
   const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
-    for (const screen of Object.values(appearance?.screens || {})) for (const item of screen?.buttons || []) if (item?.label) labels.add(String(item.label).trim());
+    for (const screen of Object.values(appearance?.screens || {})) {
+      const rows = Array.isArray(screen?.buttons?.[0]) ? screen.buttons : [screen?.buttons || []];
+      for (const row of rows) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
+    }
   };
   addAppearance(publicAppearance(s)); addAppearance(privateAppearance(s));
   return labels;
@@ -2457,8 +2539,6 @@ async function handleText(id, text, meta = {}) {
       if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
       await saveBotSetting(client,'admin_activity_report_channel_id',channel.id); await saveBotSetting(client,'admin_activity_report_private',String(channel.isPrivate)); await saveBotSetting(client,'admin_activity_report_enabled','true'); await updateAction(client,id,'admin:admins:activity_report'); await audit(client,id,channel.id,'admin_activity_report_channel_connected',{title:channel.title}); return send(id,`کانال «${channel.title}» متصل شد و گزارش‌ها فعال شدند.`,adminActivityReportKeyboard());
     }
-    if (isAdmin(id) && (me.action_state?.startsWith('beauty:name:') || me.action_state?.startsWith('beauty:message:')) && isReservedEditorLabel(value, s)) { await updateAction(client, id, null); me.action_state = null; }
-
     if (isAdmin(id) && me.action_state?.startsWith('beauty:icon:')) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId);
       if (!item) return send(id, 'دکمه پیدا نشد.');
@@ -2503,7 +2583,7 @@ async function handleText(id, text, meta = {}) {
     if (me.action_state === 'chatgift:coin_custom') { const amount = Number(value); if (!Number.isInteger(amount) || amount < 1 || amount > 100000) return send(id, 'مقدار باید عدد صحیح بین 1 تا 100000 باشد.'); await updateAction(client, id, `chatgift:coins:${amount}`); return send(id, `مقدار انتخابی: ${amount} مانو کوین`, chatGiftCoinKeyboard(amount)); }
     if (me.action_state === 'coins:custom_amount') { const amount=Number(value.replace(/[,،]/g,'')); const min=Number(await botSettingValue(client,'crypto_coin_min','100')); const max=Number(await botSettingValue(client,'crypto_coin_max','1000')); if(!Number.isInteger(amount)||amount<min||amount>max) return send(id, `مقدار باید عدد صحیح بین ${min} و ${max} باشد.`, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:buy' }]] } }); return paymentMethodsForAmount(client,id,amount); }
     if (me.action_state === 'coins:gift') { const code = value.replace(/^\/gift\s+/i, '').replace(/^\//, '').trim(); const result = await redeemGift(client, id, code); await updateAction(client, id, null); return result; }
-    if (value === 'هدیه دادن' && me.status === 'chatting' && me.partner_id) return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard());
+    if ((publicActionId === 'gift' || value === 'هدیه دادن') && me.status === 'chatting' && me.partner_id) return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard());
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
       const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s);
@@ -2658,7 +2738,7 @@ async function handleText(id, text, meta = {}) {
       return send(id, 'کنترل ربات', controlKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:finance_panel') {
-      if (value === 'وضعیت') return send(id, await financeStatusText(client), botFinanceKeyboard());
+      if (value === 'وضعیت') return send(id, await financeStatusText(client), await financeMethodsAdminKeyboard(client));
       if (value === 'مانوکوین') { await updateAction(client, id, 'admin:manocoin'); return send(id, 'مانوکوین', manoCoinAdminKeyboard()); }
       if (value === 'قیمت مانوکوین') { await updateAction(client, id, 'admin:finance:price'); return send(id, `قیمت فعلی مانوکوین: ${await botSettingValue(client, 'finance_coin_price', 'تنظیم نشده')}\nقیمت جدید را بفرست.`, botFinanceKeyboard()); }
       if (value === 'درگاه ها') { await updateAction(client, id, 'admin:finance:gateways'); return send(id, `درگاه‌های فعلی: ${await botSettingValue(client, 'finance_gateways', 'تنظیم نشده')}\nفهرست یا توضیح درگاه‌ها را بفرست.`, botFinanceKeyboard()); }
@@ -3172,7 +3252,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
       await updateAction(client, id, 'confirm_stop'); return send(id, screenMessagePayload(publicAppearance(s), 'confirm_stop', 'مطمئنی مکالمه قطع بشه؟'), confirmStopKeyboard(s));
     }
     if (me.action_state === 'confirm_stop') {
-      if (publicActionId === 'continue' || value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s)); }
+      if (publicActionId === 'continue' || value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
       if (publicActionId === 'confirm' || value === 'اره مطمئنم') {
         const partnerId = await disconnect(id); await updateAction(client, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard(s));
       }
@@ -3194,8 +3274,8 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if ((value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
       const panel = await adminUserPanel(client, id, Number(me.partner_id)); await updateAction(client, id, `admin:user_control:${me.partner_id}`); return send(id, panel.text, panel.markup);
     }
-    if (value === 'بازی' && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
-    if (value === 'ایده صحبت' && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
+    if ((publicActionId === 'games' || value === 'بازی') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
+    if ((publicActionId === 'ideas' || value === 'ایده صحبت') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id);
     const blocked = await client.query(
@@ -3346,7 +3426,7 @@ export async function duelApi(req, res) {
   const room = String(source?.room || '').trim(); const token = String(source?.token || '').trim(); const player = Number(source?.player);
   if (!room || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
   if (req.method === 'GET') { const state = await duelState(pool, room, token, player); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
-  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','roll','draw','truth','chat','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
+  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','roll','draw','truth','chat','reaction','edit','delete','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
