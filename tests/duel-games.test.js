@@ -51,4 +51,19 @@ describe('mid-chat duel games', () => {
     expect(page).toContain('/api/game/action');
     expect(page).toContain('گفت‌وگوی داخل بازی');
   });
+  it('wires Telegram-like message actions into the game chat', () => {
+    const service = fs.readFileSync(new URL('../src/duel-game-service.js', import.meta.url), 'utf8');
+    const webhook = fs.readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
+    const page = fs.readFileSync(new URL('../game/duel.html', import.meta.url), 'utf8');
+    expect(service).toContain('reply_to_id');
+    expect(service).toContain('duel_game_message_reactions');
+    expect(service).toContain("action === 'edit_message'");
+    expect(service).toContain("action === 'delete_message'");
+    expect(service).toContain("action === 'reaction'");
+    expect(webhook).toContain("'edit_message','delete_message','reaction'");
+    expect(page).toContain('data-action="reply"');
+    expect(page).toContain('data-action="edit"');
+    expect(page).toContain('data-action="delete"');
+    expect(page).toContain('data-action="react"');
+  });
 });

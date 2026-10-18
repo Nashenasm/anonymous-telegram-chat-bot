@@ -90,7 +90,7 @@ function publicState(session, playerId, messages = []) {
     player: Number(playerId), side, opponent: Number(session.player_one) === Number(playerId) ? Number(session.player_two) : Number(session.player_one),
     status, ready: side === 'one' ? Boolean(session.ready_one) : Boolean(session.ready_two),
     opponentReady: side === 'one' ? Boolean(session.ready_two) : Boolean(session.ready_one),
-    state: safeState(state), legalMoves: session.game_type === 'chess' ? availableChessMoves(session, state, playerId) : {}, messages: messages.map(row => ({ id: row.id, sender: Number(row.sender_id), text: row.text, createdAt: row.created_at })),
+    state: safeState(state), legalMoves: session.game_type === 'chess' ? availableChessMoves(session, state, playerId) : {}, messages: messages.map(row => ({ id: Number(row.id), sender: Number(row.sender_id), text: row.deleted_at ? '' : row.text, deleted: Boolean(row.deleted_at), edited: Boolean(row.edited_at), replyToId: row.reply_to_id ? Number(row.reply_to_id) : null, createdAt: row.created_at, editedAt: row.edited_at, reactions: Array.isArray(row.reactions) ? row.reactions.map(reaction => ({ emoji: reaction.emoji, userId: Number(reaction.userId) })) : [] })),
   };
 }
 
@@ -108,7 +108,19 @@ export async function ensureDuelSchema(client) {
   await client.query(`CREATE TABLE IF NOT EXISTS duel_game_messages (
     id BIGSERIAL PRIMARY KEY, room_id TEXT NOT NULL REFERENCES duel_game_sessions(room_id) ON DELETE CASCADE,
     sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, text TEXT NOT NULL,
+    reply_to_id BIGINT REFERENCES duel_game_messages(id) ON DELETE SET NULL,
+    edited_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await client.query('ALTER TABLE duel_game_messages ADD COLUMN IF NOT EXISTS reply_to_id BIGINT REFERENCES duel_game_messages(id) ON DELETE SET NULL');
+  await client.query('ALTER TABLE duel_game_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ');
+  await client.query('ALTER TABLE duel_game_messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');
+  await client.query(`CREATE TABLE IF NOT EXISTS duel_game_message_reactions (
+    message_id BIGINT NOT NULL REFERENCES duel_game_messages(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+    emoji TEXT NOT NULL CHECK (char_length(emoji) <= 16),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(message_id,user_id)
   )`);
   await client.query('CREATE INDEX IF NOT EXISTS duel_game_sessions_players_idx ON duel_game_sessions(player_one, player_two, status, created_at DESC)');
   await client.query('CREATE INDEX IF NOT EXISTS duel_game_messages_room_idx ON duel_game_messages(room_id, id DESC)');
@@ -126,7 +138,12 @@ export async function createDuelSession(pool, gameType, playerOne, playerTwo) {
 }
 
 async function loadSession(pool, room, token) { return (await pool.query('SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 AND created_at > NOW() - (($3::text || \' minutes\')::interval)', [room, token, ROOM_TTL_MINUTES])).rows[0] || null; }
-async function loadMessages(pool, room) { return (await pool.query('SELECT id,sender_id,text,created_at FROM duel_game_messages WHERE room_id=$1 ORDER BY id DESC LIMIT 60', [room])).rows.reverse(); }
+async function loadMessages(pool, room) {
+  return (await pool.query(`SELECT m.id,m.sender_id,m.text,m.reply_to_id,m.edited_at,m.deleted_at,m.created_at,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object('emoji',r.emoji,'userId',r.user_id) ORDER BY r.emoji)
+      FROM duel_game_message_reactions r WHERE r.message_id=m.id),'[]'::jsonb) AS reactions
+    FROM duel_game_messages m WHERE m.room_id=$1 ORDER BY m.id DESC LIMIT 60`, [room])).rows.reverse();
+}
 
 export async function latestDuelSession(pool, playerId, gameType = null) {
   const params = [playerId]; const where = ["$1 IN (player_one,player_two)", "status IN ('waiting','active')", "created_at > NOW() - INTERVAL '120 minutes'"];
@@ -227,7 +244,35 @@ export async function duelAction(pool, room, token, playerId, action, payload = 
   if (action === 'chat') {
     const session = await loadSession(pool, room, token); if (!session || !playerSide(session, playerId)) return null;
     const text = String(payload.text || '').trim().slice(0, MAX_CHAT_LENGTH); if (!text) throw new Error('empty_message');
-    await pool.query('INSERT INTO duel_game_messages(room_id,sender_id,text) VALUES($1,$2,$3)', [room, playerId, text]);
+    const replyToId = payload.replyToId == null ? null : Number(payload.replyToId);
+    if (replyToId != null) {
+      const reply = (await pool.query('SELECT id FROM duel_game_messages WHERE id=$1 AND room_id=$2 AND deleted_at IS NULL', [replyToId, room])).rows[0];
+      if (!reply) throw new Error('invalid_reply');
+    }
+    await pool.query('INSERT INTO duel_game_messages(room_id,sender_id,text,reply_to_id) VALUES($1,$2,$3,$4)', [room, playerId, text, replyToId]);
+    return duelState(pool, room, token, playerId);
+  }
+  if (action === 'edit_message' || action === 'delete_message' || action === 'reaction') {
+    const session = await loadSession(pool, room, token); if (!session || !playerSide(session, playerId)) return null;
+    const messageId = Number(payload.messageId); if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error('invalid_message');
+    const message = (await pool.query('SELECT * FROM duel_game_messages WHERE id=$1 AND room_id=$2', [messageId, room])).rows[0];
+    if (!message) throw new Error('message_not_found');
+    if (action === 'edit_message') {
+      if (Number(message.sender_id) !== Number(playerId)) throw new Error('not_message_author');
+      if (message.deleted_at) throw new Error('message_deleted');
+      const text = String(payload.text || '').trim().slice(0, MAX_CHAT_LENGTH); if (!text) throw new Error('empty_message');
+      await pool.query('UPDATE duel_game_messages SET text=$2,edited_at=NOW() WHERE id=$1', [messageId, text]);
+    } else if (action === 'delete_message') {
+      if (Number(message.sender_id) !== Number(playerId)) throw new Error('not_message_author');
+      if (!message.deleted_at) await pool.query('UPDATE duel_game_messages SET deleted_at=NOW() WHERE id=$1', [messageId]);
+    } else {
+      if (message.deleted_at) throw new Error('message_deleted');
+      const emoji = String(payload.emoji || '').trim(); if (!emoji || emoji.length > 16) throw new Error('invalid_reaction');
+      const current = (await pool.query('SELECT emoji FROM duel_game_message_reactions WHERE message_id=$1 AND user_id=$2', [messageId, playerId])).rows[0];
+      if (current?.emoji === emoji) await pool.query('DELETE FROM duel_game_message_reactions WHERE message_id=$1 AND user_id=$2', [messageId, playerId]);
+      else await pool.query(`INSERT INTO duel_game_message_reactions(message_id,user_id,emoji) VALUES($1,$2,$3)
+        ON CONFLICT(message_id,user_id) DO UPDATE SET emoji=EXCLUDED.emoji,created_at=NOW()`, [messageId, playerId, emoji]);
+    }
     return duelState(pool, room, token, playerId);
   }
   const client = await pool.connect();
