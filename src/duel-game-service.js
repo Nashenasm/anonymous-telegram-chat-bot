@@ -42,7 +42,7 @@ function initialState(type, playerOne, playerTwo) {
   const current = type === 'ludo' ? (crypto.randomInt(0, 2) === 0 ? Number(playerOne) : Number(playerTwo)) : Number(playerOne);
   if (type === 'ludo') { const palette = ['red', 'blue', 'yellow', 'green']; const first = palette[crypto.randomInt(0, palette.length)]; const remaining = palette.filter(color => color !== first); const second = remaining[crypto.randomInt(0, remaining.length)]; const colors = { [playerOne]: first, [playerTwo]: second }; return { positions: { [playerOne]: [-1, -1, -1, -1], [playerTwo]: [-1, -1, -1, -1] }, playerColors: colors, current, lastRoll: null, pendingRoll: null, moves: 0, winner: null }; }
   if (type === 'chess') return { board: chessBoard(), current, winner: null, moves: 0 };
-  if (type === 'truth') return { current, prompt: null, promptType: null, rounds: 0, winner: null, mode: 'tod', rating: 'pg13', history: [], lastAction: null };
+  if (type === 'truth') return { current, prompt: null, promptType: null, rounds: 0, winner: null, mode: 'tod', rating: 'pg13', history: [], questionQueue: [], questionQueueKey: 'tod:pg13', lastAction: null };
   if (type === 'cards') return { scores: { [playerOne]: 0, [playerTwo]: 0 }, current, round: 0, winner: null, lastCard: null };
   return { current, prompt: null, promptType: null, rounds: 0, winner: null };
 }
@@ -139,9 +139,9 @@ export async function createDuelSession(pool, gameType, playerOne, playerTwo) {
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 
-async function loadSession(pool, room, token) { return (await pool.query('SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 AND created_at > NOW() - (($3::text || \' minutes\')::interval)', [room, token, ROOM_TTL_MINUTES])).rows[0] || null; }
+async function loadSession(pool, room, token) { return (await pool.query("SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 AND (game_type='truth' OR created_at > NOW() - (($3::text || ' minutes')::interval))", [room, token, ROOM_TTL_MINUTES])).rows[0] || null; }
 async function loadMessages(pool, room, viewerId) {
-  return (await pool.query(`SELECT m.id,m.sender_id,m.text,m.reply_to_id,m.created_at,m.edited_at,m.deleted_at,rm.text AS reply_text,
+  return (await pool.query(`SELECT m.id,m.sender_id,m.text,m.reply_to_id,m.created_at,m.edited_at,m.deleted_at,CASE WHEN rm.deleted_at IS NULL THEN rm.text ELSE NULL END AS reply_text,
     COALESCE((SELECT json_agg(json_build_object('emoji',x.emoji,'count',x.count,'me',x.me) ORDER BY x.emoji)
       FROM (SELECT r.emoji,COUNT(*)::int AS count,BOOL_OR(r.user_id=$2) AS me
             FROM duel_game_message_reactions r WHERE r.message_id=m.id GROUP BY r.emoji) x),'[]'::json) AS reactions
@@ -150,7 +150,7 @@ async function loadMessages(pool, room, viewerId) {
 }
 
 export async function latestDuelSession(pool, playerId, gameType = null) {
-  const params = [playerId]; const where = ["$1 IN (player_one,player_two)", "status IN ('waiting','active')", "created_at > NOW() - INTERVAL '120 minutes'"];
+  const params = [playerId]; const where = ["$1 IN (player_one,player_two)", "status IN ('waiting','active')", "(game_type='truth' OR created_at > NOW() - INTERVAL '120 minutes')"];
   if (gameType) { params.push(gameType); where.push(`game_type=$${params.length}`); }
   return (await pool.query(`SELECT * FROM duel_game_sessions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT 1`, params)).rows[0] || null;
 }
@@ -236,11 +236,18 @@ function truthMove(state, session, playerId, payload = {}) {
   const command = String(payload.command || 'start'); const mode = ['truth', 'dare', 'tod'].includes(payload.mode) ? payload.mode : (state.mode || 'tod'); const rating = ['pg', 'pg13', 'adult'].includes(payload.rating) ? payload.rating : (state.rating || 'pg13');
   state.mode = mode; state.rating = rating; state.history = Array.isArray(state.history) ? state.history : [];
   if (command === 'complete') {
-    if (!state.prompt) throw new Error('no_prompt'); state.history.push(state.prompt); state.history = state.history.slice(-20); state.prompt = null; state.promptType = null; state.rounds = Number(state.rounds || 0) + 1;
-    if (state.rounds >= 10) setWinner(state, session, null); else state.current = otherPlayer(session, playerId); return;
+    if (!state.prompt) throw new Error('no_prompt'); state.history.push(state.prompt); state.prompt = null; state.promptType = null; state.rounds = Number(state.rounds || 0) + 1; state.current = otherPlayer(session, playerId); return;
   }
   if (command === 'reroll' && !state.prompt) throw new Error('no_prompt');
-  const picked = truthPrompt(mode, rating, state.history); state.prompt = picked.text; state.promptType = picked.type === 'truth' ? 'حقیقت' : 'جرئت'; state.lastAction = command; state.updatedAt = Date.now();
+  const queueKey = `${mode}:${rating}`;
+  if (state.questionQueueKey !== queueKey) { state.questionQueueKey = queueKey; state.questionQueue = []; }
+  const types = mode === 'truth' ? ['truth'] : mode === 'dare' ? ['dare'] : ['truth', 'dare'];
+  const candidates = types.flatMap(type => (TRUTH_BANKS[type][rating] || TRUTH_BANKS[type].pg13).map(text => ({ type, text })));
+  if (!Array.isArray(state.questionQueue) || !state.questionQueue.length) {
+    const fresh = candidates.filter(item => !state.history.includes(item.text)); state.questionQueue = (fresh.length ? fresh : candidates).slice();
+    for (let i = state.questionQueue.length - 1; i > 0; i--) { const j = crypto.randomInt(0, i + 1); [state.questionQueue[i], state.questionQueue[j]] = [state.questionQueue[j], state.questionQueue[i]]; }
+  }
+  const picked = state.questionQueue.shift(); state.prompt = picked.text; state.promptType = picked.type === 'truth' ? 'حقیقت' : 'جرئت'; state.lastAction = command; state.updatedAt = Date.now();
 }
 
 export async function duelState(pool, room, token, playerId) { const session = await loadSession(pool, room, token); if (!session) return null; return publicState(session, playerId, await loadMessages(pool, room, playerId)); }
@@ -262,7 +269,7 @@ export async function duelAction(pool, room, token, playerId, action, payload = 
         const text = String(payload.text || '').trim().slice(0, MAX_CHAT_LENGTH); if (!text) throw new Error('empty_message');
         await pool.query('UPDATE duel_game_messages SET text=$3,edited_at=NOW() WHERE id=$1 AND room_id=$2',[messageId,room,text]);
       } else {
-        await pool.query("UPDATE duel_game_messages SET text='',deleted_at=NOW() WHERE id=$1 AND room_id=$2",[messageId,room]);
+        await pool.query("UPDATE duel_game_messages SET text='',reply_to_id=NULL,deleted_at=NOW() WHERE id=$1 AND room_id=$2",[messageId,room]);
         await pool.query('DELETE FROM duel_game_message_reactions WHERE message_id=$1',[messageId]);
       }
     } else {
@@ -280,7 +287,7 @@ export async function duelAction(pool, room, token, playerId, action, payload = 
   try {
     await client.query('BEGIN'); const session = (await client.query('SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 FOR UPDATE', [room, token])).rows[0];
     if (!session || !playerSide(session, playerId)) { await client.query('ROLLBACK'); return null; }
-    if (action === 'ready') { const column = Number(playerId) === Number(session.player_one) ? 'ready_one' : 'ready_two'; const otherReady = Number(playerId) === Number(session.player_one) ? session.ready_two : session.ready_one; const active = Boolean(otherReady); await client.query(`UPDATE duel_game_sessions SET ${column}=TRUE,status=CASE WHEN $2 THEN 'active' ELSE status END,ends_at=CASE WHEN $2 THEN NOW()+INTERVAL '2 hours' ELSE ends_at END,updated_at=NOW() WHERE room_id=$1`, [room, active]); }
+    if (action === 'ready') { const column = Number(playerId) === Number(session.player_one) ? 'ready_one' : 'ready_two'; const otherReady = Number(playerId) === Number(session.player_one) ? session.ready_two : session.ready_one; const active = Boolean(otherReady); await client.query(`UPDATE duel_game_sessions SET ${column}=TRUE,status=CASE WHEN $2 THEN 'active' ELSE status END,ends_at=CASE WHEN $2 AND game_type <> 'truth' THEN NOW()+INTERVAL '2 hours' WHEN $2 AND game_type = 'truth' THEN NULL ELSE ends_at END,updated_at=NOW() WHERE room_id=$1`, [room, active]); }
     else if (action === 'leave') await client.query("UPDATE duel_game_sessions SET status='cancelled',updated_at=NOW() WHERE room_id=$1", [room]);
     else { assertActive(session, playerId); const state = session.state || {}; if (session.game_type === 'ludo' && action === 'roll') ludoRoll(state, session, playerId); else if (session.game_type === 'ludo' && action === 'move') ludoMove(state, session, playerId, payload); else if (session.game_type === 'chess' && action === 'move') chessMove(state, session, playerId, payload); else if (session.game_type === 'cards' && action === 'draw') cardMove(state, session, playerId); else if (session.game_type === 'truth' && action === 'truth') truthMove(state, session, playerId, payload); else throw new Error('invalid_action'); await client.query('UPDATE duel_game_sessions SET state=$2::jsonb,status=$3,winner=$4,updated_at=NOW() WHERE room_id=$1', [room, JSON.stringify(state), session.status, session.winner]); }
     await client.query('COMMIT'); return duelState(pool, room, token, playerId);
