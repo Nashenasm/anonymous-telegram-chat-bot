@@ -3278,7 +3278,9 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
       await block(id, target, found[1]); await updateAction(client, id, null); await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`); return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
     }
     if ((value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
-      const panel = await adminUserPanel(client, id, Number(me.partner_id)); await updateAction(client, id, `admin:user_control:${me.partner_id}`); return send(id, panel.text, panel.markup);
+      // Use the exact same resolver/panel path as /<numeric-id>, so the in-chat
+      // admin button cannot drift from the standalone user-control flow.
+      return openAdminUserPanel(id, String(me.partner_id));
     }
     if ((publicActionId === 'games' || value === 'بازی') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
     if ((publicActionId === 'ideas' || value === 'ایده صحبت') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
