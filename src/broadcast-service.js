@@ -1,4 +1,4 @@
-export const BROADCAST_AUDIENCE_KEYS = ['regular_male', 'regular_female', 'plus_male', 'plus_female'];
+export const BROADCAST_AUDIENCE_KEYS = ['regular_male', 'regular_female', 'plus_male', 'plus_female', 'gender_undefined'];
 export const BROADCAST_SCOPE_KEYS = ['online', 'recent', 'all'];
 
 export const DEFAULT_BROADCAST_AUDIENCE = {
@@ -6,6 +6,7 @@ export const DEFAULT_BROADCAST_AUDIENCE = {
   regular_female: false,
   plus_male: false,
   plus_female: false,
+  gender_undefined: false,
   scope: null,
 };
 
@@ -16,6 +17,7 @@ export function normalizeBroadcastAudience(value = {}) {
     regular_female: source.regular_female === true,
     plus_male: source.plus_male === true,
     plus_female: source.plus_female === true,
+    gender_undefined: source.gender_undefined === true,
     scope: BROADCAST_SCOPE_KEYS.includes(source.scope) ? source.scope : null,
   };
 }
@@ -27,6 +29,7 @@ export function broadcastAudienceLabel(audience) {
     regular_female: 'کاربران معمولی دختر',
     plus_male: 'کاربران پلاس پسر',
     plus_female: 'کاربران پلاس دختر',
+    gender_undefined: 'جنسیت تعیین‌نشده',
   };
   const selected = BROADCAST_AUDIENCE_KEYS.filter(key => a[key]).map(key => labels[key]);
   if (a.scope === 'online') selected.push('فقط آنلاین‌ها');
@@ -134,6 +137,7 @@ export function broadcastTargetWhere(audience = {}) {
   if (a.regular_female) segments.push("(gender='female' AND COALESCE(plus_expires_at,NOW()-INTERVAL '1 second') <= NOW())");
   if (a.plus_male) segments.push("(gender='male' AND plus_expires_at > NOW())");
   if (a.plus_female) segments.push("(gender='female' AND plus_expires_at > NOW())");
+  if (a.gender_undefined) segments.push("(gender IS NULL OR length(gender)=0)");
   if (!segments.length) return 'FALSE';
   const base = `(${segments.join(' OR ')})`;
   if (a.scope === 'online') return `${base} AND status IN ('waiting','chatting')`;

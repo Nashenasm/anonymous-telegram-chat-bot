@@ -1180,7 +1180,7 @@ function permissionText(value) { let p; try { p = { ...DEFAULT_CHAT_PERMISSIONS,
 function broadcastStatsKeyboard() { return replyKeyboard([['ارسال پیام🔺', 'کانال گزارش👁‍🗨'], ['پیام آمادهⓂ️'], ['برگشت']], true); }
 function broadcastReportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال'], ['بازگشت پیام همگانی']], true); }
 async function broadcastReportChannelText(client) { const channel=await botSettingValue(client,'broadcast_report_channel_id',''); const privateFlag=await botSettingValue(client,'broadcast_report_channel_private','false'); return `کانال گزارش پیام‌های همگانی\n\nوضعیت: ${channel ? '🟢 متصل' : '🔴 تنظیم نشده'}\nکانال: ${channel || 'تنظیم نشده'}\nنوع: ${channel ? (privateFlag === 'true' ? 'خصوصی' : 'عمومی') : 'نامشخص'}\n\nاین کانال فقط برای گزارش کمپین‌های پیام همگانی استفاده می‌شود و با کانال‌های گزارش دیگر مستقل است.`; }
-function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
+function broadcastAudienceSegmentsKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const label=(key,text)=>({text:`${a[key]?'🟢':'🔴'} ${text}`,callback_data:`broadcast:segment:${campaignId}:${key}`}); return { reply_markup:{inline_keyboard:[ [label('regular_male','کاربر معمولی (پسر🙎‍♂)'),label('regular_female','کاربر معمولی (دختر🙍‍♀)')], [label('plus_male','کاربر پلاس (پسر💇🏻‍♂)'),label('plus_female','کاربر پلاس (دختر💇🏻‍♀)')], [label('gender_undefined','جنسیت تعیین‌نشده')], [{text:'مرحله بعد ➡️',callback_data:`broadcast:segments_next:${campaignId}`}], [{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
 function broadcastScopeKeyboard(campaignId, audience = {}) { const a=normalizeBroadcastAudience(audience); const labels=[['online','فقط آنلاین‌ها (All online🏃🏻‍➡️)'],['recent','کاربران جدید (48h-Recently🤳🏼)'],['all','تمامی کاربران (All👌)']]; return { reply_markup:{inline_keyboard:labels.map(([key,text])=>[{text:`${a.scope===key?'🟢':'⚪'} ${text}`,callback_data:`broadcast:scope:${campaignId}:${key}`}]).concat([[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]] )} }; }
 function broadcastDeleteKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'خیر',callback_data:`broadcast:delete_no:${campaignId}`},{text:'بله',callback_data:`broadcast:delete_yes:${campaignId}`}],[{text:'برگشت',callback_data:`broadcast:segments:${campaignId}`}]]} }; }
 function broadcastTimeKeyboard(campaignId) { return { reply_markup:{inline_keyboard:[[{text:'الان | NOW🥸❗️',callback_data:`broadcast:now:${campaignId}`}],[{text:'زمان‌بندی | SetTime⏰',callback_data:`broadcast:schedule:${campaignId}`}],[{text:'برگشت',callback_data:'broadcast:back'}]]} }; }
@@ -1878,13 +1878,13 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (action === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','deleted')", [campaignId]); return editAudienceCallback(callbackQuery, id, 'کمپین لغو شد.', broadcastCampaignKeyboard({ ...campaign, status: 'cancelled' })); }
       if (action === 'segment') {
         const key = parts[3];
-        if (!['regular_male','regular_female','plus_male','plus_female'].includes(key)) return send(id, 'گروه نامعتبر است.');
+        if (!['regular_male','regular_female','plus_male','plus_female','gender_undefined'].includes(key)) return send(id, 'گروه نامعتبر است.');
         audience[key] = !audience[key];
         await sClient.query('UPDATE broadcast_campaigns SET audience=$2::jsonb,updated_at=NOW() WHERE id=$1', [campaignId, JSON.stringify(audience)]);
-        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۵ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
       }
       if (action === 'segments_next') {
-        if (!['regular_male','regular_female','plus_male','plus_female'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۴ را فعال کن.');
+        if (!['regular_male','regular_female','plus_male','plus_female','gender_undefined'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۴ را فعال کن.');
         await updateAction(sClient, id, `admin:broadcast:scope:${campaignId}`);
         return editAudienceCallback(callbackQuery, id, 'حالا فقط یکی از روش‌های زیر را برای محدودکردن ارسال انتخاب کن:', broadcastScopeKeyboard(campaignId, audience));
       }
@@ -1934,7 +1934,7 @@ async function handleCallback(id, data, callbackQuery = null) {
       }
       if (action === 'back' || action === 'segments') {
         await updateAction(sClient, id, `admin:broadcast:segments:${campaignId}`);
-        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۴ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
+        return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۵ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
       }
       if (action === 'time') {
         await updateAction(sClient, id, `admin:broadcast:time:${campaignId}`);
