@@ -3294,13 +3294,18 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if ((publicActionId === 'ideas' || value === 'ایده صحبت') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
     if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
     const target = Number(me.partner_id);
-    const blocked = await client.query(
-      'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1::bigint,$2::bigint) AND user_high=GREATEST($1::bigint,$2::bigint) AND expires_at > NOW()',
-      [target, id]
-    );
-    if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
-    const targetUser = await user(client, target);
-    await forwardChatMessage(client, id, target, messageMeta(meta), me, s, text); await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    try {
+      const blocked = await client.query(
+        'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1::bigint,$2::bigint) AND user_high=GREATEST($1::bigint,$2::bigint) AND expires_at > NOW()',
+        [target, id]
+      );
+      if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
+      await forwardChatMessage(client, id, target, messageMeta(meta), me, s, text);
+      await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
+    } catch (error) {
+      console.error('active_chat_error', { senderId: id, targetId: target, error: String(error?.message || error).slice(0, 240) });
+      await send(id, 'پیام ارسال نشد؛ اتصال چت برقرار است، لطفاً دوباره تلاش کن.', chatKeyboard(s, isAdmin(id))).catch(() => {});
+    }
   } finally { if (!released) client.release(); }
 }
 
