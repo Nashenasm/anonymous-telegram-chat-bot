@@ -2487,10 +2487,23 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
   const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
   const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
   let delivered;
-  if (message && kind !== 'text') {
-    delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
-  } else {
-    delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+  try {
+    if (message && kind !== 'text') {
+      delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+    } else {
+      delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+    }
+  } catch (error) {
+    const errorText = String(error?.message || error);
+    const targetUnavailable = /bot was blocked by the user|user is deactivated|chat not found/i.test(errorText);
+    console.warn('chat_delivery_error', { senderId, targetId, targetUnavailable, error: errorText.slice(0, 180) });
+    if (targetUnavailable) {
+      await client.query("UPDATE users SET status='idle',partner_id=NULL,conversation_started_at=NULL,action_state=NULL,updated_at=NOW() WHERE telegram_id IN ($1,$2)", [senderId, targetId]);
+      await send(senderId, 'این مکالمه دیگر در دسترس نیست؛ طرف مقابل ربات را ترک کرده است.', mainKeyboard(settings)).catch(() => {});
+    } else {
+      await send(senderId, 'پیام ارسال نشد؛ لطفاً دوباره تلاش کن.', chatKeyboard(settings, isAdmin(senderId))).catch(() => {});
+    }
+    return null;
   }
   await rememberReplyMessage(client, senderId, sourceMessageId, targetId, delivered?.message_id);
   return delivered;
