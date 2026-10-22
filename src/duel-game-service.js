@@ -245,7 +245,7 @@ function truthMove(state, session, playerId, payload = {}) {
   const types = mode === 'truth' ? ['truth'] : mode === 'dare' ? ['dare'] : ['truth', 'dare'];
   const candidates = types.flatMap(type => (TRUTH_BANKS[type][rating] || TRUTH_BANKS[type].pg13).map(text => ({ type, text })));
   if (!Array.isArray(state.questionQueue) || !state.questionQueue.length) {
-    const fresh = candidates.filter(item => !state.history.includes(item.text)); state.questionQueue = (fresh.length ? fresh : candidates).slice();
+    const fresh = candidates.filter(item => !state.history.includes(item.text)); if (!fresh.length) throw new Error('truth_question_bank_exhausted'); state.questionQueue = fresh.slice();
     for (let i = state.questionQueue.length - 1; i > 0; i--) { const j = crypto.randomInt(0, i + 1); [state.questionQueue[i], state.questionQueue[j]] = [state.questionQueue[j], state.questionQueue[i]]; }
   }
   const picked = state.questionQueue.shift(); state.prompt = picked.text; state.promptType = picked.type === 'truth' ? 'حقیقت' : 'جرئت'; state.lastAction = command; state.updatedAt = Date.now();
