@@ -495,7 +495,7 @@ async function sendDuelGame(chatId, gameType) {
   let lastError;
   for (const gameShortName of candidates) {
     try {
-      const result = await telegram('sendGame', { chat_id: chatId, game_short_name: gameShortName });
+      const result = await telegram('sendGame', { chat_id: chatId, game_short_name: gameShortName, reply_markup: { inline_keyboard: [[{ text: '▶️ Play', callback_game: {} }]] } });
       console.info('duel_game_sent', { game_type: gameType, game_short_name: gameShortName, chat_id: chatId });
       return result;
     } catch (error) {
