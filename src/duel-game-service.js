@@ -239,6 +239,7 @@ function truthMove(state, session, playerId, payload = {}) {
     if (!state.prompt) throw new Error('no_prompt'); state.history.push(state.prompt); state.prompt = null; state.promptType = null; state.rounds = Number(state.rounds || 0) + 1; state.current = otherPlayer(session, playerId); return;
   }
   if (command === 'reroll' && !state.prompt) throw new Error('no_prompt');
+  if (command === 'reroll' && state.prompt && !state.history.includes(state.prompt)) state.history.push(state.prompt);
   const queueKey = `${mode}:${rating}`;
   if (state.questionQueueKey !== queueKey) { state.questionQueueKey = queueKey; state.questionQueue = []; }
   const types = mode === 'truth' ? ['truth'] : mode === 'dare' ? ['dare'] : ['truth', 'dare'];
