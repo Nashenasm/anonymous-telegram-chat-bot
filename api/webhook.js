@@ -2953,12 +2953,14 @@ async function handleText(id, text, meta = {}) {
       await client.query('UPDATE gift_codes SET coins=coins+$2,plus_days=plus_days+$3 WHERE code=$1', [code, coins, plusDays]); await audit(client, id, null, 'gift_code_increase', { code, coins, plusDays }); await updateAction(client, id, 'admin:gifts'); return sendGiftManagement(client, id);
     }
     if (isAdmin(id) && me.action_state === 'admin:block_duration') {
+      if (value === 'بازگشت کنترل کاربران' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
       const seconds = parseDuration(value);
       if (seconds === null || seconds <= 0) return send(id, 'قالب نامعتبر است؛ نمونه‌های معتبر: 2D، 12H، 30M یا ترکیب آن‌ها مثل 2D12H30M.', conversationControlKeyboard());
       await saveBotSetting(client, 'block_duration', value.toUpperCase()); await updateAction(client, id, 'admin:conversation_control');
       return send(id, `تایم بلاکی روی ${durationLabel(seconds)} تنظیم شد.`, conversationControlKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:min_time') {
+      if (value === 'بازگشت کنترل کاربران' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
       const seconds = parseDuration(value); if (seconds === null) return send(id, 'قالب نامعتبر است؛ نمونه: 15S، 2M یا 1H.'); await saveBotSetting(client, 'min_chat_duration', value.toUpperCase()); await updateAction(client, id, 'admin:conversation_control'); return send(id, `حداقل زمان روی ${durationLabel(seconds)} تنظیم شد.`, conversationControlKeyboard());
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:chat_cost:')) {
