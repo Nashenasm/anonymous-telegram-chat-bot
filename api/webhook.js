@@ -1884,7 +1884,7 @@ async function handleCallback(id, data, callbackQuery = null) {
         return editAudienceCallback(callbackQuery, id, 'گروه‌های مخاطب را انتخاب کن؛ گزینه‌های ۱ تا ۵ قابل انتخاب همزمان هستند.\\n🟢 فعال  🔴 غیرفعال', broadcastAudienceSegmentsKeyboard(campaignId, audience));
       }
       if (action === 'segments_next') {
-        if (!['regular_male','regular_female','plus_male','plus_female','gender_undefined'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۴ را فعال کن.');
+        if (!['regular_male','regular_female','plus_male','plus_female','gender_undefined'].some(key => audience[key])) return send(id, 'حداقل یک گروه از گزینه‌های ۱ تا ۵ را فعال کن.');
         await updateAction(sClient, id, `admin:broadcast:scope:${campaignId}`);
         return editAudienceCallback(callbackQuery, id, 'حالا فقط یکی از روش‌های زیر را برای محدودکردن ارسال انتخاب کن:', broadcastScopeKeyboard(campaignId, audience));
       }
