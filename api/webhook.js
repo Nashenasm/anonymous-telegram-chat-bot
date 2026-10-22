@@ -275,7 +275,7 @@ function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboar
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
 function adminKeyboard(enabled) { return adminMainKeyboard({}, null); }
-function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['دریافت وضعیت کاربران'], ['بازگشت پنل']], true); }
+function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['وضعیت کاربران'], ['بازگشت پنل']], true); }
 function userFinanceKeyboard() { return replyKeyboard([['گزارش مالی'], ['هزینه اتصال'], ['بازگشت کنترل کاربران']], true); }
 function financeKeyboard() { return userFinanceKeyboard(); }
 function botFinanceKeyboard() { return replyKeyboard([['وضعیت'], ['مانوکوین'], ['درگاه ها', 'مدیریت ولت'], ['امور کارت'], ['کنترل ظاهری'], ['بازگشت کنترل ربات']], true); }
@@ -927,6 +927,9 @@ async function adminStats(client) {
     COUNT(*) FILTER (WHERE gender='female' AND COALESCE(plus_expires_at,NOW()-INTERVAL '1 second') <= NOW()) AS regular_female,
     COUNT(*) FILTER (WHERE gender='male' AND plus_expires_at > NOW()) AS plus_male,
     COUNT(*) FILTER (WHERE gender='female' AND plus_expires_at > NOW()) AS plus_female,
+    COUNT(*) AS total_members,
+    COUNT(*) FILTER (WHERE gender IS NULL OR length(gender)=0) AS gender_undefined,
+    COUNT(*) FILTER (WHERE created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Asia/Tehran') AT TIME ZONE 'Asia/Tehran')) AS today_members,
     COUNT(*) FILTER (WHERE gender='male') AS total_male, COUNT(*) FILTER (WHERE gender='female') AS total_female,
     COUNT(*) FILTER (WHERE status IN ('waiting','chatting') AND gender='male') AS online_male,
     COUNT(*) FILTER (WHERE status IN ('waiting','chatting') AND gender='female') AS online_female,
@@ -934,7 +937,7 @@ async function adminStats(client) {
     (SELECT COUNT(DISTINCT telegram_id) FROM plus_purchases WHERE created_at >= NOW()-INTERVAL '30 days') AS revenue_users,
     (SELECT COUNT(*) FROM reports WHERE status='open') AS reports FROM users`);
   const x = r.rows[0];
-  return `وضعیت کاربران\n\nکاربر معمولی پسر: ${x.regular_male}\nکاربر معمولی دختر: ${x.regular_female}\nکاربر پلاس پسر: ${x.plus_male}\nکاربر پلاس دختر: ${x.plus_female}\n\nچت‌های فعال: ${Math.floor(Number(x.chatting) / 2)}\nدر صف انتظار: ${x.waiting}\nکاربران درآمدزا در ۳۰ روز اخیر: ${x.revenue_users}\n\nجمع کل کاربران — پسر: ${x.total_male} | دختر: ${x.total_female}\nکاربران آنلاین — پسر: ${x.online_male} | دختر: ${x.online_female}\nگزارش‌های باز: ${x.reports}`;
+  return `وضعیت کاربران\n\nاعضا کل: ${x.total_members}\nجنسیت تعیین نشده: ${x.gender_undefined}\nامروز اضافه شده: ${x.today_members}\n\nکاربر معمولی پسر: ${x.regular_male}\nکاربر معمولی دختر: ${x.regular_female}\nکاربر پلاس پسر: ${x.plus_male}\nکاربر پلاس دختر: ${x.plus_female}\n\nچت‌های فعال: ${Math.floor(Number(x.chatting) / 2)}\nدر صف انتظار: ${x.waiting}\nکاربران درآمدزا در ۳۰ روز اخیر: ${x.revenue_users}\n\nجمع کل کاربران — پسر: ${x.total_male} | دختر: ${x.total_female}\nکاربران آنلاین — پسر: ${x.online_male} | دختر: ${x.online_female}\nگزارش‌های باز: ${x.reports}`;
 }
 async function botStatus(client) {
   const r = await client.query("SELECT COUNT(*) FILTER (WHERE status='waiting') AS waiting, COUNT(*) FILTER (WHERE status='chatting') AS chatting FROM users");
@@ -2727,7 +2730,7 @@ async function handleText(id, text, meta = {}) {
       if (value === 'کنترل یک کاربر') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, 'آیدی عددی کاربر را برای کنترل بفرست.', userControlKeyboard()); }
       if (value === 'لیست بن شده ها') { await updateAction(client, id, 'admin:banned_list'); return send(id, await bannedListText(client), bannedListKeyboard()); }
       if (value === 'لیست بلاکی ها') { await updateAction(client, id, 'admin:blocked_list'); return sendBlockedList(client, id); }
-      if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
+      if (value === 'دریافت وضعیت کاربران' || value === 'وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
       if (value === 'بازگشت پنل' || value === 'برگشت') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'یکی از گزینه‌های کنترل کاربران را انتخاب کن.', userControlKeyboard());
     }
@@ -2846,7 +2849,7 @@ async function handleText(id, text, meta = {}) {
       if (value === 'کنترل یک کاربر') { await updateAction(client, id, 'admin:user_control_lookup'); return send(id, 'آیدی عددی کاربر را برای کنترل بفرست.', userControlKeyboard()); }
       if (value === 'لیست بن شده ها') { await updateAction(client, id, 'admin:banned_list'); return send(id, await bannedListText(client), bannedListKeyboard()); }
       if (value === 'لیست بلاکی ها') { await updateAction(client, id, 'admin:blocked_list'); return sendBlockedList(client, id); }
-      if (value === 'دریافت وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
+      if (value === 'دریافت وضعیت کاربران' || value === 'وضعیت کاربران') return send(id, await adminStats(client), userControlKeyboard());
       if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.', userControlKeyboard());
       const panel = await adminUserPanel(client, id, value); await updateAction(client, id, `admin:user_control:${value}`); return send(id, panel.text, panel.markup);
     }
