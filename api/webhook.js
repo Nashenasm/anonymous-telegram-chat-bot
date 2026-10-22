@@ -489,24 +489,14 @@ async function sendLink(chatId, text, replyMarkup) {
   const markup = replyMarkup?.reply_markup || replyMarkup;
   return telegram('sendMessage', { chat_id: chatId, text, protect_content: false, ...(markup ? { reply_markup: markup } : {}) });
 }
-async function sendDuelGame(chatId, gameType) {
+async function sendDuelGame(chatId, gameType, session) {
   const game = DUEL_GAMES[gameType];
-  const candidates = [game.shortName, ...(game.aliases || [])];
-  let lastError;
-  for (const gameShortName of candidates) {
-    try {
-      const result = await telegram('sendGame', { chat_id: chatId, game_short_name: gameShortName, reply_markup: { inline_keyboard: [[{ text: '▶️ Play', callback_game: {} }]] } });
-      console.info('duel_game_sent', { game_type: gameType, game_short_name: gameShortName, chat_id: chatId });
-      return result;
-    } catch (error) {
-      lastError = error;
-      console.error('duel_game_name_rejected', { game_type: gameType, game_short_name: gameShortName, chat_id: chatId, error: error.message });
-      if (!/wrong game short name/i.test(String(error.message || ''))) throw error;
-    }
-  }
-  throw lastError;
+  if (!game || !session?.room_id || !session?.access_token) throw new Error('invalid_game_session');
+  const gameUrl = `https://bot.manochat.xyz/game/duel.html?room=${encodeURIComponent(session.room_id)}&player=${encodeURIComponent(chatId)}&token=${encodeURIComponent(session.access_token)}&v=${Date.now()}`;
+  return send(chatId, `${game.emoji} بازی «${game.title}» آماده است؛ برای ورود روی دکمهٔ Play بزن.`, {
+    reply_markup: { inline_keyboard: [[{ text: '▶️ Play', url: gameUrl }]] }
+  });
 }
-
 async function sendDocument(chatId, filePath, filename, caption = '') {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const form = new FormData();
@@ -1973,8 +1963,8 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (decision === 'reject') { await send(requester, `❌ درخواست بازی «${game.title}» رد شد.`); return send(id, 'درخواست بازی رد شد.', chatKeyboard(s, isAdmin(id))); }
       const session = await createDuelSession(pool, gameType, requester, id);
       try {
-        await sendDuelGame(requester, gameType);
-        await sendDuelGame(id, gameType);
+        await sendDuelGame(requester, gameType, session);
+        await sendDuelGame(id, gameType, session);
       } catch (error) {
         const names = [game.shortName, ...(game.aliases || [])].join(' / ');
         await send(requester, `⚠️ بازی «${game.title}» هنوز در BotFather برای این ربات فعال نیست. نام کوتاه مورد انتظار: ${names}`);
