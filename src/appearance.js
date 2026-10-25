@@ -142,6 +142,48 @@ const PRIVATE_BASE = {
   },
 };
 
+
+const APPEARANCE_RUNTIME_CATALOG = {
+  public: {
+    root: [{ id: 'contact_special', label: 'اتصال به مخاطب خاص' }],
+    screens: {
+      chat: {
+        buttons: [{ id: 'games', label: 'بازی' }, { id: 'ideas', label: 'ایده صحبت' }, { id: 'gift', label: 'هدیه دادن' }],
+        feedback: { games: 'بازی‌های میان چت را باز کن.', ideas: 'ایده‌های صحبت را باز کن.', gift: 'هدیه‌ای را برای طرف مکالمه انتخاب کن.' },
+      },
+    },
+  },
+  private: { root: [], screens: {} },
+};
+function hydrateAppearanceRuntime(section, appearance) {
+  const catalog = APPEARANCE_RUNTIME_CATALOG[section] || { root: [], screens: {} };
+  const out = clone(appearance);
+  out.buttons = Array.isArray(out.buttons) ? out.buttons : [];
+  let contactFound = false;
+  for (let r = out.buttons.length - 1; r >= 0; r -= 1) {
+    const row = out.buttons[r] || [];
+    for (let c = row.length - 1; c >= 0; c -= 1) {
+      if (row[c]?.id !== 'contact_special') continue;
+      if (contactFound) row.splice(c, 1); else { delete row[c].editor_only; contactFound = true; }
+    }
+    if (!row.length) out.buttons.splice(r, 1);
+  }
+  const rootIds = new Set(out.buttons.flat().map(item => item?.id));
+  for (const item of catalog.root || []) if (!rootIds.has(item.id)) out.buttons.push([{ ...item }]);
+  out.screens ||= {};
+  for (const [screenId, extra] of Object.entries(catalog.screens || {})) {
+    const screen = out.screens[screenId] ||= { title: screenId, message: '', buttons: [], feedback: {} };
+    screen.buttons = Array.isArray(screen.buttons) ? screen.buttons : [];
+    const flat = screen.buttons.flat ? screen.buttons.flat() : screen.buttons;
+    const ids = new Set(flat.map(item => item?.id));
+    for (const item of extra.buttons || []) if (!ids.has(item.id)) screen.buttons.push({ ...item });
+    screen.feedback = { ...(extra.feedback || {}), ...(screen.feedback || {}) };
+  }
+  return out;
+}
+export function appearanceRuntimeButtons(appearance, id) { return appearance?.screens?.[id]?.buttons || []; }
+export function appearanceButtonObject(item) { return telegramKeyboardButton(item); }
+
 export const APPEARANCE_SECTIONS = {
   public: { key: 'appearance_public', title: 'پابلیک', base: PUBLIC_BASE },
   private: { key: 'appearance_private', title: 'پرایویسی', base: PRIVATE_BASE },
@@ -186,7 +228,7 @@ function merge(base, value) {
 
 export function normalizeAppearance(section, value) {
   const definition = APPEARANCE_SECTIONS[section] || APPEARANCE_SECTIONS.public;
-  try { return merge(definition.base, typeof value === 'string' ? JSON.parse(value) : (value || {})); } catch { return clone(definition.base); }
+  try { return hydrateAppearanceRuntime(section, merge(definition.base, typeof value === 'string' ? JSON.parse(value) : (value || {}))); } catch { return hydrateAppearanceRuntime(section, clone(definition.base)); }
 }
 export function templateAppearance(templateId, section) { const template = APPEARANCE_TEMPLATES[templateId] || APPEARANCE_TEMPLATES.default; const appearance = normalizeAppearance(section, template[section]); if (templateId !== 'default') appearance.feedback = { ...appearance.feedback, ...themeFeedback(templateId, section) }; return appearance; }
 const BUTTON_STYLES = new Set(['primary', 'success', 'danger']);
@@ -201,14 +243,14 @@ function telegramKeyboardButton(item) {
 }
 export function appearanceKeyboard(appearance) {
   const rows = Array.isArray(appearance?.buttons) ? appearance.buttons : [];
-  const buttons = rows.flat().filter(button => button?.enabled !== false).map(telegramKeyboardButton).filter(Boolean);
+  const buttons = rows.flat().filter(button => button?.enabled !== false && button?.editor_only !== true).map(telegramKeyboardButton).filter(Boolean);
   if (appearance?.layout === 'single') return buttons.map(button => [button]);
   if (appearance?.layout === 'columns2') { const result = []; for (let i = 0; i < buttons.length; i += 2) result.push(buttons.slice(i, i + 2)); return result; }
-  return rows.map(row => row.filter(button => button?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length);
+  return rows.map(row => row.filter(button => button?.enabled !== false && button?.editor_only !== true).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length);
 }
 export function appearanceScreen(appearance, id) { return appearance?.screens?.[id] || {}; }
 export function screenText(appearance, id, fallback) { return String(appearanceScreen(appearance, id).message || fallback); }
-export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); return (screen.buttons?.length ? [screen.buttons.filter(item => item?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)] : fallbackRows); }
+export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); if (!screen.buttons?.length) return fallbackRows; const rows = Array.isArray(screen.buttons[0]) ? screen.buttons : [screen.buttons]; return rows.map(row => row.filter(item => item?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length); }
 export function appearanceButton(appearance, id, fallback) { for (const row of appearance?.buttons || []) for (const item of row || []) if (item.id === id) return item.label || fallback; return fallback; }
 export function appearanceFeedback(appearance, id, fallback) { return String(appearance?.feedback?.[id] || fallback); }
 function validCustomEmojiEntities(text, entities) {
@@ -218,27 +260,49 @@ function validCustomEmojiEntities(text, entities) {
     && entity.offset + entity.length <= length && String(entity.custom_emoji_id || '').trim())
     .map(entity => ({ type: 'custom_emoji', offset: entity.offset, length: entity.length, custom_emoji_id: String(entity.custom_emoji_id) }));
 }
-export function captureCustomEmojiEntities(message, contentText) {
+export function captureMessageEntities(message, contentText) {
   const rawText = String(message?.text ?? message?.caption ?? '');
   const trimmed = rawText.trim();
   const text = String(contentText ?? trimmed).slice(0, 4000);
   const leadingTrim = rawText.length - rawText.trimStart().length;
   const sourceEntities = Array.isArray(message?.entities) ? message.entities : (Array.isArray(message?.caption_entities) ? message.caption_entities : []);
-  const shifted = sourceEntities.filter(entity => entity?.type === 'custom_emoji').map(entity => ({
+  const shifted = sourceEntities.map(entity => ({
     ...entity,
     offset: Number(entity.offset) - leadingTrim,
   }));
-  return validCustomEmojiEntities(text, shifted);
+  return validMessageEntities(text, shifted);
 }
-function textPayload(text, entities = []) { return { text: String(text ?? ''), entities: validCustomEmojiEntities(text, entities) }; }
+export function captureCustomEmojiEntities(message, contentText) {
+  return captureMessageEntities(message, contentText).filter(entity => entity.type === 'custom_emoji');
+}
+function validMessageEntities(text, entities) {
+  const length = String(text ?? '').length;
+  return (Array.isArray(entities) ? entities : []).filter(entity =>
+    entity && typeof entity.type === 'string' && Number.isInteger(Number(entity.offset)) && Number.isInteger(Number(entity.length))
+    && Number(entity.offset) >= 0 && Number(entity.length) > 0 && Number(entity.offset) + Number(entity.length) <= length
+  ).map(entity => ({ ...entity, offset: Number(entity.offset), length: Number(entity.length) }));
+}
+function textPayload(text, entities = []) { return { text: String(text ?? ''), entities: validMessageEntities(text, entities) }; }
+function copyMessagePayload(source) {
+  const fromChatId = Number(source?.chat_id);
+  const messageId = Number(source?.message_id);
+  if (!Number.isSafeInteger(fromChatId) || fromChatId === 0 || !Number.isSafeInteger(messageId) || messageId < 1) return null;
+  return { copy_message: { from_chat_id: fromChatId, message_id: messageId } };
+}
 export function screenMessagePayload(appearance, id, fallback) {
   const screen = appearanceScreen(appearance, id);
+  const copied = copyMessagePayload(screen.message_source);
+  if (copied) return copied;
   if (screen.message) return textPayload(screen.message, screen.message_entities);
+  if (fallback && typeof fallback === 'object' && fallback.copy_message) return fallback;
   return fallback && typeof fallback === 'object' && Object.hasOwn(fallback, 'text') ? textPayload(fallback.text, fallback.entities) : textPayload(fallback);
 }
 export function feedbackMessagePayload(appearance, id, fallback) {
+  const copied = copyMessagePayload(appearance?.feedback?.[`${id}_source`]);
+  if (copied) return copied;
   const text = appearance?.feedback?.[id];
   if (text) return textPayload(text, appearance?.feedback?.[`${id}_entities`]);
+  if (fallback && typeof fallback === 'object' && fallback.copy_message) return fallback;
   return fallback && typeof fallback === 'object' && Object.hasOwn(fallback, 'text') ? textPayload(fallback.text, fallback.entities) : textPayload(fallback);
 }
 export function joinTextPayloads(parts, separator = '') {
@@ -258,13 +322,51 @@ export function appearanceItems(section, appearance) {
   for (const [screenId, screen] of Object.entries(appearance.screens || {})) {
     items.push({ path: `screens.${screenId}.title`, label: `عنوان صفحه ${screenId}`, value: screen.title });
     items.push({ path: `screens.${screenId}.message`, label: `متن صفحه ${screenId}`, value: screen.message });
-    for (const [index, item] of (screen.buttons || []).entries()) items.push({ path: `screens.${screenId}.buttons.${index}.label`, label: `دکمه ${screenId} ${item.id}`, value: item.label });
-    for (const [key, value] of Object.entries(screen.feedback || {})) items.push({ path: `screens.${screenId}.feedback.${key}`, label: `پاسخ داخلی ${screenId} ${key}`, value });
+    for (const [index, item] of (screen.buttons || []).flat().entries()) items.push({ path: `screens.${screenId}.buttons.${index}.label`, label: `دکمه ${screenId} ${item.id}`, value: item.label });
+    for (const [key, value] of Object.entries(screen.feedback || {})) {
+      if (key.endsWith('_entities') || key.endsWith('_source')) continue;
+      items.push({ path: `screens.${screenId}.feedback.${key}`, label: `پاسخ داخلی ${screenId} ${key}`, value });
+    }
   }
   for (const [rowIndex, row] of (appearance.buttons || []).entries()) for (const [colIndex, button] of (row || []).entries()) items.push({ path: `buttons.${rowIndex}.${colIndex}.label`, label: `نام دکمه ${button.id}`, value: button.label });
-  for (const [id, value] of Object.entries(appearance.feedback || {})) items.push({ path: `feedback.${id}`, label: `پاسخ ${id}`, value });
+  for (const [id, value] of Object.entries(appearance.feedback || {})) {
+    if (id.endsWith('_entities') || id.endsWith('_source')) continue;
+    items.push({ path: `feedback.${id}`, label: `پاسخ ${id}`, value });
+  }
   return items;
 }
-export function setAppearancePath(appearance, path, value) { const out = clone(appearance); const parts = path.split('.'); let current = out; for (let i = 0; i < parts.length - 1; i += 1) current = current[parts[i]]; current[parts.at(-1)] = value; return out; }
+export function setAppearancePath(appearance, path, value) {
+  const out = clone(appearance);
+  const parts = path.split('.');
+  let current = out;
+  for (let i = 0; i < parts.length - 1; i += 1) current = current[parts[i]];
+  const key = parts.at(-1);
+  current[key] = value;
+  if (key === 'message') {
+    delete current.message_source;
+    delete current.message_entities;
+  } else if (parts.at(-2) === 'feedback') {
+    delete current[`${key}_source`];
+    delete current[`${key}_entities`];
+  }
+  return out;
+}
+export function setAppearanceMessageSource(appearance, path, message) {
+  const chatId = Number(message?.chat?.id);
+  const messageId = Number(message?.message_id);
+  const parts = String(path || '').split('.').filter(Boolean);
+  const key = parts.at(-1);
+  if (!Number.isSafeInteger(chatId) || chatId === 0 || !Number.isSafeInteger(messageId) || messageId < 1) return clone(appearance);
+  if (key !== 'message' && parts.at(-2) !== 'feedback') return clone(appearance);
+  const out = clone(appearance);
+  let current = out;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    if (!current[parts[i]] || typeof current[parts[i]] !== 'object') return out;
+    current = current[parts[i]];
+  }
+  if (key === 'message') current.message_source = { chat_id: chatId, message_id: messageId };
+  else current[`${key}_source`] = { chat_id: chatId, message_id: messageId };
+  return out;
+}
 export function templateListText() { return Object.entries(APPEARANCE_TEMPLATES).map(([id, item], index) => `${index + 1}. ${item.name} — ${item.description} (${id})`).join('\n'); }
 export function templateIdFromText(value) { const text = String(value || '').trim().toLowerCase(); const entries = Object.entries(APPEARANCE_TEMPLATES); const numeric = Number(text); if (Number.isInteger(numeric) && numeric >= 1 && numeric <= entries.length) return entries[numeric - 1][0]; return entries.find(([id, item]) => id === text || item.name === value.trim())?.[0] || null; }

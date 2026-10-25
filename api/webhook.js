@@ -8,7 +8,7 @@ import { createAnonymousFlow } from '../src/anonymous-flow.js';
 import { decodeTrackingCode, formatMandatorySourceDetails, getMandatorySourceDetails, getMandatorySourceHistory, mandatorySourceKeyboard, mandatoryTrackingListKeyboard, parseTrackingCommand, processMandatoryLifecycle, recordMandatorySourceHistory, syncMandatoryReport, trackingCommand } from '../src/mandatory-service.js';
 import { DEFAULT_MANDATORY_AUDIENCE, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
 import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
-import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, appearanceButtonObject, appearanceRuntimeButtons, captureCustomEmojiEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
+import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, appearanceButtonObject, appearanceRuntimeButtons, captureCustomEmojiEntities, captureMessageEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearanceMessageSource, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
@@ -63,6 +63,7 @@ async function ensureRuntimeSchema() {
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS coins INTEGER NOT NULL DEFAULT 20');
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_expires_at TIMESTAMPTZ");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji TEXT NOT NULL DEFAULT '✨'");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji_entities JSONB NOT NULL DEFAULT '[]'::jsonb");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL");
@@ -243,9 +244,18 @@ function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
 function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
-function profileKeyboard(settings, telegramId) { const numericId = String(telegramId); return { reply_markup: { inline_keyboard: [[{ text: numericId, copy_text: { text: numericId } }], [{ text: settings.back_button || 'بازگشت', callback_data: 'profile:back' }]] } }; }
+function profileKeyboard(settings, me) {
+  const numericId = String(me?.telegram_id || '');
+  const rows = [[{ text: numericId, copy_text: { text: numericId } }]];
+  if (premiumRole(me, numericId)) {
+    rows.push([{ text: 'تغییر ایموجی پلاس', callback_data: 'profile:emoji' }]);
+    rows.push([{ text: 'ریست ایموجی', callback_data: 'profile:reset' }]);
+  }
+  rows.push([{ text: settings.back_button || 'بازگشت', callback_data: 'profile:back' }]);
+  return { reply_markup: { inline_keyboard: rows } };
+}
 function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
-function emojiKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'emoji', [['ریست ایموجی'], [settings.back_button]]), true); }
+function emojiKeyboard(settings) { return replyKeyboard([['ریست ایموجی'], [settings.back_button || 'بازگشت']], true); }
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
 function plusPurchaseKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پلاس 1 ماهه⭐', callback_data: 'plus:buy:1' }], [{ text: 'پلاس 3 ماهه🌟', callback_data: 'plus:buy:3' }], [{ text: 'پلاس 6 ماهه✨', callback_data: 'plus:buy:6' }], [{ text: 'پلاس 12 ماهه💎', callback_data: 'plus:buy:12' }]] } }; }
 function plusConfirmKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'بله تایید میکنم', callback_data: 'plus:confirm' }, { text: 'خیر بعدا میخرم', callback_data: 'plus:cancel' }]] } }; }
@@ -473,6 +483,28 @@ function stripCustomEmojiIcons(value) {
 }
 async function send(chatId, text, replyMarkup) {
   const markup = replyMarkup?.reply_markup || replyMarkup;
+  if (text && typeof text === 'object' && text.copy_message) {
+    const source = text.copy_message;
+    const inlineMarkup = markup && Array.isArray(markup.inline_keyboard) ? markup : null;
+    const copyBody = {
+      chat_id: chatId,
+      from_chat_id: source.from_chat_id,
+      message_id: source.message_id,
+      protect_content: await privacyProtectionEnabled(),
+      ...(inlineMarkup ? { reply_markup: inlineMarkup } : {}),
+    };
+    // Telegram copies the original media, caption and entities without reparsing them.
+    const copied = await telegram('copyMessage', copyBody);
+    if (markup && !inlineMarkup) {
+      await telegram('sendMessage', {
+        chat_id: chatId,
+        text: 'برای ادامه یکی از گزینه‌های زیر را انتخاب کن.',
+        protect_content: await privacyProtectionEnabled(),
+        reply_markup: markup,
+      });
+    }
+    return copied;
+  }
   const payload = text && typeof text === 'object' && Object.hasOwn(text, 'text') ? text : { text: String(text ?? '') };
   const body = { chat_id: chatId, text: String(payload.text ?? ''), protect_content: await privacyProtectionEnabled(), ...(payload.entities?.length ? { entities: payload.entities } : {}), ...(markup ? { reply_markup: markup } : {}) };
   try { return await telegram('sendMessage', body); }
@@ -512,7 +544,7 @@ async function sendDocument(chatId, filePath, filename, caption = '') {
 function flowFor(settings) {
   const sendAsUser = async (senderId, recipientId, text, replyMarkup) => {
     const c = await pool.connect();
-    try { const sender = await user(c, senderId); return send(recipientId, formatPremiumMessage(sender, senderId, text), replyMarkup); }
+    try { const sender = await user(c, senderId); return send(recipientId, premiumMessagePayload(sender, senderId, text), replyMarkup); }
     finally { c.release(); }
   };
   const appearance = publicAppearance(settings);
@@ -689,7 +721,7 @@ function beautyMessageTarget(appearance, path, itemId) {
 }
 function beautyMessageText(appearance, path, itemId) {
   const target = beautyMessageTarget(appearance, path, itemId);
-  return target?.parent?.[target.key] || '';
+  return target?.parent?.[target.key] || (target?.parent?.[`${target.key}_source`] ? 'پیام رسانه‌ای ثبت شده است.' : '');
 }
 
 function beautyPathRows(appearance, path = 'root') {
@@ -880,17 +912,38 @@ function premiumRole(me, id) {
   if (isPlus(me, id)) return 'plus';
   return null;
 }
+function defaultBadge(role) { return role === 'owner' ? '✨✨✨' : role === 'admin' ? '✨✨' : role === 'plus' ? '✨' : ''; }
+function storedBadgeEntities(me) {
+  const badge = String(me?.plus_emoji || '').trim();
+  return (Array.isArray(me?.plus_emoji_entities) ? me.plus_emoji_entities : []).filter(entity =>
+    entity?.type === 'custom_emoji' && Number.isInteger(entity.offset) && Number.isInteger(entity.length)
+    && entity.offset >= 0 && entity.length > 0 && entity.offset + entity.length <= badge.length
+    && /^\d{1,32}$/.test(String(entity.custom_emoji_id || ''))
+  ).map(entity => ({ type: 'custom_emoji', offset: entity.offset, length: entity.length, custom_emoji_id: String(entity.custom_emoji_id) }));
+}
 function badgeFor(me, id) {
   const role = premiumRole(me, id);
   if (!role) return '';
-  const fallback = role === 'owner' ? '✨✨✨' : role === 'admin' ? '✨✨' : '✨';
-  const requiredCount = role === 'owner' ? 3 : role === 'admin' ? 2 : 1;
-  return emojiSequence(me?.plus_emoji, requiredCount) ? String(me.plus_emoji).trim() : fallback;
+  const fallback = defaultBadge(role);
+  const stored = String(me?.plus_emoji || '').trim();
+  if (role === 'owner') return stored || fallback;
+  const requiredCount = role === 'admin' ? 2 : 1;
+  return emojiSequenceOrCustom(stored, requiredCount, storedBadgeEntities(me)) ? stored : fallback;
+}
+function badgeEntities(me, id) {
+  const stored = String(me?.plus_emoji || '').trim();
+  if (!premiumRole(me, id) || badgeFor(me, id) !== stored) return [];
+  return storedBadgeEntities(me);
 }
 function premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }
-function formatPremiumMessage(me, id, text) {
+function premiumMessagePayload(me, id, text) {
   const role = premiumRole(me, id);
-  return role ? `${premiumMarker(role)} ${badgeFor(me, id)}\n${text}` : text;
+  const body = String(text ?? '');
+  if (!role) return { text: body };
+  const marker = `${premiumMarker(role)} `;
+  const badge = badgeFor(me, id);
+  const entities = badgeEntities(me, id).map(entity => ({ ...entity, offset: entity.offset + marker.length }));
+  return { text: `${marker}${badge}\n${body}`, ...(entities.length ? { entities } : {}) };
 }
 function oneEmoji(value) {
   return emojiSequence(value, 1);
@@ -901,14 +954,27 @@ function emojiSequence(value, count) {
   const parts = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(input)].map(x => x.segment);
   return parts.length === count && parts.every(part => /\p{Extended_Pictographic}/u.test(part));
 }
+function emojiSequenceOrCustom(value, count, entities = []) {
+  const input = String(value || '').trim();
+  if (emojiSequence(input, count)) return true;
+  if (!input || !Intl.Segmenter) return false;
+  const parts = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(input)];
+  return parts.length === count && parts.every(({ segment, index }) =>
+    /\p{Extended_Pictographic}/u.test(segment)
+    || entities.some(entity => entity?.type === 'custom_emoji' && entity.offset === index && entity.length === segment.length)
+  );
+}
 async function sendProfile(id, settings) {
   const client = await pool.connect();
   try {
     const me = await ensureUser(client, id);
     const gender = me.gender === 'male' ? 'پسر' : me.gender === 'female' ? 'دختر' : 'ثبت نشده';
     const plusText = isAdmin(id) ? 'نامحدود' : (isPlus(me, id) ? `${Math.max(0, Math.ceil((new Date(me.plus_expires_at).getTime() - Date.now()) / 86400000))} روز` : 'ندارد');
-    const text = `پروفایل شما\n\n🪙 مانو کوین: ${Number(me.coins || 0)}\n✨ باقی مانده مانو پلاس: ${plusText} ${badgeFor(me, id)}\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${gender}`;
-    return send(id, text, profileKeyboard(settings, me.telegram_id));
+    const badge = badgeFor(me, id);
+    const beforeBadge = `پروفایل شما\n\n🪙 مانو کوین: ${Number(me.coins || 0)}\n✨ باقی مانده مانو پلاس: ${plusText} `;
+    const afterBadge = `\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${gender}`;
+    const entities = badgeEntities(me, id).map(entity => ({ ...entity, offset: entity.offset + beforeBadge.length }));
+    return send(id, { text: `${beforeBadge}${badge}${afterBadge}`, ...(entities.length ? { entities } : {}) }, profileKeyboard(settings, me));
   } finally { client.release(); }
 }
 async function adminStats(client) {
@@ -1540,7 +1606,7 @@ async function handlePlusCallback(id, data, client, s) {
       const purchaseBonus = await claimBonus(tx, { bonusKey: 'first_purchase', userId: id, metadata: { product: 'plus', months, finalPrice } });
       const plusBonus = await claimBonus(tx, { bonusKey: 'first_plus', userId: id, metadata: { product: 'plus', months, finalPrice } });
       await tx.query('COMMIT'); await notifyBonus(id, 'first_purchase', purchaseBonus); await notifyBonus(id, 'first_plus', plusBonus); const purchaseGrant = await completeReferralCondition(tx, id, 'purchase'); const plusGrant = await completeReferralCondition(tx, id, 'plus'); if (purchaseGrant.granted) await notifyReferralGrant(purchaseGrant, id); if (plusGrant.granted) await notifyReferralGrant(plusGrant, id);
-      return send(id, `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`, plusKeyboard(s));
+      return send(id, screenMessagePayload(publicAppearance(s), 'plus', `🎉 تبریک! خرید پلاس ${months} ماهه با موفقیت انجام شد.\nمبلغ پرداخت‌شده: ${finalPrice} مانو کوین${discount ? `\nتخفیف اعمال‌شده: ${discount}%` : ''}\nاکانت شما به مدت ${months} ماه پلاس شد.`), plusKeyboard(s));
     } catch (error) { await tx.query('ROLLBACK'); throw error; } finally { tx.release(); }
   }
   return false;
@@ -1728,7 +1794,27 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('bonus:open:')) { const row = await bonusRow(sClient, data.slice('bonus:open:'.length)); if (!row) return send(id, 'بونوس پیدا نشد.'); return editAudienceCallback(callbackQuery, id, bonusDetailText(row), bonusDetailKeyboard(row)); }
     if (isAdmin(id) && data.startsWith('bonus:toggle:')) { const key = data.slice('bonus:toggle:'.length); await sClient.query('UPDATE bonus_settings SET enabled=NOT enabled,updated_at=NOW() WHERE bonus_key=$1', [key]); const row = await bonusRow(sClient, key); return editAudienceCallback(callbackQuery, id, bonusDetailText(row), bonusDetailKeyboard(row)); }
     if (isAdmin(id) && data.startsWith('bonus:amount:')) { const key = data.slice('bonus:amount:'.length); const row = await bonusRow(sClient, key); if (!row) return send(id, 'بونوس پیدا نشد.'); const messageId = callbackQuery?.message?.message_id || ''; await updateAction(sClient, id, `admin:bonus:amount:${key}:${messageId}`); return editAudienceCallback(callbackQuery, id, bonusDetailText(row, 'مقدار جدید را به عدد صحیح و غیرمنفی بفرست.'), bonusDetailKeyboard(row)); }
-    if (data === 'profile:back') return editAudienceCallback(callbackQuery, id, publicAppearance(s).message, { reply_markup: { inline_keyboard: [] } });
+    if (data === 'profile:emoji') {
+      const me = await user(sClient, id);
+      const role = premiumRole(me, id);
+      if (!role) return send(id, 'کاربر معمولی امکان تنظیم نشان پلاس ندارد.');
+      await updateAction(sClient, id, 'plus_emoji');
+      const prompt = role === 'owner'
+        ? 'متن کوتاه، نماد یا ایموجی دلخواهت را بفرست؛ ایموجی سفارشی تلگرام هم در صورت وجود entity ذخیره و نمایش داده می‌شود.'
+        : role === 'admin' ? 'دو ایموجی بفرست؛ یا یک ایموجی پرمیوم را به‌تنهایی فوروارد کن تا کنار ✨ قرار بگیرد.'
+          : 'یک ایموجی تصویری بفرست؛ ایموجی پرمیوم فورواردشده هم پشتیبانی می‌شود.';
+      return send(id, prompt, emojiKeyboard(s));
+    }
+    if (data === 'profile:reset') {
+      const me = await user(sClient, id);
+      const role = premiumRole(me, id);
+      if (!role) return send(id, 'کاربر معمولی نشان پلاس ندارد.');
+      const badge = defaultBadge(role);
+      await sClient.query("UPDATE users SET plus_emoji=$2, plus_emoji_entities='[]'::jsonb, action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [id, badge]);
+      await send(id, 'نشان به ایموجی پیش‌فرض برگشت.');
+      return sendProfile(id, s);
+    }
+    if (data === 'profile:back') { await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, publicAppearance(s).message, { reply_markup: { inline_keyboard: [] } }); }
     if (data === 'coins:daily') return claimDailyCoins(sClient, id, callbackQuery);
     if (data === 'coins:free') return sendFreeCoins(id, s);
     if (data === 'coins:gift') { await updateAction(sClient, id, 'coins:gift'); return editAudienceCallback(callbackQuery, id, 'کد هدیه را با یا بدون /gift بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:back' }]] } }); }
@@ -2321,7 +2407,7 @@ async function sendAppearanceEditor(id, client, section) {
   await updateAction(client, id, `appearance:${section}`);
   return send(id, appearanceEditorText(section, appearance), appearanceEditorKeyboard(section));
 }
-async function handleAppearanceText(client, id, value, state, s) {
+async function handleAppearanceText(client, id, value, state, s, meta = {}) {
   const match = String(state || '').match(/^appearance:(public|private)(?::(template|edit|set|layout|choose))?(?::(.*))?$/);
   if (!match) return false;
   const section = match[1]; const mode = match[2] || null; const tail = match[3] || '';
@@ -2369,8 +2455,16 @@ ${templateListText()}`, appearanceTemplateKeyboard()); }
   }
   if (mode === 'set') {
     if (value === 'بازگشت') return sendAppearanceEditor(id, client, section);
-    if (!value) return send(id, 'مقدار نمی‌تواند خالی باشد؛ دوباره بفرست.');
-    const next = setAppearancePath(appearance, tail, value.slice(0, 4000));
+    const incoming = meta?.message;
+    const pathParts = String(tail || '').split('.');
+    const storesWholeMessage = pathParts.at(-1) === 'message' || pathParts.at(-2) === 'feedback';
+    const sourceChatId = Number(incoming?.chat?.id);
+    const sourceMessageId = Number(incoming?.message_id);
+    const hasMessageSource = Number.isSafeInteger(sourceChatId) && sourceChatId !== 0 && Number.isSafeInteger(sourceMessageId) && sourceMessageId >= 1;
+    const responseText = String(incoming?.text ?? incoming?.caption ?? value ?? '').trim().slice(0, 4000);
+    if (!responseText && !(storesWholeMessage && hasMessageSource)) return send(id, 'مقدار نمی‌تواند خالی باشد؛ دوباره بفرست.');
+    let next = setAppearancePath(appearance, tail, responseText);
+    if (storesWholeMessage && hasMessageSource) next = setAppearanceMessageSource(next, tail, incoming);
     const [key, json] = saveAppearanceQuery(section, next);
     await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', [key, json]);
     return sendAppearanceEditor(id, client, section);
@@ -2481,7 +2575,7 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
     if (message && kind !== 'text') {
       delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
     } else {
-      delivered = await telegram('sendMessage', { chat_id: targetId, text: formatPremiumMessage(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+      delivered = await telegram('sendMessage', { chat_id: targetId, ...premiumMessagePayload(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
     }
   } catch (error) {
     const errorText = String(error?.message || error);
@@ -2505,6 +2599,37 @@ async function handleText(id, text, meta = {}) {
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    if (me.action_state === 'plus_emoji') {
+      const role = premiumRole(me, id);
+      if (!role) { await updateAction(client, id, null); return send(id, 'این قابلیت فقط برای کاربران پلاس، ادمین و مالک فعال است.', mainKeyboard(s)); }
+      if (value === 'بازگشت' || value === (s.back_button || 'بازگشت')) { await updateAction(client, id, null); return sendProfile(id, s); }
+      if (value === 'ریست ایموجی') {
+        const badge = defaultBadge(role);
+        await client.query("UPDATE users SET plus_emoji=$2, plus_emoji_entities='[]'::jsonb, updated_at=NOW() WHERE telegram_id=$1", [id, badge]);
+        me.plus_emoji = badge; me.plus_emoji_entities = [];
+        await updateAction(client, id, null);
+        await send(id, 'نشان به ایموجی پیش‌فرض برگشت.');
+        return sendProfile(id, s);
+      }
+      let badgeInput = String(meta.message?.text ?? text).trim();
+      if (!badgeInput) return send(id, 'یک نشان بفرست؛ یا «بازگشت» را بزن.', emojiKeyboard(s));
+      if ([...badgeInput].length > 128) return send(id, 'حداکثر ۱۲۸ نویسه بفرست.', emojiKeyboard(s));
+      const entities = captureCustomEmojiEntities(meta.message, badgeInput);
+      if (role === 'plus' && !emojiSequenceOrCustom(badgeInput, 1, entities)) {
+        return send(id, 'یک ایموجی تصویری یا ایموجی پرمیوم را به‌تنهایی فوروارد کن؛ متن پذیرفته نمی‌شود.', emojiKeyboard(s));
+      }
+      if (role === 'admin') {
+        if (emojiSequenceOrCustom(badgeInput, 1, entities)) badgeInput += '✨';
+        else if (!emojiSequenceOrCustom(badgeInput, 2, entities)) {
+          return send(id, 'دو ایموجی بفرست، یا یک ایموجی پرمیوم را به‌تنهایی فوروارد کن تا کنار ✨ ذخیره شود.', emojiKeyboard(s));
+        }
+      }
+      await client.query('UPDATE users SET plus_emoji=$2, plus_emoji_entities=$3::jsonb, updated_at=NOW() WHERE telegram_id=$1', [id, badgeInput, JSON.stringify(entities)]);
+      me.plus_emoji = badgeInput; me.plus_emoji_entities = entities;
+      await updateAction(client, id, null);
+      await send(id, 'نشان ذخیره شد.');
+      return sendProfile(id, s);
+    }
     // This public action must win over any stale admin action_state, especially for admins using the public menu.
     const firstPublicAction = visiblePublicAction(value, s);
     if (['📥 صندوق دریافت', '📤 صندوق ارسال', '🗂 لینک های من', '🔗 لینک ناشناس من', 'لینک ناشناس من'].includes(value)) {
@@ -2563,7 +2688,7 @@ async function handleText(id, text, meta = {}) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId); if (!item || !value) return send(id, 'نام نمی‌تواند خالی باشد.'); item.label = value.slice(0, 64); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     if (isAdmin(id) && me.action_state?.startsWith('beauty:message:')) {
-      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const target = beautyMessageTarget(next, path, itemId); if (!target || !value) return send(id, 'پیام پاسخ برای این دکمه پیدا نشد یا خالی است.'); const responseText = value.slice(0, 4000); target.parent[target.key] = responseText; target.parent[`${target.key}_entities`] = captureCustomEmojiEntities(meta.message, responseText); await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
+      const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const target = beautyMessageTarget(next, path, itemId); const incoming = meta?.message; const sourceChatId = Number(incoming?.chat?.id); const sourceMessageId = Number(incoming?.message_id); if (!target || !Number.isSafeInteger(sourceChatId) || sourceChatId === 0 || !Number.isSafeInteger(sourceMessageId) || sourceMessageId < 1) return send(id, 'پیام پاسخ برای این دکمه پیدا نشد یا خالی است.'); const hasPlainText = typeof incoming.text === 'string'; const responseText = String(incoming.text ?? incoming.caption ?? value).trim().slice(0, 4000); target.parent[target.key] = responseText; target.parent[`${target.key}_entities`] = captureMessageEntities(incoming, responseText); if (hasPlainText) delete target.parent[`${target.key}_source`]; else target.parent[`${target.key}_source`] = { chat_id: sourceChatId, message_id: sourceMessageId }; await updateAppearanceSetting(client, section, next); await updateAction(client, id, null); const textOut = beautyEditorText(section, next, path, itemId, 'ثبت شد'); if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: textOut, reply_markup: beautyKeyboard(section, next, path, itemId).reply_markup }); return; } catch {} } return send(id, textOut, beautyKeyboard(section, next, path, itemId));
     }
     const publicActionId = visiblePublicAction(value, s);
     const privateActionId = visiblePrivateAction(value, s);
@@ -2592,7 +2717,7 @@ async function handleText(id, text, meta = {}) {
     if ((publicActionId === 'gift' || value === 'هدیه دادن') && me.status === 'chatting' && me.partner_id) return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard());
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
-      const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s);
+      const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s, meta);
       if (handledAppearance !== false) return handledAppearance;
     }
     if (isAdmin(id) && me.action_state === 'appearance:choose') {
@@ -3172,22 +3297,28 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (isAdmin(id) && (privateActionId === 'exit' || value === 'خروج از پنل')) { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
     if (publicActionId === 'profile' || value === 'پروفایل من') return sendProfile(id, s);
     if (publicActionId === 'emoji' || value === 'ظاهر ایموجی پلاس') {
-      if (!isPlus(me, id)) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', profileKeyboard(s, id));
+      const role = premiumRole(me, id);
+      if (!role) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', mainKeyboard(s));
       await updateAction(client, id, 'plus_emoji');
-      return send(id, isOwner(id) ? 'سه ایموجی ارسال کن؛ نشان مالک فقط با سه ایموجی معتبر ذخیره می‌شود.' : isAdmin(id) ? 'دو ایموجی ارسال کن؛ نشان ادمین فقط با دو ایموجی معتبر ذخیره می‌شود.' : 'یک ایموجی دلخواه ارسال کن. فقط یک ایموجی مجاز است و متن یا شکل دیگری پذیرفته نمی‌شود.', emojiKeyboard(s));
+      const prompt = role === 'owner'
+        ? 'متن کوتاه، نماد یا ایموجی دلخواهت را بفرست؛ ایموجی سفارشی تلگرام هم در صورت ارسال با entity همان‌طور ذخیره و نمایش داده می‌شود.'
+        : role === 'admin' ? 'دو ایموجی بفرست؛ یا یک ایموجی پرمیوم را به‌تنهایی فوروارد کن تا کنار ✨ قرار بگیرد.'
+          : 'یک ایموجی تصویری بفرست؛ ایموجی پرمیوم فورواردشده هم پشتیبانی می‌شود.';
+      return send(id, prompt, emojiKeyboard(s));
     }
-    if (publicActionId === 'reset' || value === 'ریست ایموجی') { await client.query("UPDATE users SET plus_emoji='✨', updated_at=NOW() WHERE telegram_id=$1", [id]); await updateAction(client, id, null); return send(id, 'ایموجی پلاس به ✨ برگردانده شد.', profileKeyboard(s, id)); }
+    if (publicActionId === 'reset' || value === 'ریست ایموجی') {
+      const role = premiumRole(me, id);
+      if (!role) return send(id, 'کاربر معمولی نشان پلاس ندارد.', mainKeyboard(s));
+      const badge = defaultBadge(role);
+      await client.query("UPDATE users SET plus_emoji=$2, plus_emoji_entities='[]'::jsonb, updated_at=NOW() WHERE telegram_id=$1", [id, badge]);
+      me.plus_emoji = badge; me.plus_emoji_entities = [];
+      await updateAction(client, id, null);
+      return send(id, 'نشان به ایموجی پیش‌فرض برگشت.', profileKeyboard(s, me));
+    }
     if (publicActionId === 'coins' || value === s.increase_coins_button) return sendIncreaseCoins(id, s);
     if (publicActionId === 'free_coins' || value === s.free_coins_button) return sendFreeCoins(id, s);
     if (publicActionId === 'plus' || value === s.plus_button) return sendPlus(id, s);
     if (publicActionId === 'back' || value === s.back_button || value === 'بازگشت') return send(id, publicAppearance(s).message, mainKeyboard(s));
-    if (me.action_state === 'plus_emoji') {
-      const requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1;
-      if (!emojiSequence(value, requiredCount)) return send(id, `دقیقاً ${requiredCount} ایموجی ارسال کن.`, emojiKeyboard(s));
-      await client.query('UPDATE users SET plus_emoji=$2, updated_at=NOW() WHERE telegram_id=$1', [id, value]);
-      await updateAction(client, id, null);
-      return send(id, `نشان پلاس شما روی ${value} تنظیم شد.`, profileKeyboard(s, id));
-    }
     // A stale anonymous-link state must never swallow the normal connect button.
     if (publicActionId === 'connect' || value === s.connect_button) {
       await updateAction(client, id, null);
@@ -3366,7 +3497,7 @@ async function processUpdate(update) {
   if (update.message_reaction) { await processNativeReaction(update); return; }
   const message = update.message;
   if (!message?.from || message.from.is_bot || message.chat?.type !== 'private' || message.chat.id !== message.from.id) return;
-  const id = Number(message.from.id); const text = String(message.text || message.caption || '').trim(); const forwardedUserId = contactTargetIdFromMessage(message); if (!text && !forwardedUserId && !message.photo && !message.video && !message.voice && !message.audio && !message.document && !message.sticker) return;
+  const id = Number(message.from.id); const text = String(message.text || message.caption || '').trim(); const forwardedUserId = contactTargetIdFromMessage(message); if (!text && !forwardedUserId && !message.photo && !message.video && !message.voice && !message.audio && !message.document && !message.sticker && !message.animation && !message.video_note && !message.contact && !message.location && !message.venue && !message.poll && !message.dice) return;
   if (!isAdmin(id)) { const ban = await activeBanFor(id); if (ban) return send(id, bannedMessage(ban)); }
   if (message.from.username) await pool.query('INSERT INTO users (telegram_id,username) VALUES ($1,$2) ON CONFLICT (telegram_id) DO UPDATE SET username=EXCLUDED.username,updated_at=NOW()', [id, message.from.username]);
     if (text.startsWith('/') && isAdmin(id)) { const stateClient = await pool.connect(); try { const state = (await stateClient.query('SELECT action_state FROM users WHERE telegram_id=$1', [id])).rows[0]?.action_state; if (state === 'admin:daily_coin:command') return handleText(id, text, { forwardedUserId, message }); } finally { stateClient.release(); } }
@@ -3441,7 +3572,7 @@ export async function duelApi(req, res) {
   const room = String(source?.room || '').trim(); const token = String(source?.token || '').trim(); const player = Number(source?.player);
   if (!room || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
   if (req.method === 'GET') { const state = await duelState(pool, room, token, player); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
-  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','roll','draw','truth','chat','reaction','edit','delete','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
+  if (req.method === 'POST') { const action = String(source?.action || ''); if (!['ready','move','roll','draw','reveal','truth','chat','reaction','edit','delete','leave'].includes(action)) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_action' }); const payload = { ...source }; delete payload.room; delete payload.token; delete payload.player; delete payload.action; const state = await duelAction(pool, room, token, player, action, payload); return state ? coinRushApiJson(res, 200, { ok: true, state }) : coinRushApiJson(res, 404, { ok: false, error: 'session_not_found' }); }
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
