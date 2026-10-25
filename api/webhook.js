@@ -9,6 +9,8 @@ import { decodeTrackingCode, formatMandatorySourceDetails, getMandatorySourceDet
 import { DEFAULT_MANDATORY_AUDIENCE, mandatoryAudienceIncludesUser, mandatoryAudienceLabels, mandatoryAudienceReviewKeyboard, mandatoryAudienceSelectionKeyboard, normalizeMandatoryAudience, toggleMandatoryAudience } from '../src/mandatory-audience.js';
 import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.js';
 import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, appearanceButtonObject, appearanceRuntimeButtons, captureCustomEmojiEntities, captureMessageEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearanceMessageSource, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
+import { applyInlineAppearance, inlineButtonKey, moveInlineButtonOrder, normalizeInlineAppearance, observeInlineKeyboard, recordInlineKeyboard } from '../src/inline-appearance.js';
+import { inlineEditorButtonKey, inlineEditorButtonKeyboard, inlineEditorButtonText, inlineEditorGroupKeyboard, inlineEditorGroups, inlineEditorLayoutKeyboard, inlineEditorNestedKeyboard, inlineEditorOrder, inlineEditorRootKeyboard, inlineEditorScreenKeyboard, inlineEditorScreenText, inlineEditorStyleKeyboard } from '../src/inline-appearance-editor.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
@@ -31,7 +33,7 @@ const runtimeAdmins = new Map();
 const ADMIN_PERMISSION_KEYS = ['dashboard','users','finance','wallets','bonuses','referrals','gifts','appearance','broadcast','reports','admins'];
 const ADMIN_ROLE_DEFAULTS = { owner: ADMIN_PERMISSION_KEYS, admin: ADMIN_PERMISSION_KEYS, operator: ['dashboard','users','reports'], support: ['dashboard','users'], finance: ['dashboard','finance','wallets','gifts'] };
 async function refreshAdminCache(client) { const rows = (await client.query('SELECT telegram_id,role,enabled,permissions FROM admin_accounts')).rows; runtimeAdmins.clear(); for (const row of rows) if (row.enabled !== false) runtimeAdmins.set(String(row.telegram_id), row); }
-function adminPermissionFromContext(value, state = '') { const text = `${value || ''} ${state || ''}`; if (/appearance|beauty|آرایش|زیبایی|ظاهری/.test(text)) return 'appearance'; if (/broadcast|همگانی|تبلیغ/.test(text)) return 'broadcast'; if (/wallet|ولت|finance|مالی|مانوکوین|کارت|درگاه|coin|gift|هدیه/.test(text)) return /wallet|ولت/.test(text) ? 'wallets' : 'finance'; if (/bonus|بونوس|referral|زیرمجموعه/.test(text)) return /referral|زیرمجموعه/.test(text) ? 'referrals' : 'bonuses'; if (/report|گزارش/.test(text)) return 'reports'; if (/user|کاربر|چت/.test(text)) return 'users'; if (/admin|ادمین|مدیر/.test(text)) return 'admins'; return 'dashboard'; }
+function adminPermissionFromContext(value, state = '') { const text = `${value || ''} ${state || ''}`; if (/appearance|beauty|inlinecfg|شیشه|آرایش|زیبایی|ظاهری/.test(text)) return 'appearance'; if (/broadcast|همگانی|تبلیغ/.test(text)) return 'broadcast'; if (/wallet|ولت|finance|مالی|مانوکوین|کارت|درگاه|coin|gift|هدیه/.test(text)) return /wallet|ولت/.test(text) ? 'wallets' : 'finance'; if (/bonus|بونوس|referral|زیرمجموعه/.test(text)) return /referral|زیرمجموعه/.test(text) ? 'referrals' : 'bonuses'; if (/report|گزارش/.test(text)) return 'reports'; if (/user|کاربر|چت/.test(text)) return 'users'; if (/admin|ادمین|مدیر/.test(text)) return 'admins'; return 'dashboard'; }
 function hasAdminPermission(id, key) { if (isOwner(id)) return true; const row = runtimeAdmins.get(String(id)); return Boolean(row && row.enabled !== false && row.role !== 'owner' && Array.isArray(row.permissions) && row.permissions.includes(key)); }
 function adminRoleLabel(role) { return ({ owner: 'مالک اصلی', admin: 'مدیر کامل', operator: 'اپراتور', support: 'پشتیبانی', finance: 'امور مالی' }[role] || role || 'نامشخص'); }
 function adminPermissionLabel(key) { return ({ dashboard:'داشبورد', users:'کاربران و مکالمات', finance:'امور مالی عمومی', wallets:'ولت و مانیتورینگ', bonuses:'بونوس‌ها', referrals:'زیرمجموعه‌ها', gifts:'کدهای هدیه', appearance:'ظاهر و پیام‌ها', broadcast:'تبلیغات و پیام همگانی', reports:'گزارش‌ها', admins:'مدیریت ادمین‌ها' }[key] || key); }
@@ -263,7 +265,7 @@ function adminMainKeyboard(settings = {}, adminId = null) { const a = privateApp
 function reportsKeyboard() { return replyKeyboard([['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']], true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
 function adsKeyboard(settings = {}) { return replyKeyboard([['📢 پیام همگانی', '📌 جویین اجباری'], ['👋 پیام خوش‌آمد', '🔗 تبلیغ اتصال'], ['💬 تبلیغ میان مکالمه', '↩️ بازگشت پنل']], true); }
-function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
+function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['ویرایش دکمه‌های شیشه‌ای'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
@@ -443,9 +445,52 @@ export function mandatoryStatusKeyboard() { return replyKeyboard([['لیست ز�
 function mandatoryAppearanceKeyboard() { return replyKeyboard([['ویرایش متن جویین', 'نام دکمه عضویت'], ['نام دکمه بررسی', 'چیدمان دکمه‌ها'], ['نمایش/پنهان‌کردن برچسب منبع'], ['بازگشت']], true); }
 function mandatoryAppearanceLayoutKeyboard() { return replyKeyboard([['تک‌ردیفه', 'فشرده'], ['بازگشت']], true); }
 
-async function telegram(method, body, { timeoutMs = 12_000 } = {}) {
+let inlineAppearanceCache = { value: null, expiresAt: 0 };
+async function loadInlineAppearanceConfig(force = false) {
+  if (!force && inlineAppearanceCache.value && inlineAppearanceCache.expiresAt > Date.now()) return inlineAppearanceCache.value;
+  const result = await pool.query('SELECT value FROM bot_settings WHERE key=$1', ['inline_appearance_config']);
+  const raw = result.rows[0]?.value;
+  let parsed = raw;
+  if (typeof raw === 'string') { try { parsed = JSON.parse(raw); } catch { parsed = {}; } }
+  const value = normalizeInlineAppearance(parsed);
+  inlineAppearanceCache = { value, expiresAt: Date.now() + 3000 };
+  return value;
+}
+async function saveInlineAppearanceConfig(client, config) {
+  const value = normalizeInlineAppearance(config);
+  const json = JSON.stringify(value);
+  await client.query('INSERT INTO bot_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()', ['inline_appearance_config', json]);
+  inlineAppearanceCache = { value, expiresAt: Date.now() + 3000 };
+  return value;
+}
+async function prepareInlineTelegramBody(method, body) {
+  if (!body?.reply_markup?.inline_keyboard) return body;
+  try {
+    let config = await loadInlineAppearanceConfig();
+    const observation = observeInlineKeyboard(body.reply_markup, body.text);
+    if (observation) {
+      const next = recordInlineKeyboard(config, observation);
+      if (next.changed) config = await saveInlineAppearanceConfig(pool, next);
+    }
+    const result = applyInlineAppearance(body.reply_markup, config, body.text);
+    const prepared = { ...body, reply_markup: result.markup };
+    if (result.message && ['sendMessage', 'editMessageText'].includes(method)) {
+      prepared.text = result.message;
+      delete prepared.parse_mode;
+      if (result.messageEntities?.length) prepared.entities = result.messageEntities;
+      else delete prepared.entities;
+    }
+    return prepared;
+  } catch (error) {
+    console.warn('inline_appearance_fallback', String(error?.message || error).slice(0, 160));
+    return body;
+  }
+}
+async function telegram(method, body, { timeoutMs = 12_000, applyAppearance = true, omitCustomEmojiIcons = false } = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
+  if (applyAppearance) body = await prepareInlineTelegramBody(method, body);
+  if (omitCustomEmojiIcons && body?.reply_markup) body = { ...body, reply_markup: stripCustomEmojiIcons(body.reply_markup) };
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -514,7 +559,7 @@ async function send(chatId, text, replyMarkup) {
     delete fallback.entities;
     if (markup) fallback.reply_markup = stripCustomEmojiIcons(markup);
     console.warn('custom_emoji_send_fallback', String(error?.message || error).slice(0, 160));
-    return telegram('sendMessage', fallback);
+    return telegram('sendMessage', fallback, { omitCustomEmojiIcons: true });
   }
 }
 async function sendLink(chatId, text, replyMarkup) {
@@ -679,6 +724,120 @@ function appearanceButtonId(value, section, s) {
   const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s);
   for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && item.label === value) return item.id;
   return null;
+}
+function inlineEditorRootText(config, note = '') {
+  const groups = inlineEditorGroups(config);
+  const body = groups.length
+    ? `گروه‌های شیشه‌ایِ دیده‌شده: ${groups.length}\nدکمه‌ها هنگام نمایش در ربات به‌صورت خودکار شناسایی می‌شوند. اگر صفحه‌ای در فهرست نیست، یک‌بار همان بخش ربات را باز کن.`
+    : 'هنوز صفحهٔ شیشه‌ای در فهرست ثبت نشده است. ابتدا بخش‌های مختلف ربات را باز کن؛ دکمه‌های دیده‌شده خودکار به این فهرست اضافه می‌شوند.';
+  return `${note ? `${note}\n\n` : ''}مدیریت دکمه‌های شیشه‌ای\nنام، آیکن، رنگ، چیدمان و وضعیت را می‌توانی تغییر بدهی. شناسه و منطق عملکرد هر دکمه ثابت می‌ماند. متن صفحه فقط در صفحه‌های غیرتراکنشی قابل جایگزینی است.\n\n${body}`.slice(0, 3900);
+}
+function inlineEditorGroupText(config, group, page = 0) {
+  const count = Object.values(config.catalog.screens).filter(screen => screen.group === group).length;
+  return `صفحه‌های شیشه‌ای گروه «${group}»\nتعداد صفحه‌های ثبت‌شده: ${count}\nصفحه ${Number(page) + 1} را انتخاب کن.`;
+}
+function inlineEditorKeyboardCount(config, screenId) { return (config.catalog.screens[screenId]?.rows || []).flat().length; }
+async function showInlineEditorRoot(id, callbackQuery = null, note = '') {
+  const config = await loadInlineAppearanceConfig(true);
+  const text = inlineEditorRootText(config, note);
+  const markup = inlineEditorRootKeyboard(config);
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function showInlineEditorScreen(id, screenId, client, callbackQuery = null, note = '') {
+  const config = await loadInlineAppearanceConfig(true);
+  if (!config.catalog.screens[screenId]) return showInlineEditorRoot(id, callbackQuery, 'این صفحه در فهرست پیدا نشد.');
+  const text = inlineEditorScreenText(config, screenId, note).slice(0, 3900);
+  const markup = inlineEditorScreenKeyboard(config, screenId);
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function showInlineEditorButton(id, screenId, index, callbackQuery = null, note = '') {
+  const config = await loadInlineAppearanceConfig(true);
+  const key = inlineEditorButtonKey(config, screenId, index);
+  if (!key) return showInlineEditorScreen(id, screenId, null, callbackQuery, 'دکمه پیدا نشد.');
+  const text = inlineEditorButtonText(config, screenId, index, note);
+  const markup = inlineEditorButtonKeyboard(config, screenId, index);
+  return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
+}
+async function handleInlineAppearanceCallback(id, data, callbackQuery, client) {
+  if (!isAdmin(id) || (!isOwner(id) && !hasAdminPermission(id, 'appearance'))) return send(id, 'این بخش فقط برای مدیران دارای دسترسی ویرایش ظاهر ربات فعال است.');
+  const config = await loadInlineAppearanceConfig(true);
+  const parts = String(data || '').split(':');
+  const action = parts[1];
+  if (action === 'back') { await updateAction(client, id, 'admin:control'); return editAudienceCallback(callbackQuery, id, 'کنترل ربات', controlKeyboard()); }
+  if (action === 'root') return showInlineEditorRoot(id, callbackQuery);
+  if (action === 'group') {
+    let group, page = 0;
+    if (parts[3] === 'page') { group = parts[2]; page = Math.max(0, Number(parts[4]) || 0); }
+    else group = inlineEditorGroups(config)[Number(parts[2])]?.name;
+    if (!group || !inlineEditorGroups(config).some(item => item.name === group)) return showInlineEditorRoot(id, callbackQuery, 'گروه پیدا نشد.');
+    return editAudienceCallback(callbackQuery, id, inlineEditorGroupText(config, group, page), inlineEditorGroupKeyboard(config, group, page));
+  }
+  if (action === 'groupopen') {
+    const group = parts[2];
+    return editAudienceCallback(callbackQuery, id, inlineEditorGroupText(config, group), inlineEditorGroupKeyboard(config, group));
+  }
+  if (action === 'screen') return showInlineEditorScreen(id, parts[2], client, callbackQuery);
+  if (action === 'screenpage') {
+    const screenId = parts[2], page = Math.max(0, Number(parts[3]) || 0);
+    return editAudienceCallback(callbackQuery, id, inlineEditorScreenText(config, screenId), inlineEditorScreenKeyboard(config, screenId, page));
+  }
+  if (action === 'pick') return showInlineEditorButton(id, parts[2], Number(parts[3]), callbackQuery);
+  if (action === 'name' || action === 'icon') {
+    const screenId = parts[2], index = Number(parts[3]);
+    const key = inlineEditorButtonKey(config, screenId, index);
+    if (!key) return send(id, 'دکمه پیدا نشد.');
+    const encoded = Buffer.from(key).toString('base64url');
+    const messageId = callbackQuery?.message?.message_id || '';
+    await updateAction(client, id, `inlinecfg:input:${action}:${screenId}:${encoded}:${messageId}`);
+    const prompt = action === 'name'
+      ? 'نام نمایشی جدید را بفرست؛ عملکرد دکمه تغییر نمی‌کند.'
+      : 'ایموجی سفارشی/پرمیوم را به‌صورت پیام بفرست؛ برای پاک‌کردن «حذف» را بفرست. مالک ربات باید امکان استفاده از ایموجی سفارشی را داشته باشد.';
+    return editAudienceCallback(callbackQuery, id, prompt, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `inlinecfg:pick:${screenId}:${index}` }]] } });
+  }
+  if (action === 'screenmsg') {
+    const screenId = parts[2];
+    if (!config.catalog.screens[screenId]?.editableMessage || !/^[a-f0-9]{64}$/.test(config.catalog.screens[screenId]?.sourceTextSignature || '')) return send(id, 'متن این صفحه هنوز قابل ویرایش نیست؛ صفحه را در خود ربات یک‌بار باز کن یا بررسی کن که این صفحه محتوای مالی/تراکنشی نداشته باشد.');
+    const messageId = callbackQuery?.message?.message_id || '';
+    await updateAction(client, id, `inlinecfg:input:message:${screenId}:${messageId}`);
+    return editAudienceCallback(callbackQuery, id, 'متن صفحهٔ کنار این دکمه‌ها را بفرست. برای بازگشت، «بازگشت» را بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `inlinecfg:screen:${screenId}` }]] } });
+  }
+  if (action === 'style') return editAudienceCallback(callbackQuery, id, 'رنگ این دکمه را انتخاب کن.', inlineEditorStyleKeyboard(parts[2], Number(parts[3])));
+  if (action === 'setstyle') {
+    const screenId = parts[2], index = Number(parts[3]), style = parts[4], key = inlineEditorButtonKey(config, screenId, index);
+    if (!key || !['default', 'primary', 'success', 'danger'].includes(style)) return send(id, 'تنظیم رنگ معتبر نیست.');
+    const next = normalizeInlineAppearance(config); next.buttons[key] ||= {};
+    if (style === 'default') delete next.buttons[key].style; else next.buttons[key].style = style;
+    await saveInlineAppearanceConfig(client, next);
+    return showInlineEditorButton(id, screenId, index, callbackQuery, 'رنگ ثبت شد.');
+  }
+  if (action === 'toggle') {
+    const screenId = parts[2], index = Number(parts[3]), key = inlineEditorButtonKey(config, screenId, index);
+    if (!key) return send(id, 'دکمه پیدا نشد.');
+    const next = normalizeInlineAppearance(config); next.buttons[key] ||= {};
+    if (next.buttons[key].enabled === false) delete next.buttons[key].enabled; else next.buttons[key].enabled = false;
+    await saveInlineAppearanceConfig(client, next);
+    return showInlineEditorButton(id, screenId, index, callbackQuery, 'وضعیت دکمه ثبت شد.');
+  }
+  if (action === 'move') {
+    const screenId = parts[2], index = Number(parts[3]), direction = parts[4];
+    const order = inlineEditorOrder(config, screenId), key = order[index];
+    if (!key || !['up', 'down', 'left', 'right'].includes(direction)) return send(id, 'جابه‌جایی معتبر نیست.');
+    const next = normalizeInlineAppearance(config); next.screens[screenId] ||= {};
+    next.screens[screenId].order = moveInlineButtonOrder(order, key, direction);
+    await saveInlineAppearanceConfig(client, next);
+    const movedIndex = next.screens[screenId].order.indexOf(key);
+    return showInlineEditorButton(id, screenId, movedIndex, callbackQuery, 'جایگاه دکمه ثبت شد.');
+  }
+  if (action === 'nested') return editAudienceCallback(callbackQuery, id, 'صفحه‌های هم‌گروهِ دیده‌شده را برای ورود به لایه‌های بعدی انتخاب کن.', inlineEditorNestedKeyboard(config, parts[2], Number(parts[3])));
+  if (action === 'layout') return editAudienceCallback(callbackQuery, id, 'چیدمان دکمه‌های همین صفحه را انتخاب کن.', inlineEditorLayoutKeyboard(parts[2]));
+  if (action === 'setlayout') {
+    const screenId = parts[2], layout = parts[3];
+    if (!config.catalog.screens[screenId] || !['original', 'single', 'columns2', 'columns3'].includes(layout)) return send(id, 'چیدمان معتبر نیست.');
+    const next = normalizeInlineAppearance(config); next.screens[screenId] ||= {}; next.screens[screenId].layout = layout;
+    await saveInlineAppearanceConfig(client, next);
+    return showInlineEditorScreen(id, screenId, client, callbackQuery, 'چیدمان ثبت شد.');
+  }
+  return send(id, 'فرمان ویرایش دکمهٔ شیشه‌ای معتبر نیست.');
 }
 function beautySectionsKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'آرایش (Public)', callback_data: 'beauty:section:public' }], [{ text: 'آرایش (Privacy)', callback_data: 'beauty:section:private' }], [{ text: 'بازگشت', callback_data: 'beauty:back' }]] } }; }
 const BEAUTY_FLOW_NEXT = {
@@ -1763,6 +1922,7 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback(id, data, callbackQuery, sClient);
     if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
     if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (data.startsWith('admins:')) {
@@ -2670,6 +2830,48 @@ async function handleText(id, text, meta = {}) {
       if (!channel) return send(id,'کانال پیدا نشد یا ربات دسترسی ارسال پیام ندارد. ربات را ادمین کانال کن و دوباره بفرست.',replyKeyboard([['بازگشت']],true));
       await saveBotSetting(client,'admin_activity_report_channel_id',channel.id); await saveBotSetting(client,'admin_activity_report_private',String(channel.isPrivate)); await saveBotSetting(client,'admin_activity_report_enabled','true'); await updateAction(client,id,'admin:admins:activity_report'); await audit(client,id,channel.id,'admin_activity_report_channel_connected',{title:channel.title}); return send(id,`کانال «${channel.title}» متصل شد و گزارش‌ها فعال شدند.`,adminActivityReportKeyboard());
     }
+    if (isAdmin(id) && me.action_state?.startsWith('inlinecfg:input:')) {
+      const [, , field, screenId, encodedOrMessageId, maybeMessageId] = me.action_state.split(':');
+      const messageId = field === 'message' ? encodedOrMessageId : maybeMessageId;
+      if (value === 'بازگشت') {
+        await updateAction(client, id, null);
+        return field === 'message' ? showInlineEditorScreen(id, screenId, client) : (() => { const config = inlineAppearanceCache.value || {}; const key = Buffer.from(encodedOrMessageId || '', 'base64url').toString(); const index = inlineEditorOrder(config, screenId).indexOf(key); return showInlineEditorButton(id, screenId, Math.max(0, index)); })();
+      }
+      const config = await loadInlineAppearanceConfig(true);
+      const next = normalizeInlineAppearance(config);
+      if (field === 'name' || field === 'icon') {
+        const key = Buffer.from(encodedOrMessageId || '', 'base64url').toString();
+        if (!key || !next.catalog.buttons[key]) return send(id, 'دکمه پیدا نشد؛ دوباره از پنل انتخابش کن.');
+        next.buttons[key] ||= {};
+        if (field === 'name') {
+          if (!value.trim()) return send(id, 'نام دکمه نمی‌تواند خالی باشد.');
+          next.buttons[key].label = value.trim().slice(0, 64);
+        } else if (['حذف', 'پاک‌کردن', 'پاک کردن'].includes(value.trim())) delete next.buttons[key].icon_custom_emoji_id;
+        else {
+          const emojiId = captureCustomEmojiEntities(meta.message, value)[0]?.custom_emoji_id;
+          if (!emojiId) return send(id, 'یک ایموجی سفارشی/پرمیوم را به‌صورت یک پیام بفرست؛ برای پاک‌کردن آیکن «حذف» را بفرست.');
+          next.buttons[key].icon_custom_emoji_id = emojiId;
+        }
+      } else if (field === 'message') {
+        if (!next.catalog.screens[screenId]?.editableMessage || !/^[a-f0-9]{64}$/.test(next.catalog.screens[screenId]?.sourceTextSignature || '')) return send(id, 'متن این صفحه به‌دلیل محتوای حساس یا نداشتن متن اولیه قابل جایگزینی نیست.');
+        next.screens[screenId] ||= {};
+        if (['حذف', 'پاک‌کردن', 'پاک کردن'].includes(value.trim())) { delete next.screens[screenId].message; delete next.screens[screenId].messageEntities; }
+        else {
+          const pageText = String(meta?.message?.text ?? meta?.message?.caption ?? value).trim().slice(0, 3500);
+          if (!pageText) return send(id, 'متن صفحه نمی‌تواند خالی باشد.');
+          next.screens[screenId].message = pageText;
+          next.screens[screenId].messageEntities = captureCustomEmojiEntities(meta?.message, pageText);
+        }
+      } else return send(id, 'نوع ویرایش معتبر نیست.');
+      await saveInlineAppearanceConfig(client, next);
+      await updateAction(client, id, null);
+      const key = field === 'name' || field === 'icon' ? Buffer.from(encodedOrMessageId || '', 'base64url').toString() : null;
+      const index = key ? Math.max(0, inlineEditorOrder(next, screenId).indexOf(key)) : null;
+      const panelText = field === 'message' ? inlineEditorScreenText(next, screenId, 'متن صفحه ثبت شد.') : inlineEditorButtonText(next, screenId, index, field === 'icon' ? 'آیکن ثبت شد.' : 'نام دکمه ثبت شد.');
+      const panelMarkup = field === 'message' ? inlineEditorScreenKeyboard(next, screenId) : inlineEditorButtonKeyboard(next, screenId, index);
+      if (messageId) { try { await telegram('editMessageText', { chat_id: id, message_id: Number(messageId), text: panelText, reply_markup: panelMarkup.reply_markup }); return; } catch {} }
+      return send(id, panelText, panelMarkup);
+    }
     if (isAdmin(id) && me.action_state?.startsWith('beauty:icon:')) {
       const [, , section, path, itemId, messageId] = me.action_state.split(':'); const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s); const next = JSON.parse(JSON.stringify(appearance)); const item = beautyItemRef(next, path, itemId);
       if (!item) return send(id, 'دکمه پیدا نشد.');
@@ -2864,6 +3066,7 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state === 'admin:control') {
       if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
+      if (value === 'ویرایش دکمه‌های شیشه‌ای') { await updateAction(client, id, 'inlinecfg:root'); return showInlineEditorRoot(id); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
       if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'کنترل ربات', controlKeyboard());
