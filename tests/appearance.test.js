@@ -50,6 +50,13 @@ describe('appearance configuration', () => {
     expect(feedbackMessagePayload(appearance, 'waiting', 'fallback').entities[0].custom_emoji_id).toBe('789');
   });
 
+  it('uses the editable public plus response instead of bypassing it with hard-coded text', () => {
+    const sendPlus = source.match(/async function sendPlus\(id, settings\) \{[\s\S]*?\n\}/)?.[0] || '';
+    expect(sendPlus).toContain("feedbackMessagePayload(publicAppearance(settings), 'plus', fallback)");
+    expect(sendPlus).toContain('plusPurchaseKeyboard()');
+    expect(sendPlus).not.toContain('send(id, text, plusPurchaseKeyboard())');
+  });
+
   it('exposes custom-emoji, response-entity, and color controls in the admin editor', () => {
     expect(source).toContain("text: 'Icon✨'");
     expect(source).toContain("text: 'Style🎨'");
