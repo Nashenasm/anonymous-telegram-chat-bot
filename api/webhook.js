@@ -1578,7 +1578,7 @@ async function sendIncreaseCoins(id, settings) { return send(id, 'افزایش �
 async function sendFreeCoins(id, settings) { const client = await pool.connect(); try { const code = await referralCode(client, id); const username = await botUsername(); if (!code || !username) return send(id, 'ساخت لینک اختصاصی موقتاً ممکن نیست؛ دوباره تلاش کن.', increaseCoinsKeyboard(settings)); const url = `https://t.me/${username}?start=ref_${code}`; const description=await referralUserDescription(client); const text = `🔗 لینک دعوت شما:\n${url}\n\n${description}\n\n📨 متن پیشنهادی برای ارسال:\nبا لینک من وارد ربات شو و دوستان جدید پیدا کن:\n${url}`; return sendLink(id, text, increaseCoinsKeyboard(settings)); } finally { client.release(); } }
 async function sendPlus(id, settings) {
   const fallback = `✨ اکانت پلاس\n\nبا اکانت پلاس:\n۱) تبلیغات مزاحم برایت نمایش داده نمی‌شود.\n۲) سریع‌تر به چت وصل می‌شوی.\n۳) نشان مخصوص پلاس در چت نمایش داده می‌شود.\n۴) می‌توانی نشان پلاس را تغییر بدهی.\n۵) از مزایای آیندهٔ کاربران پلاس بهره‌مند می‌شوی.\n\n💰 قیمت‌ها:\nپلاس ۱ ماهه ۱۰۰ مانو کوین\nپلاس ۳ ماهه ۲۵۰ مانو کوین\nپلاس ۶ ماهه ۴۵۰ مانو کوین\nپلاس ۱۲ ماهه ۸۰۰ مانو کوین`;
-  return send(id, feedbackMessagePayload(publicAppearance(settings), 'plus', fallback), plusPurchaseKeyboard());
+  return send(id, screenMessagePayload(publicAppearance(settings), 'plus', fallback), plusPurchaseKeyboard());
 }
 async function handlePlusCallback(id, data, client, s) {
   const me = await user(client, id);

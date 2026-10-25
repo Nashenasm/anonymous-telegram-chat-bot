@@ -52,9 +52,17 @@ describe('appearance configuration', () => {
 
   it('uses the editable public plus response instead of bypassing it with hard-coded text', () => {
     const sendPlus = source.match(/async function sendPlus\(id, settings\) \{[\s\S]*?\n\}/)?.[0] || '';
-    expect(sendPlus).toContain("feedbackMessagePayload(publicAppearance(settings), 'plus', fallback)");
+    expect(sendPlus).toContain("screenMessagePayload(publicAppearance(settings), 'plus', fallback)");
     expect(sendPlus).toContain('plusPurchaseKeyboard()');
     expect(sendPlus).not.toContain('send(id, text, plusPurchaseKeyboard())');
+  });
+
+  it('renders the saved public plus screen message instead of the shorter plus feedback label', () => {
+    const appearance = normalizeAppearance('public', {
+      screens: { plus: { message: 'متن کامل اطلاعات مانوپلاس که در پنل ذخیره شده است.' } },
+      feedback: { plus: 'مانوپلاس' },
+    });
+    expect(screenMessagePayload(appearance, 'plus', 'fallback').text).toBe('متن کامل اطلاعات مانوپلاس که در پنل ذخیره شده است.');
   });
 
   it('exposes custom-emoji, response-entity, and color controls in the admin editor', () => {
