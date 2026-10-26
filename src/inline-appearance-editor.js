@@ -14,7 +14,7 @@ export function inlineEditorRootKeyboard(config) {
   const groups = inlineEditorGroups(config);
   const rows = [];
   for (let i = 0; i < groups.length; i += 2) rows.push(groups.slice(i, i + 2).map((group, offset) => callback(`${group.name} (${group.count})`, `inlinecfg:group:${i + offset}`)));
-  rows.push([callback('بازگشت کنترل ربات', 'inlinecfg:back')]);
+  rows.push([callback('بازگشت', 'inlinecfg:back')]);
   return rowsKeyboard(rows);
 }
 

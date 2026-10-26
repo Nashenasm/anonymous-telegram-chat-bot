@@ -265,7 +265,7 @@ function adminMainKeyboard(settings = {}, adminId = null) { const a = privateApp
 function reportsKeyboard() { return replyKeyboard([['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']], true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
 function adsKeyboard(settings = {}) { return replyKeyboard([['📢 پیام همگانی', '📌 جویین اجباری'], ['👋 پیام خوش‌آمد', '🔗 تبلیغ اتصال'], ['💬 تبلیغ میان مکالمه', '↩️ بازگشت پنل']], true); }
-function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['ویرایش دکمه‌های شیشه‌ای'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
+function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
@@ -730,7 +730,13 @@ function inlineEditorRootText(config, note = '') {
   const body = groups.length
     ? `گروه‌های شیشه‌ایِ دیده‌شده: ${groups.length}\nدکمه‌ها هنگام نمایش در ربات به‌صورت خودکار شناسایی می‌شوند. اگر صفحه‌ای در فهرست نیست، یک‌بار همان بخش ربات را باز کن.`
     : 'هنوز صفحهٔ شیشه‌ای در فهرست ثبت نشده است. ابتدا بخش‌های مختلف ربات را باز کن؛ دکمه‌های دیده‌شده خودکار به این فهرست اضافه می‌شوند.';
-  return `${note ? `${note}\n\n` : ''}مدیریت دکمه‌های شیشه‌ای\nنام، آیکن، رنگ، چیدمان و وضعیت را می‌توانی تغییر بدهی. شناسه و منطق عملکرد هر دکمه ثابت می‌ماند. متن صفحه فقط در صفحه‌های غیرتراکنشی قابل جایگزینی است.\n\n${body}`.slice(0, 3900);
+  return `${note ? `${note}\n\n` : ''}آرایش زیبایی · دکمه‌های شیشه‌ای\nنام، آیکن، رنگ، چیدمان و وضعیت را می‌توانی تغییر بدهی. شناسه و منطق عملکرد هر دکمه ثابت می‌ماند. متن صفحه فقط در صفحه‌های غیرتراکنشی قابل جایگزینی است.\n\n${body}`.slice(0, 3900);
+}
+function inlineBeautyReturnOrigin(actionState) {
+  const match = String(actionState || '').match(/^beauty:inline:(public|private):([^:]+)$/);
+  if (!match) return null;
+  try { return { section: match[1], path: decodeURIComponent(match[2]) || 'root' }; }
+  catch { return { section: match[1], path: 'root' }; }
 }
 function inlineEditorGroupText(config, group, page = 0) {
   const count = Object.values(config.catalog.screens).filter(screen => screen.group === group).length;
@@ -758,12 +764,22 @@ async function showInlineEditorButton(id, screenId, index, callbackQuery = null,
   const markup = inlineEditorButtonKeyboard(config, screenId, index);
   return callbackQuery ? editAudienceCallback(callbackQuery, id, text, markup) : send(id, text, markup);
 }
-async function handleInlineAppearanceCallback(id, data, callbackQuery, client) {
+async function handleInlineAppearanceCallback(id, data, callbackQuery, client, actionState = '', s = {}) {
   if (!isAdmin(id) || (!isOwner(id) && !hasAdminPermission(id, 'appearance'))) return send(id, 'این بخش فقط برای مدیران دارای دسترسی ویرایش ظاهر ربات فعال است.');
   const config = await loadInlineAppearanceConfig(true);
   const parts = String(data || '').split(':');
   const action = parts[1];
-  if (action === 'back') { await updateAction(client, id, 'admin:control'); return editAudienceCallback(callbackQuery, id, 'کنترل ربات', controlKeyboard()); }
+  if (action === 'back') {
+    const origin = inlineBeautyReturnOrigin(actionState);
+    if (origin) {
+      const appearance = origin.section === 'public' ? publicAppearance(s) : privateAppearance(s);
+      const path = origin.path === 'root' || appearance.screens?.[origin.path] ? origin.path : 'root';
+      await updateAction(client, id, `beauty:${origin.section}:${path}`);
+      return editBeautyMessage(callbackQuery, id, beautyEditorText(origin.section, appearance, path), beautyKeyboard(origin.section, appearance, path));
+    }
+    await updateAction(client, id, 'admin:control');
+    return editAudienceCallback(callbackQuery, id, 'کنترل ربات', controlKeyboard());
+  }
   if (action === 'root') return showInlineEditorRoot(id, callbackQuery);
   if (action === 'group') {
     let group, page = 0;
@@ -788,7 +804,9 @@ async function handleInlineAppearanceCallback(id, data, callbackQuery, client) {
     if (!key) return send(id, 'دکمه پیدا نشد.');
     const encoded = Buffer.from(key).toString('base64url');
     const messageId = callbackQuery?.message?.message_id || '';
-    await updateAction(client, id, `inlinecfg:input:${action}:${screenId}:${encoded}:${messageId}`);
+    const origin = inlineBeautyReturnOrigin(actionState);
+    const returnSuffix = origin ? `:beauty:${origin.section}:${encodeURIComponent(origin.path)}` : '';
+    await updateAction(client, id, `inlinecfg:input:${action}:${screenId}:${encoded}:${messageId}${returnSuffix}`);
     const prompt = action === 'name'
       ? 'نام نمایشی جدید را بفرست؛ عملکرد دکمه تغییر نمی‌کند.'
       : 'ایموجی سفارشی/پرمیوم را به‌صورت پیام بفرست؛ برای پاک‌کردن «حذف» را بفرست. مالک ربات باید امکان استفاده از ایموجی سفارشی را داشته باشد.';
@@ -798,7 +816,9 @@ async function handleInlineAppearanceCallback(id, data, callbackQuery, client) {
     const screenId = parts[2];
     if (!config.catalog.screens[screenId]?.editableMessage || !/^[a-f0-9]{64}$/.test(config.catalog.screens[screenId]?.sourceTextSignature || '')) return send(id, 'متن این صفحه هنوز قابل ویرایش نیست؛ صفحه را در خود ربات یک‌بار باز کن یا بررسی کن که این صفحه محتوای مالی/تراکنشی نداشته باشد.');
     const messageId = callbackQuery?.message?.message_id || '';
-    await updateAction(client, id, `inlinecfg:input:message:${screenId}:${messageId}`);
+    const origin = inlineBeautyReturnOrigin(actionState);
+    const returnSuffix = origin ? `:beauty:${origin.section}:${encodeURIComponent(origin.path)}` : '';
+    await updateAction(client, id, `inlinecfg:input:message:${screenId}:${messageId}${returnSuffix}`);
     return editAudienceCallback(callbackQuery, id, 'متن صفحهٔ کنار این دکمه‌ها را بفرست. برای بازگشت، «بازگشت» را بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `inlinecfg:screen:${screenId}` }]] } });
   }
   if (action === 'style') return editAudienceCallback(callbackQuery, id, 'رنگ این دکمه را انتخاب کن.', inlineEditorStyleKeyboard(parts[2], Number(parts[3])));
@@ -903,6 +923,7 @@ function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
   const items = rows.flat().filter(item => item?.enabled !== false);
   if (!selectedId) {
     const keyboardRows = rows.map(row => (row || []).filter(item => item?.enabled !== false).map(item => ({ text: item.label || item.id, ...(item.icon_custom_emoji_id ? { icon_custom_emoji_id: item.icon_custom_emoji_id } : {}), callback_data: `beauty:${section}:pick:${path}:${item.id}` }))).filter(row => row.length);
+    keyboardRows.push([{ text: 'دکمه‌های شیشه‌ای', callback_data: `beauty:${section}:inline:${path}` }]);
     keyboardRows.push([{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:${beautyParentPath(path)}` }]);
     return { reply_markup: { inline_keyboard: keyboardRows } };
   }
@@ -932,7 +953,7 @@ function beautyPathLabel(path) { return path === 'root' ? 'صفحه اصلی' : 
 function beautyEditorText(section, appearance, path = 'root', selectedId = null, note = '') {
   const item = selectedId ? beautySelected(appearance, path, selectedId) : null;
   const title = section === 'public' ? 'Public' : 'Privacy';
-  if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `ویرایش آرایش زیبایی — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.` : `ویرایش آرایش زیبایی — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های داخل این بخش را انتخاب کن.`; }
+  if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `ویرایش آرایش زیبایی — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن یا از گزینهٔ «دکمه‌های شیشه‌ای» در همین ویرایشگر استفاده کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.` : `ویرایش آرایش زیبایی — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های داخل این بخش را انتخاب کن یا از گزینهٔ «دکمه‌های شیشه‌ای» در همین ویرایشگر استفاده کن.`; }
   const response = beautyMessageText(appearance, path, item.id);
   const styleLabel = ({ primary: 'آبی', success: 'سبز', danger: 'قرمز' }[item.style] || 'پیش‌فرض');
   return `${note ? `${note}\n\n` : ''}دکمه انتخاب‌شده: ${item.label || item.id}\nپیام پاسخ: ${response || 'پاسخ مستقیمی ثبت نشده است.'}\nنام نمایشی: ${item.label || item.id}\nایموجی پرمیوم: ${item.icon_custom_emoji_id ? 'تنظیم‌شده' : 'ندارد'}\nرنگ: ${styleLabel}\nمسیر: ${beautyPathLabel(path)}\nوضعیت: ${item.enabled === false ? 'خاموش' : 'روشن'}`;
@@ -1006,6 +1027,7 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   const parts=data.split(':'); const section=parts[1]; const action=parts[2]; const appearance=section==='public'?publicAppearance(s):privateAppearance(s);
   const path=parts[3] || 'root'; const itemId=parts[4] || null;
   if (!['public','private'].includes(section)) return send(id, 'بخش نامعتبر است.');
+  if (action === 'inline') { if (path !== 'root' && !appearance.screens?.[path]) return send(id, 'صفحهٔ آرایش زیبایی پیدا نشد.'); await updateAction(client, id, `beauty:inline:${section}:${encodeURIComponent(path)}`); return showInlineEditorRoot(id, callbackQuery); }
   if (action === 'noop') return false;
   if (action === 'pick') { const item=beautySelected(appearance,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); await updateAction(client,id,null); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path,itemId),beautyKeyboard(section,appearance,path,itemId)); }
   if (action === 'open') { await updateAction(client,id,null); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path),beautyKeyboard(section,appearance,path)); }
@@ -1922,7 +1944,7 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
-    if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback(id, data, callbackQuery, sClient);
+    if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback(id, data, callbackQuery, sClient, me.action_state, s);
     if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
     if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (data.startsWith('admins:')) {
@@ -2833,8 +2855,14 @@ async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state?.startsWith('inlinecfg:input:')) {
       const [, , field, screenId, encodedOrMessageId, maybeMessageId] = me.action_state.split(':');
       const messageId = field === 'message' ? encodedOrMessageId : maybeMessageId;
+      const inputParts = me.action_state.split(':');
+      const originStart = field === 'message' ? 5 : 6;
+      const origin = inputParts[originStart] === 'beauty' && ['public', 'private'].includes(inputParts[originStart + 1])
+        ? { section: inputParts[originStart + 1], path: decodeURIComponent(inputParts[originStart + 2] || 'root') }
+        : null;
+      const returnActionState = origin ? `beauty:inline:${origin.section}:${encodeURIComponent(origin.path)}` : null;
       if (value === 'بازگشت') {
-        await updateAction(client, id, null);
+        await updateAction(client, id, returnActionState);
         return field === 'message' ? showInlineEditorScreen(id, screenId, client) : (() => { const config = inlineAppearanceCache.value || {}; const key = Buffer.from(encodedOrMessageId || '', 'base64url').toString(); const index = inlineEditorOrder(config, screenId).indexOf(key); return showInlineEditorButton(id, screenId, Math.max(0, index)); })();
       }
       const config = await loadInlineAppearanceConfig(true);
@@ -2864,7 +2892,7 @@ async function handleText(id, text, meta = {}) {
         }
       } else return send(id, 'نوع ویرایش معتبر نیست.');
       await saveInlineAppearanceConfig(client, next);
-      await updateAction(client, id, null);
+      await updateAction(client, id, returnActionState);
       const key = field === 'name' || field === 'icon' ? Buffer.from(encodedOrMessageId || '', 'base64url').toString() : null;
       const index = key ? Math.max(0, inlineEditorOrder(next, screenId).indexOf(key)) : null;
       const panelText = field === 'message' ? inlineEditorScreenText(next, screenId, 'متن صفحه ثبت شد.') : inlineEditorButtonText(next, screenId, index, field === 'icon' ? 'آیکن ثبت شد.' : 'نام دکمه ثبت شد.');
@@ -3066,7 +3094,6 @@ async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state === 'admin:control') {
       if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
-      if (value === 'ویرایش دکمه‌های شیشه‌ای') { await updateAction(client, id, 'inlinecfg:root'); return showInlineEditorRoot(id); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
       if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'کنترل ربات', controlKeyboard());

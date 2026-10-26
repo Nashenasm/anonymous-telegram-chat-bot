@@ -57,12 +57,17 @@ describe('inline appearance editor', () => {
 describe('inline editor webhook integration', () => {
   const webhook = readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
   const runtime = readFileSync(new URL('../src/inline-appearance.js', import.meta.url), 'utf8');
+  const editor = readFileSync(new URL('../src/inline-appearance-editor.js', import.meta.url), 'utf8');
 
-  it('is reachable from the existing admin control panel and protects callback operations', () => {
-    expect(webhook).toContain("['ویرایش دکمه‌های شیشه‌ای']");
-    expect(webhook).toContain("if (value === 'ویرایش دکمه‌های شیشه‌ای')");
+  it('is embedded in the existing beauty editor, not a separate admin control entry', () => {
+    expect(webhook).not.toContain("['ویرایش دکمه‌های شیشه‌ای']");
+    expect(webhook).not.toContain("if (value === 'ویرایش دکمه‌های شیشه‌ای')");
+    expect(webhook).toContain("keyboardRows.push([{ text: 'دکمه‌های شیشه‌ای', callback_data: `beauty:${section}:inline:${path}` }]);");
+    expect(webhook).toContain("if (action === 'inline')");
     expect(webhook).toContain("if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback");
     expect(webhook).toContain("if (!isAdmin(id) || (!isOwner(id) && !hasAdminPermission(id, 'appearance')))");
+    expect(webhook).toContain('inlineBeautyReturnOrigin(actionState)');
+    expect(editor).toContain("callback('بازگشت', 'inlinecfg:back')");
     expect(runtime).toContain("const out = { ...button }");
     expect(runtime).toContain("return out;");
   });
