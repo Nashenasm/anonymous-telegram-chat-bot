@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   discount_code TEXT,
   plus_expires_at TIMESTAMPTZ NULL,
   plus_emoji TEXT NOT NULL DEFAULT '✨',
+  plus_emoji_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
   role TEXT NOT NULL DEFAULT 'user',
   referral_code TEXT UNIQUE,
   referred_by BIGINT NULL REFERENCES users(telegram_id) ON DELETE SET NULL,

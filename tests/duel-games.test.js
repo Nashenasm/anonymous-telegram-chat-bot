@@ -51,4 +51,9 @@ describe('mid-chat duel games', () => {
     expect(page).toContain('/api/game/action');
     expect(page).toContain('گفت‌وگوی داخل بازی');
   });
+  it('removes deleted-message reply traces from the chat payload', () => {
+    const service = fs.readFileSync(new URL('../src/duel-game-service.js', import.meta.url), 'utf8');
+    expect(service).toContain('CASE WHEN rm.deleted_at IS NULL THEN rm.text ELSE NULL END AS reply_text');
+    expect(service).toContain("SET text='',reply_to_id=NULL,deleted_at=NOW()");
+  });
 });

@@ -37,15 +37,24 @@ describe('anonymous chat public contract', () => {
 
   it('includes plus, referral, and role persistence in the schema', () => {
     expect(schema).toContain('plus_expires_at');
-    expect(schema).toContain('plus_emoji');
-    expect(schema).toContain('referral_code');
+    expect(source).toContain('plus_emoji');
+    expect(schema).toContain('plus_emoji_entities');
+    expect(source).toContain('plus_emoji_entities');
+    expect(source).toContain("data === 'profile:emoji'");
+    expect(source).toContain("data === 'profile:reset'");
+    expect(source).toContain('referral_code');
     expect(schema).toContain('plus_purchases');
     expect(source).toContain('ظاهر ایموجی پلاس');
     expect(source).toContain('plus:confirm');
   });
 
-  it('renders plus badges in parentheses and uses a 24-hour profile clock', () => {
-    expect(source).toContain("return role ? `${premiumMarker(role)} ${badgeFor(me, id)}\\n${text}` : text;");
+  it('renders role badges with custom emoji entities and uses a 24-hour profile clock', () => {
+    expect(source).toContain('function premiumMessagePayload(me, id, text)');
+    expect(source).toContain('function emojiSequenceOrCustom(value, count, entities = [])');
+    expect(source).toContain('const entities = captureCustomEmojiEntities(meta.message, badgeInput);');
+    expect(source).toContain("if (emojiSequenceOrCustom(badgeInput, 1, entities)) badgeInput += '✨';");
+    expect(source).toContain("const entities = badgeEntities(me, id).map(entity => ({ ...entity, offset: entity.offset + marker.length }));");
+    expect(source).toContain("return { text: `${marker}${badge}\\n${body}`, ...(entities.length ? { entities } : {}) };");
     expect(source).toContain("hourCycle: 'h23'");
     expect(source).toContain("hour12: false");
   });
@@ -53,11 +62,12 @@ describe('anonymous chat public contract', () => {
   it('uses role-specific verification markers and does not treat slash text as a command', () => {
     expect(source).toContain("premiumMarker(role) { return role === 'owner' ? '/owner' : role === 'admin' ? '/admin' : '/plus'; }");
     expect(source).toContain("data.match(/^premium:verify:(plus|admin|owner):(\\d+)$/)");
-    expect(source).toContain('requiredCount = isOwner(id) ? 3 : isAdmin(id) ? 2 : 1');
+    expect(source).toContain("const requiredCount = role === 'admin' ? 2 : 1;");
+    expect(source).toContain("if (role === 'owner') return stored || fallback;");
     expect(source).toContain("if (command === '/start')");
     expect(source).toContain("if (['/plus', '/admin', '/owner'].includes(command)) return handlePremiumRoleCommand(id, command);");
     expect(source).toContain("viewer?.status === 'chatting' && viewer.partner_id");
-    expect(source).toContain('formatPremiumMessage(sender, senderId, text), replyMarkup');
+    expect(source).toContain('premiumMessagePayload(sender, senderId, text), replyMarkup');
     expect(source).not.toContain('premiumMessageMarkup');
     expect(source).not.toContain('inline_keyboard: [[verify]]');
   });

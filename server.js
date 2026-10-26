@@ -15,6 +15,30 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'anonymous-telegram-chat' }));
   }
+  const ludoAudio = requestUrl.pathname.match(/^\/game\/assets\/ludo-(background|dice|move|safe|capture|return|finish)\.mp3$/);
+  if (req.method === 'GET' && ludoAudio) {
+    try {
+      const audio = await fs.readFile(path.join(process.cwd(), 'game', 'assets', `ludo-${ludoAudio[1]}.mp3`));
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': audio.length, 'cache-control': 'public, max-age=604800' });
+      return res.end(audio);
+    } catch (error) {
+      console.error('ludo_audio_file_error', error?.message || error);
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('audio_not_found');
+    }
+  }
+  const gameMusic = requestUrl.pathname.match(/^\/game\/assets\/(ludo|chess|cards|truth)-theme\.mp3$/);
+  if (req.method === 'GET' && gameMusic) {
+    try {
+      const audio = await fs.readFile(path.join(process.cwd(), 'game', 'assets', `${gameMusic[1]}-theme.mp3`));
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-length': audio.length, 'cache-control': 'public, max-age=604800' });
+      return res.end(audio);
+    } catch (error) {
+      console.error('game_music_file_error', error?.message || error);
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('music_not_found');
+    }
+  }
   if (req.method === 'GET' && requestUrl.pathname === '/game/coin-rush.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'coin-rush.html'));

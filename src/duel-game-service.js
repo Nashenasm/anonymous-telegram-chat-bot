@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { Chess } from 'chess.js';
 
 export const DUEL_GAMES = {
   ludo: { title: 'منچ', emoji: '🎲', shortName: 'ludo', aliases: [] },
@@ -44,9 +45,13 @@ function playerSide(session, playerId) {
 function initialState(type, playerOne, playerTwo) {
   const current = type === 'ludo' ? (crypto.randomInt(0, 2) === 0 ? Number(playerOne) : Number(playerTwo)) : Number(playerOne);
   if (type === 'ludo') { const palette = ['red', 'blue', 'yellow', 'green']; const first = palette[crypto.randomInt(0, palette.length)]; const remaining = palette.filter(color => color !== first); const second = remaining[crypto.randomInt(0, remaining.length)]; const colors = { [playerOne]: first, [playerTwo]: second }; return { positions: { [playerOne]: [-1, -1, -1, -1], [playerTwo]: [-1, -1, -1, -1] }, playerColors: colors, current, lastRoll: null, pendingRoll: null, moves: 0, winner: null }; }
-  if (type === 'chess') return { board: chessBoard(), current, winner: null, moves: 0 };
+  if (type === 'chess') { const fen = new Chess().fen(); return { rulesVersion: 'fide-2023', board: chessBoard(), current, winner: null, moves: 0, fen, startFen: fen, pgn: '', inCheck: false }; }
   if (type === 'truth') return { current, prompt: null, promptType: null, rounds: 0, winner: null, mode: 'tod', rating: 'pg13', history: [], questionQueue: [], questionQueueKey: 'tod:pg13', lastAction: null };
-  if (type === 'cards') return { scores: { [playerOne]: 0, [playerTwo]: 0 }, current, round: 0, winner: null, lastCard: null };
+  if (type === 'cards') {
+    const deck = Array.from({ length: 52 }, (_, card) => card);
+    for (let i = deck.length - 1; i > 0; i--) { const j = crypto.randomInt(0, i + 1); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+    return { rulesVersion: 'war-1', decks: { [playerOne]: deck.slice(0, 26), [playerTwo]: deck.slice(26) }, pot: [], ready: { [playerOne]: false, [playerTwo]: false }, scores: { [playerOne]: 26, [playerTwo]: 26 }, current: Number(playerOne), round: 0, winner: null, lastBattle: null, result: null };
+  }
   return { current, prompt: null, promptType: null, rounds: 0, winner: null };
 }
 function chessBoard() {
@@ -56,26 +61,63 @@ function chessBoard() {
   board[6] = Array(8).fill('wp'); board[7] = back.map(piece => `w${piece}`);
   return board;
 }
-function chessMoveAllowed(board, from, to) {
-  const piece = board[from.row]?.[from.col]; const target = board[to.row]?.[to.col];
-  if (!piece || (target && target[0] === piece[0])) return false;
-  const dr = to.row - from.row; const dc = to.col - from.col; const adr = Math.abs(dr); const adc = Math.abs(dc); const kind = piece[1]; const forward = piece[0] === 'w' ? -1 : 1;
-  if (!adr && !adc) return false;
-  if (kind === 'p') return (dc === 0 && !target && (dr === forward || (dr === 2 * forward && from.row === (piece[0] === 'w' ? 6 : 1) && !board[from.row + forward][from.col]))) || (adc === 1 && dr === forward && Boolean(target));
-  if (kind === 'n') return (adr === 2 && adc === 1) || (adr === 1 && adc === 2);
-  if (kind === 'k') return adr <= 1 && adc <= 1;
-  const straight = dr === 0 || dc === 0; const diagonal = adr === adc; let legal = kind === 'r' ? straight : kind === 'b' ? diagonal : straight || diagonal;
-  if (!legal) return false;
-  const sr = Math.sign(dr); const sc = Math.sign(dc);
-  for (let r = from.row + sr, c = from.col + sc; r !== to.row || c !== to.col; r += sr, c += sc) if (board[r][c]) legal = false;
-  return legal;
+function chessFenFromBoard(board, current, session, moves = 0) {
+  const ranks = (Array.isArray(board) ? board : chessBoard()).map(row => {
+    let run = 0, out = '';
+    for (const cell of (Array.isArray(row) ? row : [])) {
+      if (!cell) { run++; continue; }
+      if (run) { out += String(run); run = 0; }
+      const symbol = String(cell[1] || '').toLowerCase();
+      out += cell[0] === 'w' ? symbol.toUpperCase() : symbol;
+    }
+    if (run) out += String(run);
+    return out || '8';
+  }).join('/');
+  const initial = JSON.stringify(board) === JSON.stringify(chessBoard()) && Number(moves) === 0;
+  const side = Number(current) === Number(session.player_one) ? 'w' : 'b';
+  return `${ranks} ${side} ${initial ? 'KQkq' : '-'} - 0 ${Math.floor(Number(moves || 0) / 2) + 1}`;
+}
+function chessFromState(state, session) {
+  const game = new Chess();
+  const pgn = String(state.pgn || '').trim();
+  if (pgn) { game.loadPgn(pgn); return game; }
+  const fen = String(state.fen || chessFenFromBoard(state.board, state.current, session, state.moves));
+  game.load(fen);
+  return game;
+}
+function chessBoardFromGame(game) {
+  return game.board().map(row => row.map(piece => piece ? `${piece.color}${piece.type}` : null));
+}
+function chessSquare(row, col) { return `${String.fromCharCode(97 + col)}${8 - row}`; }
+function chessCoord(square) { return [8 - Number(square[1]), square.charCodeAt(0) - 97]; }
+function chessPositionKey(game) {
+  const fields = game.fen().split(' ');
+  const canEnPassant = fields[3] !== '-' && game.moves({ verbose: true }).some(move => String(move.flags).includes('e'));
+  return `${fields[0]} ${fields[1]} ${fields[2]} ${canEnPassant ? fields[3] : '-'}`;
+}
+function chessRepetitionCount(game, startFen) {
+  const replay = new Chess();
+  if (startFen) replay.load(startFen);
+  const counts = new Map();
+  const add = () => { const key = chessPositionKey(replay); counts.set(key, (counts.get(key) || 0) + 1); };
+  add();
+  for (const move of game.history({ verbose: true })) {
+    replay.move({ from: move.from, to: move.to, ...(move.promotion ? { promotion: move.promotion } : {}) });
+    add();
+  }
+  return counts.get(chessPositionKey(game)) || 1;
 }
 function availableChessMoves(session, state, playerId) {
-  if (Number(state.current) !== Number(playerId)) return {};
-  const color = Number(session.player_one) === Number(playerId) ? 'w' : 'b'; const moves = {};
-  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (state.board[row][col]?.[0] === color) {
-    const key = `${row},${col}`; moves[key] = [];
-    for (let toRow = 0; toRow < 8; toRow++) for (let toCol = 0; toCol < 8; toCol++) if (chessMoveAllowed(state.board, { row, col }, { row: toRow, col: toCol })) moves[key].push([toRow, toCol]);
+  if (Number(state.current) !== Number(playerId) || session.status !== 'active') return {};
+  const game = chessFromState(state, session);
+  const color = Number(session.player_one) === Number(playerId) ? 'w' : 'b';
+  if (game.turn() !== color) return {};
+  const moves = {};
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) {
+    const square = chessSquare(row, col), piece = game.get(square);
+    if (!piece || piece.color !== color) continue;
+    const targets = game.moves({ square, verbose: true }).map(move => chessCoord(move.to));
+    if (targets.length) moves[`${row},${col}`] = [...new Map(targets.map(target => [`${target[0]},${target[1]}`, target])).values()];
   }
   return moves;
 }
@@ -83,9 +125,18 @@ function safeState(state) { return JSON.parse(JSON.stringify(state)); }
 function publicState(session, playerId, messages = []) {
   const side = playerSide(session, playerId);
   if (!side) return null;
-  const state = session.state || {};
+  const rawState = session.state || {};
+  const state = safeState(rawState);
+  if (session.game_type === 'cards' && rawState.rulesVersion === 'war-1') {
+    delete state.decks;
+    delete state.pot;
+  }
   const now = Date.now();
   const status = session.status === 'active' && session.ends_at && new Date(session.ends_at).getTime() <= now ? 'finished' : session.status;
+  let canClaimDraw = false;
+  if (session.game_type === 'chess' && status === 'active' && Number(rawState.current) === Number(playerId)) {
+    try { const chess = chessFromState(rawState, session); canClaimDraw = chess.isThreefoldRepetition() || chess.isDrawByFiftyMoves(); } catch {}
+  }
   return {
     room: session.room_id, token: session.access_token, game: session.game_type,
     title: DUEL_GAMES[session.game_type]?.title || session.game_type,
@@ -93,10 +144,10 @@ function publicState(session, playerId, messages = []) {
     player: Number(playerId), side, opponent: Number(session.player_one) === Number(playerId) ? Number(session.player_two) : Number(session.player_one),
     status, ready: side === 'one' ? Boolean(session.ready_one) : Boolean(session.ready_two),
     opponentReady: side === 'one' ? Boolean(session.ready_two) : Boolean(session.ready_one),
-    state: safeState(state), legalMoves: session.game_type === 'chess' ? availableChessMoves(session, state, playerId) : {}, messages: messages.map(row => ({ id: row.id, sender: Number(row.sender_id), text: row.deleted_at ? '' : row.text, replyToId: row.reply_to_id ? Number(row.reply_to_id) : null, replyText: row.reply_text || null, reactions: row.reactions || [], deleted: Boolean(row.deleted_at), edited: Boolean(row.edited_at), createdAt: row.created_at })),
+    state, legalMoves: session.game_type === 'chess' ? availableChessMoves(session, rawState, playerId) : {}, canClaimDraw,
+    messages: messages.map(row => ({ id: row.id, sender: Number(row.sender_id), text: row.deleted_at ? '' : row.text, replyToId: row.reply_to_id ? Number(row.reply_to_id) : null, replyText: row.reply_text || null, reactions: row.reactions || [], deleted: Boolean(row.deleted_at), edited: Boolean(row.edited_at), createdAt: row.created_at })),
   };
 }
-
 export async function ensureDuelSchema(client) {
   await client.query(`CREATE TABLE IF NOT EXISTS duel_game_sessions (
     room_id TEXT PRIMARY KEY, access_token TEXT NOT NULL, game_type TEXT NOT NULL,
@@ -136,7 +187,7 @@ export async function createDuelSession(pool, gameType, playerOne, playerTwo) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN'); await ensureDuelSchema(client);
-    await client.query("UPDATE duel_game_sessions SET status='cancelled', updated_at=NOW() WHERE status IN ('waiting','active') AND (player_one IN ($1,$2) OR player_two IN ($1,$2))", [playerOne, playerTwo]);
+    await client.query("UPDATE duel_game_sessions SET status='cancelled', updated_at=NOW() WHERE status IN ('waiting','active') AND game_type=$3 AND ((player_one=$1 AND player_two=$2) OR (player_one=$2 AND player_two=$1))", [playerOne, playerTwo, gameType]);
     const row = (await client.query(`INSERT INTO duel_game_sessions(room_id,access_token,game_type,player_one,player_two,state) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`, [roomId(), accessToken(), gameType, playerOne, playerTwo, JSON.stringify(initialState(gameType, playerOne, playerTwo))])).rows[0];
     await client.query('COMMIT'); return row;
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -177,12 +228,23 @@ function ludoCanMove(piece, roll) { return piece >= 0 ? piece + roll <= LUDO_FIN
 function ludoRoll(state, session, playerId) {
   if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
   if (state.pendingRoll?.player === Number(playerId)) return;
-  const pieces = normalizeLudoPieces(state, playerId); const roll = crypto.randomInt(1, 7);
-  const canMove = pieces.some(position => ludoCanMove(position, roll));
-  state.lastRoll = roll; state.lastRollBy = Number(playerId); state.rolls = Number(state.rolls || 0) + 1;
-  if (!canMove) { state.pendingRoll = null; state.lastMove = { type: 'dead_roll', player: Number(playerId), roll }; if (roll !== 6) state.current = otherPlayer(session, playerId); return; }
+  const pieces = normalizeLudoPieces(state, playerId);
+  const roll = crypto.randomInt(1, 7);
+  const legalPieces = pieces.map((position, index) => ludoCanMove(position, roll) ? index : -1).filter(index => index >= 0);
+  state.lastRoll = roll; state.lastRollBy = Number(playerId); state.rolls = Number(state.rolls || 0) + 1; state.turnStartedAt = Date.now();
+  if (!legalPieces.length) {
+    state.pendingRoll = null;
+    state.lastMove = { type: 'dead_roll', player: Number(playerId), roll };
+    state.current = otherPlayer(session, playerId);
+    return;
+  }
   state.pendingRoll = { player: Number(playerId), roll };
   state.lastMove = { type: 'roll', player: Number(playerId), roll };
+  // A forced move is automatic; the player only chooses when multiple legal tokens exist.
+  if (legalPieces.length === 1) {
+    ludoMove(state, session, playerId, { piece: legalPieces[0] });
+    if (state.lastMove) state.lastMove.forced = true;
+  }
 }
 function ludoMove(state, session, playerId, payload = {}) {
   if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
@@ -202,37 +264,123 @@ function ludoMove(state, session, playerId, payload = {}) {
   state.pendingRoll = null; state.lastPiece = pieceIndex; state.moves = Number(state.moves || 0) + 1;
   state.lastMove = { type: 'move', player: Number(playerId), piece: pieceIndex, from, to: movedPosition, roll, captured, reachedHome, safe: movedPosition >= 0 && movedPosition < 52 && LUDO_SAFE_TRACK.includes(ludoTrackIndex(state, session, playerId, movedPosition)) };
   if (pieces.every(piece => piece >= LUDO_FINISH)) setWinner(state, session, playerId);
-  else if (roll !== 6 && !captured && !reachedHome) state.current = otherPlayer(session, playerId);
+  else if (roll !== 6) state.current = otherPlayer(session, playerId);
+  state.turnStartedAt = Date.now();
 }
-function chessMove(state, session, playerId, payload) {
+function chessMove(state, session, playerId, payload = {}) {
   if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
-  const rawFrom = payload?.from || {}; const rawTo = payload?.to || {};
-  // Accept both the public row/col contract and the legacy browser r/c shape.
+  const rawFrom = payload?.from || {}, rawTo = payload?.to || {};
   const from = { row: rawFrom.row ?? rawFrom.r, col: rawFrom.col ?? rawFrom.c };
   const to = { row: rawTo.row ?? rawTo.r, col: rawTo.col ?? rawTo.c };
   const valid = [from.row, from.col, to.row, to.col].every(Number.isInteger) && [from.row, from.col, to.row, to.col].every(x => x >= 0 && x < 8);
   if (!valid) throw new Error('invalid_move');
-  const piece = state.board[from.row][from.col]; if (!piece || (Number(playerId) === Number(session.player_one) ? !piece.startsWith('w') : !piece.startsWith('b'))) throw new Error('invalid_move');
-  const target = state.board[to.row][to.col]; if (target && target[0] === piece[0]) throw new Error('invalid_move');
-  const dr = to.row - from.row; const dc = to.col - from.col; const adr = Math.abs(dr); const adc = Math.abs(dc); const kind = piece[1];
-  if (!adr && !adc) throw new Error('invalid_move');
-  const forward = piece[0] === 'w' ? -1 : 1;
-  let legal = false;
-  if (kind === 'p') legal = (dc === 0 && !target && (dr === forward || (dr === 2 * forward && (from.row === (piece[0] === 'w' ? 6 : 1)) && !state.board[from.row + forward][from.col]))) || (adc === 1 && dr === forward && Boolean(target));
-  else if (kind === 'n') legal = (adr === 2 && adc === 1) || (adr === 1 && adc === 2);
-  else if (kind === 'k') legal = adr <= 1 && adc <= 1;
-  else if (kind === 'r' || kind === 'b' || kind === 'q') {
-    const straight = dr === 0 || dc === 0; const diagonal = adr === adc;
-    legal = kind === 'r' ? straight : kind === 'b' ? diagonal : straight || diagonal;
-    if (legal) { const sr = Math.sign(dr); const sc = Math.sign(dc); for (let r = from.row + sr, c = from.col + sc; r !== to.row || c !== to.col; r += sr, c += sc) if (state.board[r][c]) legal = false; }
-  }
-  if (!legal) throw new Error('invalid_move');
-  state.board[to.row][to.col] = piece; state.board[from.row][from.col] = null; state.moves += 1; if (target?.[1] === 'k') setWinner(state, session, playerId); else state.current = otherPlayer(session, playerId);
+  const game = chessFromState(state, session);
+  const fromSquare = chessSquare(from.row, from.col), toSquare = chessSquare(to.row, to.col);
+  const color = Number(session.player_one) === Number(playerId) ? 'w' : 'b';
+  if (game.turn() !== color) throw new Error('not_your_turn');
+  const piece = game.get(fromSquare);
+  if (!piece || piece.color !== color) throw new Error('invalid_move');
+  const promotes = piece.type === 'p' && (to.row === (color === 'w' ? 0 : 7));
+  const promotion = String(payload.promotion || '').toLowerCase();
+  if (promotes && !['q', 'r', 'b', 'n'].includes(promotion)) throw new Error('promotion_required');
+  let played;
+  try { played = game.move({ from: fromSquare, to: toSquare, ...(promotes ? { promotion } : {}) }); }
+  catch { throw new Error('invalid_move'); }
+  state.startFen ||= state.fen || chessFenFromBoard(state.board, state.current, session, state.moves);
+  state.fen = game.fen(); state.pgn = game.pgn(); state.board = chessBoardFromGame(game);
+  state.moves = game.history().length;
+  state.current = game.turn() === 'w' ? Number(session.player_one) : Number(session.player_two);
+  state.inCheck = game.isCheck();
+  state.lastMove = { san: played.san, from: played.from, to: played.to, promotion: played.promotion || null, check: state.inCheck };
+  state.result = null;
+  if (game.isCheckmate()) { state.result = 'checkmate'; setWinner(state, session, playerId); }
+  else if (game.isStalemate()) { state.result = 'stalemate'; setWinner(state, session, null); }
+  else if (game.isInsufficientMaterial()) { state.result = 'dead_position'; setWinner(state, session, null); }
+  else if (chessRepetitionCount(game, state.startFen) >= 5) { state.result = 'fivefold_repetition'; setWinner(state, session, null); }
+  else if (Number(game.fen().split(' ')[4]) >= 150) { state.result = 'seventy_five_moves'; setWinner(state, session, null); }
+}
+function claimChessDraw(state, session, playerId) {
+  if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
+  const game = chessFromState(state, session);
+  if (game.isThreefoldRepetition()) state.result = 'threefold_claim';
+  else if (game.isDrawByFiftyMoves()) state.result = 'fifty_move_claim';
+  else throw new Error('draw_not_claimable');
+  setWinner(state, session, null);
 }
 function cardMove(state, session, playerId) {
+  if (state.rulesVersion === 'war-1') throw new Error('use_reveal_action');
   if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
   const card = crypto.randomInt(1, 14); state.lastCard = card; state.scores[playerId] = Number(state.scores[playerId] || 0) + card; state.round += 1;
   if (state.round >= 10) { const a = state.scores[session.player_one]; const b = state.scores[session.player_two]; setWinner(state, session, a === b ? null : (a > b ? session.player_one : session.player_two)); } else state.current = otherPlayer(session, playerId);
+}
+function warRank(card) { return Math.floor(Number(card) / 4) + 2; }
+function warResetReady(state, session) { state.ready = { [session.player_one]: false, [session.player_two]: false }; }
+function updateWarScores(state, session) {
+  state.scores = { [session.player_one]: state.decks[session.player_one].length, [session.player_two]: state.decks[session.player_two].length };
+}
+function cardReveal(state, session, playerId) {
+  if (state.rulesVersion !== 'war-1') throw new Error('invalid_action');
+  const key = String(playerId);
+  state.ready ||= {};
+  // Make duplicate taps/network retries harmless on slow mobile connections.
+  if (state.ready[key]) return;
+  state.ready[key] = true;
+  if (!state.ready[String(session.player_one)] || !state.ready[String(session.player_two)]) return;
+  resolveWarBattle(state, session);
+}
+function resolveWarBattle(state, session) {
+  const one = String(session.player_one), two = String(session.player_two);
+  const decks = state.decks, pot = Array.isArray(state.pot) ? state.pot : [];
+  const sequence = [];
+  let winner = null, forcedWin = false, draw = false, guard = 0;
+  while (guard++ < 60) {
+    if (!decks[one].length || !decks[two].length) {
+      winner = decks[one].length ? Number(one) : decks[two].length ? Number(two) : null;
+      break;
+    }
+    const first = decks[one].shift(), second = decks[two].shift();
+    pot.push(first, second);
+    sequence.push({ one: first, two: second, faceDown: 0 });
+    if (warRank(first) !== warRank(second)) { winner = warRank(first) > warRank(second) ? Number(one) : Number(two); break; }
+    let tied = true;
+    while (tied) {
+      const canOne = decks[one].length >= 4, canTwo = decks[two].length >= 4;
+      if (!canOne || !canTwo) {
+        if (canOne && !canTwo) winner = Number(one);
+        else if (canTwo && !canOne) winner = Number(two);
+        else draw = true;
+        forcedWin = Boolean(winner);
+        tied = false;
+        break;
+      }
+      for (let i = 0; i < 3; i++) pot.push(decks[one].shift(), decks[two].shift());
+      const warOne = decks[one].shift(), warTwo = decks[two].shift();
+      pot.push(warOne, warTwo);
+      sequence.push({ one: warOne, two: warTwo, faceDown: 3 });
+      if (warRank(warOne) !== warRank(warTwo)) { winner = warRank(warOne) > warRank(warTwo) ? Number(one) : Number(two); tied = false; }
+    }
+    break;
+  }
+  if (winner !== null) {
+    decks[String(winner)].push(...pot.splice(0));
+    if (forcedWin) {
+      const loser = String(Number(winner) === Number(one) ? two : one);
+      decks[String(winner)].push(...decks[loser].splice(0));
+    }
+  }
+  state.pot = pot;
+  state.round = Number(state.round || 0) + 1;
+  state.lastBattle = { sequence, winner, draw, forcedWin, potCount: sequence.reduce((sum, item) => sum + 2 + item.faceDown * 2, 0) };
+  state.result = null;
+  state.current = otherPlayer(session, Number(state.current) || Number(one));
+  warResetReady(state, session);
+  updateWarScores(state, session);
+  if (draw) { state.result = 'war_exhaustion_draw'; setWinner(state, session, null); }
+  else if (winner !== null && (!decks[one].length || !decks[two].length)) { state.result = forcedWin ? 'war_exhaustion' : 'all_cards'; setWinner(state, session, winner); }
+  else if (!decks[one].length || !decks[two].length) {
+    const last = decks[one].length ? Number(one) : decks[two].length ? Number(two) : null;
+    state.result = 'all_cards'; setWinner(state, session, last);
+  }
 }
 function truthMove(state, session, playerId, payload = {}) {
   if (Number(state.current) !== Number(playerId)) throw new Error('not_your_turn');
@@ -254,7 +402,61 @@ function truthMove(state, session, playerId, payload = {}) {
   const picked = state.questionQueue.shift(); state.prompt = picked.text; state.promptType = picked.type === 'truth' ? 'حقیقت' : 'جرئت'; state.lastAction = command; state.updatedAt = Date.now();
 }
 
-export async function duelState(pool, room, token, playerId) { const session = await loadSession(pool, room, token); if (!session) return null; return publicState(session, playerId, await loadMessages(pool, room, playerId)); }
+async function advanceExpiredLudoTurn(pool, room, token) {
+  const snapshot = await loadSession(pool, room, token);
+  if (!snapshot || snapshot.game_type !== 'ludo' || snapshot.status !== 'active') return;
+  const snapshotState = snapshot.state || {};
+  const startedAt = Number(snapshotState.turnStartedAt);
+  if (Number.isFinite(startedAt) && startedAt > 0 && Date.now() - startedAt < 15000) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const session = (await client.query('SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 FOR UPDATE', [room, token])).rows[0];
+    if (!session || session.game_type !== 'ludo' || session.status !== 'active') { await client.query('COMMIT'); return; }
+    const state = session.state || {};
+    const now = Date.now(), currentStartedAt = Number(state.turnStartedAt);
+    if (!Number.isFinite(currentStartedAt) || currentStartedAt <= 0) {
+      state.turnStartedAt = now;
+      await client.query('UPDATE duel_game_sessions SET state=$2::jsonb,updated_at=NOW() WHERE room_id=$1', [room, JSON.stringify(state)]);
+      await client.query('COMMIT'); return;
+    }
+    if (now - currentStartedAt < 15000) { await client.query('COMMIT'); return; }
+    const currentPlayer = Number(state.current);
+    if (state.pendingRoll?.player === currentPlayer) {
+      const positions = normalizeLudoPieces(state, currentPlayer), roll = Number(state.pendingRoll.roll);
+      const legalPieces = positions.map((position, index) => ludoCanMove(position, roll) ? index : -1).filter(index => index >= 0);
+      if (legalPieces.length) {
+        const piece = legalPieces[crypto.randomInt(0, legalPieces.length)];
+        ludoMove(state, session, currentPlayer, { piece });
+        if (state.lastMove) { state.lastMove.auto = true; state.lastMove.autoReason = 'piece-timeout'; }
+      } else {
+        state.pendingRoll = null; state.current = otherPlayer(session, currentPlayer);
+        state.lastMove = { type: 'dead_roll', player: currentPlayer, roll, auto: true };
+      }
+    } else {
+      ludoRoll(state, session, currentPlayer);
+      if (state.pendingRoll?.player === currentPlayer) {
+        const positions = normalizeLudoPieces(state, currentPlayer), roll = Number(state.pendingRoll.roll);
+        const legalPieces = positions.map((position, index) => ludoCanMove(position, roll) ? index : -1).filter(index => index >= 0);
+        if (legalPieces.length) {
+          const piece = legalPieces[crypto.randomInt(0, legalPieces.length)];
+          ludoMove(state, session, currentPlayer, { piece });
+          if (state.lastMove) { state.lastMove.auto = true; state.lastMove.autoReason = 'turn-timeout'; }
+        }
+      } else if (state.lastMove) state.lastMove.auto = true;
+    }
+    state.turnStartedAt = Date.now();
+    await client.query('UPDATE duel_game_sessions SET state=$2::jsonb,status=$3,winner=$4,updated_at=NOW() WHERE room_id=$1', [room, JSON.stringify(state), session.status, session.winner]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+export async function duelState(pool, room, token, playerId) {
+  await advanceExpiredLudoTurn(pool, room, token);
+  const session = await loadSession(pool, room, token);
+  if (!session) return null;
+  return publicState(session, playerId, await loadMessages(pool, room, playerId));
+}
 export async function duelAction(pool, room, token, playerId, action, payload = {}) {
   if (['chat','reaction','edit','delete'].includes(action)) {
     const session = await loadSession(pool, room, token); if (!session || !playerSide(session, playerId)) return null;
@@ -291,9 +493,9 @@ export async function duelAction(pool, room, token, playerId, action, payload = 
   try {
     await client.query('BEGIN'); const session = (await client.query('SELECT * FROM duel_game_sessions WHERE room_id=$1 AND access_token=$2 FOR UPDATE', [room, token])).rows[0];
     if (!session || !playerSide(session, playerId)) { await client.query('ROLLBACK'); return null; }
-    if (action === 'ready') { const column = Number(playerId) === Number(session.player_one) ? 'ready_one' : 'ready_two'; const otherReady = Number(playerId) === Number(session.player_one) ? session.ready_two : session.ready_one; const active = Boolean(otherReady); await client.query(`UPDATE duel_game_sessions SET ${column}=TRUE,status=CASE WHEN $2 THEN 'active' ELSE status END,ends_at=CASE WHEN $2 AND game_type <> 'truth' THEN NOW()+INTERVAL '2 hours' WHEN $2 AND game_type = 'truth' THEN NULL ELSE ends_at END,updated_at=NOW() WHERE room_id=$1`, [room, active]); }
-    else if (action === 'leave') await client.query("UPDATE duel_game_sessions SET status='cancelled',updated_at=NOW() WHERE room_id=$1", [room]);
-    else { assertActive(session, playerId); const state = session.state || {}; if (session.game_type === 'ludo' && action === 'roll') ludoRoll(state, session, playerId); else if (session.game_type === 'ludo' && action === 'move') ludoMove(state, session, playerId, payload); else if (session.game_type === 'chess' && action === 'move') chessMove(state, session, playerId, payload); else if (session.game_type === 'cards' && action === 'draw') cardMove(state, session, playerId); else if (session.game_type === 'truth' && action === 'truth') truthMove(state, session, playerId, payload); else throw new Error('invalid_action'); await client.query('UPDATE duel_game_sessions SET state=$2::jsonb,status=$3,winner=$4,updated_at=NOW() WHERE room_id=$1', [room, JSON.stringify(state), session.status, session.winner]); }
+    if (action === 'ready') { if (!['waiting','active'].includes(session.status)) throw new Error('game_not_active'); const column = Number(playerId) === Number(session.player_one) ? 'ready_one' : 'ready_two'; const otherReady = Number(playerId) === Number(session.player_one) ? session.ready_two : session.ready_one; const active = Boolean(otherReady); await client.query(`UPDATE duel_game_sessions SET ${column}=TRUE,status=CASE WHEN $2 THEN 'active' ELSE status END,ends_at=CASE WHEN $2 AND game_type <> 'truth' THEN NOW()+INTERVAL '2 hours' WHEN $2 AND game_type = 'truth' THEN NULL ELSE ends_at END,updated_at=NOW() WHERE room_id=$1`, [room, active]); }
+    else if (action === 'leave') { const state = session.state || {}; state.leftPlayer = Number(playerId); state.leftAt = Date.now(); await client.query("UPDATE duel_game_sessions SET status='cancelled',state=$2::jsonb,updated_at=NOW() WHERE room_id=$1", [room, JSON.stringify(state)]); }
+    else { assertActive(session, playerId); const state = session.state || {}; if (session.game_type === 'ludo' && action === 'roll') ludoRoll(state, session, playerId); else if (session.game_type === 'ludo' && action === 'move') ludoMove(state, session, playerId, payload); else if (session.game_type === 'chess' && action === 'move') chessMove(state, session, playerId, payload); else if (session.game_type === 'chess' && action === 'claim_draw') claimChessDraw(state, session, playerId); else if (session.game_type === 'cards' && action === 'reveal') cardReveal(state, session, playerId); else if (session.game_type === 'cards' && action === 'draw') cardMove(state, session, playerId); else if (session.game_type === 'truth' && action === 'truth') truthMove(state, session, playerId, payload); else throw new Error('invalid_action'); await client.query('UPDATE duel_game_sessions SET state=$2::jsonb,status=$3,winner=$4,updated_at=NOW() WHERE room_id=$1', [room, JSON.stringify(state), session.status, session.winner]); }
     await client.query('COMMIT'); return duelState(pool, room, token, playerId);
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }

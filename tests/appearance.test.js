@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
-import { APPEARANCE_TEMPLATES, appearanceItems, appearanceKeyboard, captureCustomEmojiEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearancePath, templateAppearance, templateIdFromText } from '../src/appearance.js';
+import { APPEARANCE_TEMPLATES, appearanceItems, appearanceKeyboard, captureCustomEmojiEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearanceMessageSource, setAppearancePath, templateAppearance, templateIdFromText } from '../src/appearance.js';
 
 const source = fs.readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
 
@@ -27,7 +27,7 @@ describe('appearance configuration', () => {
       buttons: [[{ id: 'connect', label: 'Talk', icon_custom_emoji_id: '5368324170671202286', style: 'success' }]],
       screens: { preference: { buttons: [{ id: 'male', label: 'Man', style: 'primary' }] } },
     });
-    expect(appearanceKeyboard(appearance)).toEqual([[{ text: 'Talk', icon_custom_emoji_id: '5368324170671202286', style: 'success' }]]);
+    expect(appearanceKeyboard(appearance)).toEqual([[{ text: 'Talk', icon_custom_emoji_id: '5368324170671202286', style: 'success' }], ['اتصال به مخاطب خاص']]);
     expect(screenKeyboard(appearance, 'preference')).toEqual([[{ text: 'Man', style: 'primary' }]]);
     expect(appearanceKeyboard(normalizeAppearance('public', null))[0][0]).toBe('وصل کن به ناشناس');
   });
@@ -50,25 +50,61 @@ describe('appearance configuration', () => {
     expect(feedbackMessagePayload(appearance, 'waiting', 'fallback').entities[0].custom_emoji_id).toBe('789');
   });
 
-  it('uses the editable public plus response instead of bypassing it with hard-coded text', () => {
-    const sendPlus = source.match(/async function sendPlus\(id, settings\) \{[\s\S]*?\n\}/)?.[0] || '';
-    expect(sendPlus).toContain("screenMessagePayload(publicAppearance(settings), 'plus', fallback)");
-    expect(sendPlus).toContain('plusPurchaseKeyboard()');
-    expect(sendPlus).not.toContain('send(id, text, plusPurchaseKeyboard())');
+  it('copies configured response posts from Telegram and clears stale sources on text edits', () => {
+    const appearance = normalizeAppearance('public', {
+      screens: { preference: { message: 'کپشن', message_source: { chat_id: 12345, message_id: 456 }, feedback: { connected: 'پاسخ', connected_source: { chat_id: 12345, message_id: 458 }, connected_entities: [] } } },
+      feedback: { waiting: 'متن پاسخ', waiting_source: { chat_id: 12345, message_id: 457 } },
+    });
+    expect(screenMessagePayload(appearance, 'preference', 'fallback')).toEqual({ copy_message: { from_chat_id: 12345, message_id: 456 } });
+    expect(feedbackMessagePayload(appearance, 'waiting', 'fallback')).toEqual({ copy_message: { from_chat_id: 12345, message_id: 457 } });
+    expect(setAppearancePath(appearance, 'screens.preference.message', 'متن جدید').screens.preference.message_source).toBeUndefined();
+    expect(setAppearancePath(appearance, 'feedback.waiting', 'پاسخ جدید').feedback.waiting_source).toBeUndefined();
+    expect(appearanceItems('public', appearance).some(item => /_(entities|source)$/.test(item.path))).toBe(false);
   });
 
-  it('renders the saved public plus screen message instead of the shorter plus feedback label', () => {
+  it('preserves plus-screen copies and feedback copies passed through a screen fallback', () => {
     const appearance = normalizeAppearance('public', {
-      screens: { plus: { message: 'متن کامل اطلاعات مانوپلاس که در پنل ذخیره شده است.' } },
-      feedback: { plus: 'مانوپلاس' },
+      screens: {
+        plus: { message: '', message_source: { chat_id: 12345, message_id: 903 } },
+        preference: { message: '' },
+      },
+      feedback: { connect_prompt: '', connect_prompt_source: { chat_id: 12345, message_id: 904 } },
     });
-    expect(screenMessagePayload(appearance, 'plus', 'fallback').text).toBe('متن کامل اطلاعات مانوپلاس که در پنل ذخیره شده است.');
+    expect(screenMessagePayload(appearance, 'plus', 'purchase fallback')).toEqual({ copy_message: { from_chat_id: 12345, message_id: 903 } });
+    const feedback = feedbackMessagePayload(appearance, 'connect_prompt', 'connect fallback');
+    expect(screenMessagePayload(appearance, 'preference', feedback)).toEqual({ copy_message: { from_chat_id: 12345, message_id: 904 } });
+  });
+
+  it('stores the source sent through the appearance editor, including media-only posts', () => {
+    const base = normalizeAppearance('public', {
+      screens: { preference: { message: '', feedback: { connected: '' } } },
+      feedback: { waiting: '' },
+    });
+    const photoOnly = { chat: { id: 12345 }, message_id: 901, photo: [{ file_id: 'photo-file' }] };
+    const edited = setAppearanceMessageSource(
+      setAppearancePath(base, 'feedback.waiting', ''),
+      'feedback.waiting',
+      photoOnly,
+    );
+    expect(edited.feedback.waiting_source).toEqual({ chat_id: 12345, message_id: 901 });
+    expect(feedbackMessagePayload(edited, 'waiting', 'fallback')).toEqual({ copy_message: { from_chat_id: 12345, message_id: 901 } });
+    const screenEdited = setAppearanceMessageSource(
+      setAppearancePath(base, 'screens.preference.message', 'کپشن'),
+      'screens.preference.message',
+      { chat: { id: 12345 }, message_id: 902, caption: 'کپشن', caption_entities: [{ type: 'bold', offset: 0, length: 5 }] },
+    );
+    expect(screenMessagePayload(screenEdited, 'preference', 'fallback')).toEqual({ copy_message: { from_chat_id: 12345, message_id: 902 } });
   });
 
   it('exposes custom-emoji, response-entity, and color controls in the admin editor', () => {
     expect(source).toContain("text: 'Icon✨'");
     expect(source).toContain("text: 'Style🎨'");
-    expect(source).toContain('captureCustomEmojiEntities(meta.message, responseText)');
+    expect(source).toContain('captureCustomEmojiEntities(incoming, responseText)');
+    expect(source).toContain('target.parent[`${target.key}_source`] =');
+    expect(source).toContain("telegram('copyMessage', copyBody)");
+    expect(source).toContain('setAppearanceMessageSource(next, tail, incoming)');
+    expect(source).toContain('handleAppearanceText(client, id, value, me.action_state, s, meta)');
+    expect(source).toContain("screenMessagePayload(publicAppearance(s), 'plus'");
     expect(source).toContain("style === 'default'");
   });
 
