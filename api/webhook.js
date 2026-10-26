@@ -11,6 +11,7 @@ import { encryptMandatoryTrackingUserId } from '../src/mandatory-tracking-token.
 import { APPEARANCE_SECTIONS, appearanceButton, appearanceItems, appearanceKeyboard, appearanceButtonObject, appearanceRuntimeButtons, captureCustomEmojiEntities, captureMessageEntities, feedbackMessagePayload, joinTextPayloads, normalizeAppearance, screenKeyboard, screenMessagePayload, setAppearanceMessageSource, setAppearancePath, templateAppearance, templateIdFromText, templateListText } from '../src/appearance.js';
 import { applyInlineAppearance, inlineButtonKey, moveInlineButtonOrder, normalizeInlineAppearance, observeInlineKeyboard, recordInlineKeyboard } from '../src/inline-appearance.js';
 import { inlineEditorButtonKey, inlineEditorButtonKeyboard, inlineEditorButtonText, inlineEditorGroupKeyboard, inlineEditorGroups, inlineEditorLayoutKeyboard, inlineEditorNestedKeyboard, inlineEditorOrder, inlineEditorRootKeyboard, inlineEditorScreenKeyboard, inlineEditorScreenText, inlineEditorStyleKeyboard } from '../src/inline-appearance-editor.js';
+import { beautyInlineEntries } from '../src/beauty-inline-bridge.js';
 import { collectServerStatus, createDatabaseBackup, createSourceArchive, removeTempFile } from '../src/technical-tools.js';
 import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, durationLabel, parseDuration, permissionKeyboard } from '../src/admin-control.js';
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
@@ -859,7 +860,7 @@ async function handleInlineAppearanceCallback(id, data, callbackQuery, client, a
   }
   return send(id, 'فرمان ویرایش دکمهٔ شیشه‌ای معتبر نیست.');
 }
-function beautySectionsKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'آرایش (Public)', callback_data: 'beauty:section:public' }], [{ text: 'آرایش (Privacy)', callback_data: 'beauty:section:private' }], [{ text: 'بازگشت', callback_data: 'beauty:back' }]] } }; }
+function beautySectionsKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'Public · دکمه‌های عمومی کاربران', callback_data: 'beauty:section:public' }], [{ text: 'Privacy · دکمه‌های پنل خصوصی مدیریت', callback_data: 'beauty:section:private' }], [{ text: 'بازگشت', callback_data: 'beauty:back' }]] } }; }
 const BEAUTY_FLOW_NEXT = {
   root: { connect: 'preference', profile: 'profile', anonymous_link: 'anonymous_link', coins: 'coins', plus: 'plus', ads: 'ads', control: 'control', users: 'user_search', status: 'status', reports: 'reports', admins: 'admins', exit: 'root' },
   preference: { male: 'gender', female: 'gender', any: 'gender' },
@@ -881,13 +882,22 @@ const BEAUTY_FLOW_NEXT = {
   ads: { join: 'root', broadcast: 'root', welcome: 'root', connection_ad: 'root', mid_ad: 'root', back: 'root' },
   user_search: { back: 'root' },
 };
-function beautyChildPath(path, itemId) { return BEAUTY_FLOW_NEXT[path]?.[itemId] || (path === 'root' && itemId) || null; }
-function beautyParentPath(path) {
+function beautyChildPath(path, itemId, appearance = null) {
+  const next = BEAUTY_FLOW_NEXT[path]?.[itemId];
+  if (next) return next;
+  if (appearance?.screens?.[itemId]) return itemId;
+  return path === 'root' && itemId ? itemId : null;
+}
+function beautyParentPath(path, appearance = null) {
   for (const [parent, children] of Object.entries(BEAUTY_FLOW_NEXT)) if (Object.values(children).includes(path)) return parent;
+  if (appearance?.screens?.[path]) {
+    for (const [parent, screen] of Object.entries(appearance.screens)) if ((screen.buttons || []).flat().some(item => item?.id === path)) return parent;
+    if ((appearance.buttons || []).flat().some(item => item?.id === path)) return 'root';
+  }
   return 'root';
 }
 function beautyMessageTarget(appearance, path, itemId) {
-  const nextPath = beautyChildPath(path, itemId);
+  const nextPath = beautyChildPath(path, itemId, appearance);
   if (nextPath && nextPath !== path) {
     if (nextPath === 'root') return { parent: appearance, key: 'message' };
     if (appearance.screens?.[nextPath]) return { parent: appearance.screens[nextPath], key: 'message' };
@@ -918,13 +928,12 @@ function beautyItemRef(appearance, path, itemId) {
   return null;
 }
 function beautySelected(appearance, path, itemId) { return beautyItemRef(appearance, path, itemId); }
-function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
+function beautyKeyboard(section, appearance, path = 'root', selectedId = null, config = inlineAppearanceCache.value) {
   const rows = beautyPathRows(appearance, path);
-  const items = rows.flat().filter(item => item?.enabled !== false);
   if (!selectedId) {
     const keyboardRows = rows.map(row => (row || []).filter(item => item?.enabled !== false).map(item => ({ text: item.label || item.id, ...(item.icon_custom_emoji_id ? { icon_custom_emoji_id: item.icon_custom_emoji_id } : {}), callback_data: `beauty:${section}:pick:${path}:${item.id}` }))).filter(row => row.length);
-    keyboardRows.push([{ text: 'دکمه‌های شیشه‌ای', callback_data: `beauty:${section}:inline:${path}` }]);
-    keyboardRows.push([{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:${beautyParentPath(path)}` }]);
+    for (const entry of beautyInlineEntries(section, appearance, path, config)) keyboardRows.push([{ text: entry.label, callback_data: `beauty:${section}:inlinepick:${path}:${entry.screenId}:${entry.index}` }]);
+    keyboardRows.push([{ text: 'بازگشت', callback_data: path === 'root' ? 'beauty:back' : `beauty:${section}:open:${beautyParentPath(path, appearance)}` }]);
     return { reply_markup: { inline_keyboard: keyboardRows } };
   }
   const item = beautySelected(appearance, path, selectedId);
@@ -938,7 +947,7 @@ function beautyKeyboard(section, appearance, path = 'root', selectedId = null) {
     [{ text: 'Style🎨', callback_data: `beauty:${section}:style:${path}:${item.id}` }],
     [{ text: 'Enter✔️', callback_data: `beauty:${section}:enter:${path}:${item.id}` }],
     [{ text: status, callback_data: `beauty:${section}:toggle:${path}:${item.id}` }],
-    [{ text: 'بازگشت', callback_data: `beauty:${section}:open:${beautyParentPath(path)}` }]
+    [{ text: 'بازگشت', callback_data: `beauty:${section}:open:${beautyParentPath(path, appearance)}` }]
   ] } };
 }
 function beautyStyleKeyboard(section, path, itemId) {
@@ -952,8 +961,8 @@ function beautyStyleKeyboard(section, path, itemId) {
 function beautyPathLabel(path) { return path === 'root' ? 'صفحه اصلی' : `صفحه اصلی ← ${path}`; }
 function beautyEditorText(section, appearance, path = 'root', selectedId = null, note = '') {
   const item = selectedId ? beautySelected(appearance, path, selectedId) : null;
-  const title = section === 'public' ? 'Public' : 'Privacy';
-  if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `ویرایش آرایش زیبایی — ${title}\n\nدکمه‌های صفحه اصلی را انتخاب کن یا از گزینهٔ «دکمه‌های شیشه‌ای» در همین ویرایشگر استفاده کن. فعلاً چیزی تغییر نمی‌کند تا یکی از گزینه‌های ویرایش را بزنی.` : `ویرایش آرایش زیبایی — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های داخل این بخش را انتخاب کن یا از گزینهٔ «دکمه‌های شیشه‌ای» در همین ویرایشگر استفاده کن.`; }
+  const title = section === 'public' ? 'Public · عمومی کاربران' : 'Privacy · پنل خصوصی مدیریت';
+  if (!item) { const screen = appearance.screens?.[path]; return path === 'root' ? `ویرایش آرایش زیبایی — ${title}\n\nدکمه‌های همین صفحه و مرحله‌های داخلی را انتخاب کن. دکمه‌های شیشه‌ایِ هر مرحله، در صورت شناسایی، کنار همان دکمه‌های صفحه نمایش داده می‌شوند.` : `ویرایش آرایش زیبایی — ${title}\n\nصفحه داخلی: ${screen?.title || path}\n${screen?.message || ''}\n\nدکمه‌های همین مرحله و دکمه‌های شیشه‌ایِ مرتبط با آن در فهرست زیر آمده‌اند.`; }
   const response = beautyMessageText(appearance, path, item.id);
   const styleLabel = ({ primary: 'آبی', success: 'سبز', danger: 'قرمز' }[item.style] || 'پیش‌فرض');
   return `${note ? `${note}\n\n` : ''}دکمه انتخاب‌شده: ${item.label || item.id}\nپیام پاسخ: ${response || 'پاسخ مستقیمی ثبت نشده است.'}\nنام نمایشی: ${item.label || item.id}\nایموجی پرمیوم: ${item.icon_custom_emoji_id ? 'تنظیم‌شده' : 'ندارد'}\nرنگ: ${styleLabel}\nمسیر: ${beautyPathLabel(path)}\nوضعیت: ${item.enabled === false ? 'خاموش' : 'روشن'}`;
@@ -1027,13 +1036,20 @@ async function handleBeautyCallback(id, data, callbackQuery, client, s) {
   const parts=data.split(':'); const section=parts[1]; const action=parts[2]; const appearance=section==='public'?publicAppearance(s):privateAppearance(s);
   const path=parts[3] || 'root'; const itemId=parts[4] || null;
   if (!['public','private'].includes(section)) return send(id, 'بخش نامعتبر است.');
-  if (action === 'inline') { if (path !== 'root' && !appearance.screens?.[path]) return send(id, 'صفحهٔ آرایش زیبایی پیدا نشد.'); await updateAction(client, id, `beauty:inline:${section}:${encodeURIComponent(path)}`); return showInlineEditorRoot(id, callbackQuery); }
+  if (action === 'inlinepick') {
+    const screenId = parts[4], index = Number(parts[5]);
+    const config = await loadInlineAppearanceConfig(true);
+    const key = inlineEditorButtonKey(config, screenId, index);
+    if (!key || !beautyInlineEntries(section, appearance, path, config).some(item => item.screenId === screenId && item.index === index)) return send(id, 'این دکمهٔ شیشه‌ای به این مرحله تعلق ندارد؛ صفحه را دوباره باز کن.');
+    await updateAction(client, id, `beauty:inline:${section}:${encodeURIComponent(path)}`);
+    return showInlineEditorButton(id, screenId, index, callbackQuery, 'ویرایش از همین مرحلهٔ آرایش زیبایی');
+  }
   if (action === 'noop') return false;
   if (action === 'pick') { const item=beautySelected(appearance,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); await updateAction(client,id,null); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path,itemId),beautyKeyboard(section,appearance,path,itemId)); }
   if (action === 'open') { await updateAction(client,id,null); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,path),beautyKeyboard(section,appearance,path)); }
   if (action === 'move') { const direction=parts[3], movePath=parts[4] || 'root', moveId=parts[5]; if (moveId === '__connected') return editBeautyMessage(callbackQuery,id,'این ورودی مرحله‌ای فقط برای ورود به لایهٔ مکالمه است و قابل جابه‌جایی نیست.',beautyKeyboard(section,appearance,movePath,moveId)); const next=moveBeautyItem(appearance,movePath,moveId,direction); await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,movePath,moveId,'چینش ثبت شد.'),beautyKeyboard(section,next,movePath,moveId)); }
   if (action === 'toggle') { if (itemId === '__connected') return editBeautyMessage(callbackQuery,id,'این ورودی مرحله‌ای قابل خاموش/روشن‌کردن نیست.',beautyKeyboard(section,appearance,path,itemId)); const next=JSON.parse(JSON.stringify(appearance)); const item=beautyItemRef(next,path,itemId); if (!item) return send(id,'دکمه پیدا نشد.'); item.enabled=item.enabled === false; await updateAppearanceSetting(client,section,next); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,next,path,itemId,'وضعیت ثبت شد.'),beautyKeyboard(section,next,path,itemId)); }
-  if (action === 'enter') { const nextPath=beautyChildPath(path,itemId); if (!nextPath || nextPath === path) return editBeautyMessage(callbackQuery,id,'این دکمه صفحهٔ داخلی دیگری ندارد.',beautyKeyboard(section,appearance,path,itemId)); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
+  if (action === 'enter') { const nextPath=beautyChildPath(path,itemId,appearance); if (!nextPath || nextPath === path) return editBeautyMessage(callbackQuery,id,'این دکمه صفحهٔ داخلی دیگری ندارد.',beautyKeyboard(section,appearance,path,itemId)); return editBeautyMessage(callbackQuery,id,beautyEditorText(section,appearance,nextPath),beautyKeyboard(section,appearance,nextPath)); }
   if (action === 'style') return editBeautyMessage(callbackQuery,id,'رنگ دکمه را انتخاب کن. تلگرام فقط آبی، سبز و قرمز را پشتیبانی می‌کند.',beautyStyleKeyboard(section,path,itemId));
   if (action === 'setstyle') {
     const style = parts[5];

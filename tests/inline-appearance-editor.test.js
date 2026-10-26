@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { observeInlineKeyboard, recordInlineKeyboard } from '../src/inline-appearance.js';
+import { beautyInlineEntries, beautyInlineGroupsForPath } from '../src/beauty-inline-bridge.js';
 import { inlineEditorButtonKey, inlineEditorButtonKeyboard, inlineEditorButtonText, inlineEditorGroupKeyboard, inlineEditorGroups, inlineEditorNestedKeyboard, inlineEditorOrder, inlineEditorRootKeyboard, inlineEditorScreenKeyboard, inlineEditorStyleKeyboard } from '../src/inline-appearance-editor.js';
 
 function catalog(...keyboards) {
@@ -8,6 +9,23 @@ function catalog(...keyboards) {
 }
 
 describe('inline appearance editor', () => {
+  it('surfaces matching inline buttons in the entered public and private Beauty screens', () => {
+    const config = catalog(
+      { inline_keyboard: [[{ text: 'Buy coin', callback_data: 'coins:buy' }]] },
+      { inline_keyboard: [[{ text: 'Review report', callback_data: 'reports:review' }]] },
+      { inline_keyboard: [[{ text: 'Admin action', callback_data: 'admin:action' }]] },
+    );
+    config.buttons['callback:coins:buy'] = { label: 'Buy customized' };
+    const publicAppearance = { screens: { coins: { buttons: [] } } };
+    const privateAppearance = { screens: { reports: { buttons: [] }, control: { buttons: [] } } };
+
+    expect(beautyInlineEntries('public', publicAppearance, 'coins', config).map(item => item.label)).toContain('◈ Buy customized');
+    expect(beautyInlineEntries('private', privateAppearance, 'reports', config).map(item => item.label)).toContain('◈ Review report');
+    expect(beautyInlineEntries('private', privateAppearance, 'control', config).map(item => item.label)).toContain('◈ Admin action');
+    expect(beautyInlineEntries('public', publicAppearance, 'control', config)).toEqual([]);
+    expect(beautyInlineGroupsForPath('public', 'root')).toEqual([]);
+  });
+
   it('groups discovered pages and lets admins drill down into page button selections', () => {
     const markup = { inline_keyboard: [[{ text: 'Option A', callback_data: 'idea:option:1' }, { text: 'Option B', callback_data: 'idea:option:2' }], [{ text: 'Back', callback_data: 'idea:back' }]] };
     const config = catalog(markup);
@@ -58,12 +76,20 @@ describe('inline editor webhook integration', () => {
   const webhook = readFileSync(new URL('../api/webhook.js', import.meta.url), 'utf8');
   const runtime = readFileSync(new URL('../src/inline-appearance.js', import.meta.url), 'utf8');
   const editor = readFileSync(new URL('../src/inline-appearance-editor.js', import.meta.url), 'utf8');
+  const bridge = readFileSync(new URL('../src/beauty-inline-bridge.js', import.meta.url), 'utf8');
 
-  it('is embedded in the existing beauty editor, not a separate admin control entry', () => {
+  it('shows glass buttons beside the ordinary buttons inside each matching Beauty submenu', () => {
     expect(webhook).not.toContain("['ویرایش دکمه‌های شیشه‌ای']");
     expect(webhook).not.toContain("if (value === 'ویرایش دکمه‌های شیشه‌ای')");
-    expect(webhook).toContain("keyboardRows.push([{ text: 'دکمه‌های شیشه‌ای', callback_data: `beauty:${section}:inline:${path}` }]);");
-    expect(webhook).toContain("if (action === 'inline')");
+    expect(webhook).not.toContain("text: 'دکمه‌های شیشه‌ای', callback_data: `beauty:${section}:inline:");
+    expect(bridge).toContain('export function beautyInlineEntries(section, appearance, path, config)');
+    expect(webhook).toContain('beautyInlineEntries(section, appearance, path, config)');
+    expect(webhook).toContain('callback_data: `beauty:${section}:inlinepick:${path}:${entry.screenId}:${entry.index}`');
+    expect(webhook).toContain("if (action === 'inlinepick')");
+    expect(webhook).toContain('function beautyChildPath(path, itemId, appearance = null)');
+    expect(webhook).toContain('if (appearance?.screens?.[itemId]) return itemId;');
+    expect(webhook).toContain('Public · دکمه‌های عمومی کاربران');
+    expect(webhook).toContain('Privacy · دکمه‌های پنل خصوصی مدیریت');
     expect(webhook).toContain("if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback");
     expect(webhook).toContain("if (!isAdmin(id) || (!isOwner(id) && !hasAdminPermission(id, 'appearance')))");
     expect(webhook).toContain('inlineBeautyReturnOrigin(actionState)');
