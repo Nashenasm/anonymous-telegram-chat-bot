@@ -1,10 +1,11 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import webhook, { coinRushApi, ensureCoinRushRuntimeSchema, duelApi, ensureDuelRuntimeSchema } from './api/webhook.js';
+import webhook, { coinRushApi, ensureCoinRushRuntimeSchema, duelApi, ensureDuelRuntimeSchema, gameVoiceApi } from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
 import cryptoJobs from './api/crypto-jobs.js';
 import mandatoryTrack from './api/mandatory-track.js';
+import { voiceSignal } from './voice-call-service.js';
 
 const port = Number(process.env.PORT || 3000);
 const maxBody = 1024 * 1024;
@@ -39,6 +40,25 @@ const server = http.createServer(async (req, res) => {
       return res.end('music_not_found');
     }
   }
+  if (req.method === 'GET' && requestUrl.pathname === '/voice-call.html') {
+    try {
+      const html = await fs.readFile(path.join(process.cwd(), 'voice-call.html'));
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(html);
+    } catch { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('voice_call_not_found'); }
+  }
+  if (requestUrl.pathname === '/api/voice/signal') {
+    let body = {};
+    if (req.method === 'POST') {
+      let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > maxBody) break; }
+      try { body = JSON.parse(raw || '{}'); } catch { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'invalid_json' })); }
+    }
+    return voiceSignal({ method: req.method, query: Object.fromEntries(requestUrl.searchParams), body }, res);
+  }
+  if (req.method === 'GET' && requestUrl.pathname === '/game/voice-client.js') {
+    try { const js = await fs.readFile(path.join(process.cwd(), 'game', 'voice-client.js')); res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' }); return res.end(js); }
+    catch { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('voice_client_not_found'); }
+  }
   if (req.method === 'GET' && requestUrl.pathname === '/game/coin-rush.html') {
     try {
       const html = await fs.readFile(path.join(process.cwd(), 'game', 'coin-rush.html'));
@@ -60,6 +80,11 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       return res.end('game_not_found');
     }
+  }
+  if (requestUrl.pathname === '/api/game/voice') {
+    let body = {};
+    if (req.method === 'POST') { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > maxBody) break; } try { body = JSON.parse(raw || '{}'); } catch { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'invalid_json' })); } }
+    try { return await gameVoiceApi({ method: req.method, body }, res); } catch (error) { console.error('game_voice_api_error', error?.message || error); res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'game_voice_error' })); }
   }
   const duelUrl = requestUrl;
   if (duelUrl.pathname.startsWith('/api/game/')) {

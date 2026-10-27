@@ -115,6 +115,8 @@ const PUBLIC_BASE = {
     profile: 'پروفایل شما',
     coins: 'افزایش مانو کوین',
     plus: 'اکانت پلاس',
+    voice_call: 'درخواست تماس صوتی برای طرف مقابل ارسال شد؛ با زدن دکمه زیر وارد تماس شو.',
+    voice_call_received: 'طرف مکالمه‌ات درخواست تماس صوتی ناشناس داده است. برای شروع، دکمه را بزن.',
     back: 'بازگشت',
   },
 };
@@ -148,7 +150,7 @@ const APPEARANCE_RUNTIME_CATALOG = {
     root: [{ id: 'contact_special', label: 'اتصال به مخاطب خاص' }],
     screens: {
       chat: {
-        buttons: [{ id: 'games', label: 'بازی' }, { id: 'ideas', label: 'ایده صحبت' }, { id: 'gift', label: 'هدیه دادن' }],
+        buttons: [{ id: 'games', label: 'بازی' }, { id: 'ideas', label: 'ایده صحبت' }, { id: 'gift', label: 'هدیه دادن' }, { id: 'voice_call', label: 'ویس‌کال' }, { id: 'secure_chat', label: '🔒 مکالمه ایمن' }],
         feedback: { games: 'بازی‌های میان چت را باز کن.', ideas: 'ایده‌های صحبت را باز کن.', gift: 'هدیه‌ای را برای طرف مکالمه انتخاب کن.' },
       },
     },
@@ -176,7 +178,13 @@ function hydrateAppearanceRuntime(section, appearance) {
     screen.buttons = Array.isArray(screen.buttons) ? screen.buttons : [];
     const flat = screen.buttons.flat ? screen.buttons.flat() : screen.buttons;
     const ids = new Set(flat.map(item => item?.id));
-    for (const item of extra.buttons || []) if (!ids.has(item.id)) screen.buttons.push({ ...item });
+    for (const item of extra.buttons || []) if (!ids.has(item.id)) {
+      const next = { ...item };
+      if (Array.isArray(screen.buttons[0])) {
+        const last = screen.buttons.at(-1);
+        if (Array.isArray(last)) last.push(next); else screen.buttons.push([next]);
+      } else screen.buttons.push(next);
+    }
     screen.feedback = { ...(extra.feedback || {}), ...(screen.feedback || {}) };
   }
   return out;
@@ -232,6 +240,10 @@ export function normalizeAppearance(section, value) {
 }
 export function templateAppearance(templateId, section) { const template = APPEARANCE_TEMPLATES[templateId] || APPEARANCE_TEMPLATES.default; const appearance = normalizeAppearance(section, template[section]); if (templateId !== 'default') appearance.feedback = { ...appearance.feedback, ...themeFeedback(templateId, section) }; return appearance; }
 const BUTTON_STYLES = new Set(['primary', 'success', 'danger']);
+function buttonRows(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.isArray(value[0]) ? value.filter(Array.isArray) : [value];
+}
 function telegramKeyboardButton(item) {
   const text = String(item?.label || item?.id || '').slice(0, 64);
   if (!text) return '';
@@ -242,7 +254,7 @@ function telegramKeyboardButton(item) {
   return Object.keys(button).length === 1 ? text : button;
 }
 export function appearanceKeyboard(appearance) {
-  const rows = Array.isArray(appearance?.buttons) ? appearance.buttons : [];
+  const rows = buttonRows(appearance?.buttons);
   const buttons = rows.flat().filter(button => button?.enabled !== false && button?.editor_only !== true).map(telegramKeyboardButton).filter(Boolean);
   if (appearance?.layout === 'single') return buttons.map(button => [button]);
   if (appearance?.layout === 'columns2') { const result = []; for (let i = 0; i < buttons.length; i += 2) result.push(buttons.slice(i, i + 2)); return result; }
@@ -250,8 +262,8 @@ export function appearanceKeyboard(appearance) {
 }
 export function appearanceScreen(appearance, id) { return appearance?.screens?.[id] || {}; }
 export function screenText(appearance, id, fallback) { return String(appearanceScreen(appearance, id).message || fallback); }
-export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); if (!screen.buttons?.length) return fallbackRows; const rows = Array.isArray(screen.buttons[0]) ? screen.buttons : [screen.buttons]; return rows.map(row => row.filter(item => item?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length); }
-export function appearanceButton(appearance, id, fallback) { for (const row of appearance?.buttons || []) for (const item of row || []) if (item.id === id) return item.label || fallback; return fallback; }
+export function screenKeyboard(appearance, id, fallbackRows = []) { const screen = appearanceScreen(appearance, id); if (!screen.buttons?.length) return fallbackRows; const rows = buttonRows(screen.buttons); return rows.map(row => row.filter(item => item?.enabled !== false).map(telegramKeyboardButton).filter(Boolean)).filter(row => row.length); }
+export function appearanceButton(appearance, id, fallback) { for (const row of buttonRows(appearance?.buttons)) for (const item of row || []) if (item.id === id) return item.label || fallback; return fallback; }
 export function appearanceFeedback(appearance, id, fallback) { return String(appearance?.feedback?.[id] || fallback); }
 function validCustomEmojiEntities(text, entities) {
   const length = String(text ?? '').length;
@@ -328,10 +340,11 @@ export function appearanceItems(section, appearance) {
       items.push({ path: `screens.${screenId}.feedback.${key}`, label: `پاسخ داخلی ${screenId} ${key}`, value });
     }
   }
-  for (const [rowIndex, row] of (appearance.buttons || []).entries()) for (const [colIndex, button] of (row || []).entries()) items.push({ path: `buttons.${rowIndex}.${colIndex}.label`, label: `نام دکمه ${button.id}`, value: button.label });
+  for (const [rowIndex, row] of (Array.isArray(appearance.buttons) ? appearance.buttons : []).entries()) for (const [colIndex, button] of (Array.isArray(row) ? row : []).entries()) items.push({ path: `buttons.${rowIndex}.${colIndex}.label`, label: `نام دکمه ${button.id}`, value: button.label });
+  const feedbackLabels = { voice_call: 'پیام ارسال درخواست ویس‌کال', voice_call_received: 'پیام دریافت درخواست ویس‌کال' };
   for (const [id, value] of Object.entries(appearance.feedback || {})) {
     if (id.endsWith('_entities') || id.endsWith('_source')) continue;
-    items.push({ path: `feedback.${id}`, label: `پاسخ ${id}`, value });
+    items.push({ path: `feedback.${id}`, label: feedbackLabels[id] || `پاسخ ${id}`, value });
   }
   return items;
 }

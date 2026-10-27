@@ -21,6 +21,8 @@ import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadc
 import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 import { coinRushAction, coinRushState, createCoinRushSession, ensureCoinRushSchema, latestCoinRushSession } from '../src/coin-rush-service.js';
 import { DUEL_GAMES, createDuelSession, duelAction, duelState, ensureDuelSchema, latestDuelSession } from '../src/duel-game-service.js';
+import { createVoiceRoom, voiceRoomUrl } from '../voice-call-service.js';
+const gameVoiceRooms = new Map();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -68,6 +70,7 @@ async function ensureRuntimeSchema() {
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji TEXT NOT NULL DEFAULT '✨'");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS plus_emoji_entities JSONB NOT NULL DEFAULT '[]'::jsonb");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'");
+        await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS secure_chat_enabled BOOLEAN NOT NULL DEFAULT FALSE");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL");
         await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS start_completed BOOLEAN NOT NULL DEFAULT TRUE");
@@ -126,6 +129,9 @@ async function ensureRuntimeSchema() {
         await client.query("ALTER TABLE payment_cards ADD COLUMN IF NOT EXISTS button_enabled BOOLEAN NOT NULL DEFAULT TRUE");
         await client.query(`CREATE TABLE IF NOT EXISTS chat_reply_message_map (sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, sender_message_id BIGINT NOT NULL, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (sender_id, sender_message_id, recipient_id), UNIQUE (recipient_id, recipient_message_id))`);
         await client.query('CREATE INDEX IF NOT EXISTS chat_reply_message_map_recipient_idx ON chat_reply_message_map(recipient_id, recipient_message_id)');
+        await client.query(`CREATE TABLE IF NOT EXISTS chat_delivery_messages (sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (recipient_id, recipient_message_id))`);
+        await client.query(`CREATE TABLE IF NOT EXISTS game_voice_requests (game_kind TEXT NOT NULL, game_room TEXT NOT NULL, requester_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, opponent_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (game_kind, game_room))`);
+        await client.query('CREATE INDEX IF NOT EXISTS chat_delivery_messages_pair_idx ON chat_delivery_messages(sender_id, recipient_id, created_at)');
         await client.query(`CREATE TABLE IF NOT EXISTS chat_gifts (id BIGSERIAL PRIMARY KEY, sender_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, recipient_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE, gift_type TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query(`CREATE TABLE IF NOT EXISTS daily_coin_claims (user_id BIGINT PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE, claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
         await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_until TIMESTAMPTZ');
@@ -270,7 +276,7 @@ function controlKeyboard() { return replyKeyboard([['امور [آرایش زیب
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
-function chatKeyboard(settings, liveControl = false) { const appearance = publicAppearance(settings); const raw = appearanceRuntimeButtons(appearance, 'chat'); const rows = Array.isArray(raw?.[0]) ? raw : [raw]; const configured = rows.map(row => row.filter(item => item?.enabled !== false && (item.id !== 'games' || settings.mid_chat_games_enabled !== 'false') && (item.id !== 'ideas' || settings.mid_chat_ideas_enabled !== 'false')).map(appearanceButtonObject).filter(Boolean)).filter(row => row.length); const extras = liveControl ? ['کنترل این کاربر'] : []; return replyKeyboard([...(configured.length ? configured : [[appearanceButton(appearance, 'disconnect', settings.disconnect_button)]]), ...(extras.length ? [extras] : [])]); }
+function chatKeyboard(settings, liveControl = false) { const appearance = publicAppearance(settings); const raw = appearanceRuntimeButtons(appearance, 'chat'); const rows = Array.isArray(raw) ? (Array.isArray(raw[0]) ? raw.filter(Array.isArray).map(row => row.slice()) : [raw.slice()]) : []; if (rows.length && !rows.flat().some(item => item?.id === 'voice_call')) rows[rows.length - 1].push({ id: 'voice_call', label: 'ویس‌کال' }); if (rows.length && !rows.flat().some(item => item?.id === 'secure_chat')) rows[rows.length - 1].push({ id: 'secure_chat', label: '🔒 مکالمه ایمن' }); const configured = rows.map(row => row.filter(item => item?.enabled !== false && (item.id !== 'games' || settings.mid_chat_games_enabled !== 'false') && (item.id !== 'ideas' || settings.mid_chat_ideas_enabled !== 'false')).map(appearanceButtonObject).filter(Boolean)).filter(row => row.length); const extras = liveControl ? ['کنترل این کاربر'] : []; return replyKeyboard([...(configured.length ? configured : [[appearanceButton(appearance, 'disconnect', settings.disconnect_button)]]), ...(extras.length ? [extras] : [])]); }
 function entertainmentKeyboard(kind, settings = {}) {
   if (kind !== 'games') return { reply_markup: { inline_keyboard: [[{ text: 'اتفاق امروز', callback_data: 'idea:today' }, { text: 'خاطره بچگی', callback_data: 'idea:childhood' }], [{ text: 'عجیب‌ترین اتفاق اخیرت', callback_data: 'idea:recent' }]] } };
   const enabled = key => settings[key] !== 'false';
@@ -286,6 +292,7 @@ function entertainmentKeyboard(kind, settings = {}) {
 }
 function confirmStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'confirm_stop', [['اره مطمئنم', 'نه ادامه میدم']]), true); }
 function afterStopKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'after_stop', [['بلاکش کن'], ['بعدا وصلش کن']]), true); }
+function cleanupChatKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: '🧹 پاکسازی مکالمه', callback_data: 'cleanup_chat' }]] } }; }
 function blockKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'block_reason', [[BLOCK_REASONS.rude], [BLOCK_REASONS.abusive], [BLOCK_REASONS.wrong_gender], [BLOCK_REASONS.advertising], ['بذار بعدا هم وصل بشم']]), true); }
 function adminKeyboard(enabled) { return adminMainKeyboard({}, null); }
 function userControlKeyboard() { return replyKeyboard([['کنترل مکالمات'], ['کنترل مالی'], ['لیست بن شده ها'], ['لیست بلاکی ها'], ['وضعیت کاربران'], ['بازگشت پنل']], true); }
@@ -723,7 +730,7 @@ function privateAppearance(s) { return s?.appearance_private_enabled === false ?
 function appearanceButtonLabel(s, section, id, fallback) { return appearanceButton(section === 'public' ? publicAppearance(s) : privateAppearance(s), id, fallback); }
 function appearanceButtonId(value, section, s) {
   const appearance = section === 'public' ? publicAppearance(s) : privateAppearance(s);
-  for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && item.label === value) return item.id;
+  for (const row of (Array.isArray(appearance.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.enabled !== false && item.label === value) return item.id;
   return null;
 }
 function inlineEditorRootText(config, note = '') {
@@ -1609,7 +1616,7 @@ async function disconnect(id) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const me = await user(client, id); const partnerId = me?.partner_id ? Number(me.partner_id) : null;
+    const me = await user(client, id); let partnerId = me?.partner_id ? Number(me.partner_id) : null; if (!partnerId) { const reverse = await client.query("SELECT telegram_id FROM users WHERE status='chatting' AND partner_id=$1 LIMIT 1", [id]); partnerId = reverse.rows[0]?.telegram_id ? Number(reverse.rows[0].telegram_id) : null; }
     if (me?.conversation_started_at) {
       const seconds = Math.max(0, Math.floor((Date.now() - new Date(me.conversation_started_at).getTime()) / 1000));
       for (const metricUser of [id, partnerId].filter(Boolean)) await client.query(`INSERT INTO chat_metrics(user_id,total_chat_seconds,total_chats,longest_chat_seconds,first_seen_at,last_seen_at) VALUES ($1,$2,1,$2,NOW(),NOW()) ON CONFLICT (user_id) DO UPDATE SET total_chat_seconds=chat_metrics.total_chat_seconds+$2,total_chats=chat_metrics.total_chats+1,longest_chat_seconds=GREATEST(chat_metrics.longest_chat_seconds,$2),last_seen_at=NOW()`, [metricUser, seconds]);
@@ -1960,6 +1967,13 @@ async function handleCallback(id, data, callbackQuery = null) {
   const sClient = await pool.connect();
   try {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
+    if (data === 'cleanup_chat') {
+      const partnerId = Number(me.last_partner_id || 0);
+      if (!partnerId) { try { await telegram('editMessageReplyMarkup', { chat_id: id, message_id: callbackQuery?.message?.message_id, reply_markup: { inline_keyboard: [] } }); } catch {} return send(id, 'مکالمهٔ بسته‌شده‌ای برای پاکسازی پیدا نشد.', mainKeyboard(s)); }
+      const cleanup = await cleanupClosedChat(sClient, id, partnerId);
+      try { await telegram('deleteMessage', { chat_id: id, message_id: callbackQuery?.message?.message_id }); } catch {}
+      return send(id, `پاکسازی انجام شد؛ ${cleanup.deleted ? `${cleanup.deleted} پیام از هر دو طرف حذف شد.` : 'پیام قابل حذف دیگری در این مکالمه پیدا نشد.'}`, mainKeyboard(s));
+    }
     if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback(id, data, callbackQuery, sClient, me.action_state, s);
     if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
     if (isAdmin(id) && !isOwner(id) && !data.startsWith('admins:') && !hasAdminPermission(id, adminPermissionFromContext(data, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
@@ -2310,7 +2324,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     }
     if (data === 'stop_no') { await updateAction(sClient, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
     if (data === 'stop_yes') {
-      const partnerId = await disconnect(id); await updateAction(sClient, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard(s));
+      const partnerId = await disconnect(id); await updateAction(sClient, id, 'after_stop'); if (partnerId) await notifyClosedChatPartner(sClient, id, partnerId, s); const finalNotice = await send(id, 'مکالمه بسته شد.', cleanupChatKeyboard()); if (partnerId) await rememberChatDelivery(sClient, partnerId, id, finalNotice?.message_id); const next = await send(id, 'دوست داری چه کار کنی؟', afterStopKeyboard(s)); if (partnerId) await rememberChatDelivery(sClient, partnerId, id, next?.message_id); return next;
     }
     if (data === 'later' || data === 'block:later') { await updateAction(sClient, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
     if (data === 'block') { await updateAction(sClient, id, 'choose_block_reason'); return send(id, screenMessagePayload(publicAppearance(s), 'block_reason', 'به چه دلیلی بلاک بشه؟'), blockKeyboard(s)); }
@@ -2318,8 +2332,8 @@ async function handleCallback(id, data, callbackQuery = null) {
       const reasonKey = data.split(':')[1]; const target = me.partner_id ? Number(me.partner_id) : (me.last_partner_id ? Number(me.last_partner_id) : null);
       if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
       await block(id, target, BLOCK_REASONS[reasonKey] || reasonKey); await disconnect(id); await updateAction(sClient, id, null);
-      await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`);
-      return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
+      const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`, cleanupChatKeyboard()); await rememberChatDelivery(sClient, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s));
+      const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(sClient, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s));
     }
     if (data.startsWith('premium:verify:')) return handlePremiumVerification(id, data, sClient);
     if (data.startsWith('plus:')) return handlePlusCallback(id, data, sClient, s);
@@ -2701,19 +2715,19 @@ function dynamicPublicAction(value, s) { return appearanceButtonId(value, 'publi
 function dynamicPrivateAction(value, s) { return appearanceButtonId(value, 'private', s); }
 function visiblePrivateAction(value, s) {
   const appearance = privateAppearance(s); const text = String(value);
-  for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && String(item.label) === text) return item.id;
+  for (const row of (Array.isArray(appearance.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.enabled !== false && String(item.label) === text) return item.id;
   for (const screen of Object.values(appearance.screens || {})) {
     const rows = Array.isArray(screen.buttons?.[0]) ? screen.buttons : [screen.buttons || []];
-    for (const row of rows) for (const item of row || []) if (item?.enabled !== false && String(item.label) === text) return item.id;
+    for (const row of rows) for (const item of (Array.isArray(row) ? row : [])) if (item?.enabled !== false && String(item.label) === text) return item.id;
   }
   return null;
 }
 function visiblePublicAction(value, s) {
   const appearance = publicAppearance(s); const text = String(value);
-  for (const row of appearance.buttons || []) for (const item of row || []) if (item.enabled !== false && String(item.label) === text) return item.id;
+  for (const row of (Array.isArray(appearance.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.enabled !== false && String(item.label) === text) return item.id;
   for (const screen of Object.values(appearance.screens || {})) {
     const rows = Array.isArray(screen.buttons?.[0]) ? screen.buttons : [screen.buttons || []];
-    for (const row of rows) for (const item of row || []) if (item?.enabled !== false && String(item.label) === text) return item.id;
+    for (const row of rows) for (const item of (Array.isArray(row) ? row : [])) if (item?.enabled !== false && String(item.label) === text) return item.id;
   }
   const legacy = { [s.connect_button]: 'connect', [s.cancel_button]: 'cancel', [s.disconnect_button]: 'disconnect', [s.profile_button]: 'profile', [s.increase_coins_button]: 'coins', [s.free_coins_button]: 'free_coins', [s.plus_button]: 'plus', [s.back_button]: 'back', 'اتصال به مخاطب خاص': 'contact_special' };
   return legacy[text] || null;
@@ -2721,10 +2735,10 @@ function visiblePublicAction(value, s) {
 function botKeyboardLabels(s = {}) {
   const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
-    for (const row of appearance?.buttons || []) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
+    for (const row of (Array.isArray(appearance?.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) {
       const rows = Array.isArray(screen?.buttons?.[0]) ? screen.buttons : [screen?.buttons || []];
-      for (const row of rows) for (const item of row || []) if (item?.label) labels.add(String(item.label).trim());
+      for (const row of rows) for (const item of (Array.isArray(row) ? row : [])) if (item?.label) labels.add(String(item.label).trim());
     }
   };
   addAppearance(publicAppearance(s)); addAppearance(privateAppearance(s));
@@ -2741,6 +2755,36 @@ async function resolveReplyMessageId(client, recipientId, repliedMessageId) {
 async function rememberReplyMessage(client, senderId, sourceMessageId, recipientId, recipientMessageId) {
   if (!sourceMessageId || !recipientMessageId) return;
   await client.query(`INSERT INTO chat_reply_message_map(sender_id,sender_message_id,recipient_id,recipient_message_id) VALUES($1,$2,$3,$4) ON CONFLICT (sender_id,sender_message_id,recipient_id) DO UPDATE SET recipient_message_id=EXCLUDED.recipient_message_id`, [senderId, sourceMessageId, recipientId, recipientMessageId]);
+}
+async function rememberChatDelivery(client, senderId, recipientId, recipientMessageId) {
+  if (!senderId || !recipientId || !recipientMessageId) return;
+  await client.query('INSERT INTO chat_delivery_messages(sender_id,recipient_id,recipient_message_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [senderId, recipientId, recipientMessageId]);
+}
+async function notifyClosedChatPartner(client, closerId, partnerId, settings) {
+  if (!partnerId) return;
+  try {
+    await updateAction(client, partnerId, 'after_stop');
+    const notice = await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', cleanupChatKeyboard());
+    await rememberChatDelivery(client, closerId, partnerId, notice?.message_id);
+    const menu = await send(partnerId, 'دوست داری چه کار کنی؟', afterStopKeyboard(settings));
+    await rememberChatDelivery(client, closerId, partnerId, menu?.message_id);
+  } catch (error) {
+    console.error('closed_chat_partner_notification_error', { closerId, partnerId, error: String(error?.message || error).slice(0, 240) });
+  }
+}
+async function cleanupClosedChat(client, userId, partnerId) {
+  const pair = [Number(userId), Number(partnerId)].sort((a, b) => a - b);
+  // پاکسازی فقط پیام‌های واقعیِ ردوبدل‌شده را حذف می‌کند؛ پیام‌های سیستمی
+  // مثل اعلان پایان، منوی بعد از قطع و دکمهٔ پاکسازی در این mapping نیستند.
+  const rows = (await client.query(`SELECT recipient_id,recipient_message_id FROM chat_reply_message_map WHERE (sender_id=$1 AND recipient_id=$2) OR (sender_id=$2 AND recipient_id=$1)`, pair)).rows;
+  let deleted = 0;
+  for (const row of rows) {
+    try { await telegram('deleteMessage', { chat_id: row.recipient_id, message_id: row.recipient_message_id }); deleted++; }
+    catch (error) { console.warn('chat_cleanup_delete_error', { chatId: row.recipient_id, messageId: row.recipient_message_id, error: String(error?.message || error).slice(0, 160) }); }
+  }
+  await client.query('DELETE FROM chat_delivery_messages WHERE (sender_id=$1 AND recipient_id=$2) OR (sender_id=$2 AND recipient_id=$1)', pair);
+  await client.query('DELETE FROM chat_reply_message_map WHERE (sender_id=$1 AND recipient_id=$2) OR (sender_id=$2 AND recipient_id=$1)', pair);
+  return { found: rows.length, deleted };
 }
 export function chatPermissionViolations(message = {}, text = '') {
   const content = String(text || message.text || message.caption || '');
@@ -2768,12 +2812,13 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
   const sourceMessageId = message?.message_id;
   const replyTargetId = permissions.reply !== false ? await resolveReplyMessageId(client, senderId, message?.reply_to_message?.message_id) : null;
   const extra = replyTargetId ? { reply_parameters: { message_id: replyTargetId, allow_sending_without_reply: true } } : {};
+  const protectContent = me.secure_chat_enabled === true || settings.privacy_protection_enabled !== 'false';
   let delivered;
   try {
     if (message && kind !== 'text') {
-      delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+      delivered = await telegram('copyMessage', { chat_id: targetId, from_chat_id: senderId, message_id: sourceMessageId, protect_content: protectContent, ...extra });
     } else {
-      delivered = await telegram('sendMessage', { chat_id: targetId, ...premiumMessagePayload(me, senderId, text), protect_content: settings.privacy_protection_enabled !== 'false', ...extra });
+      delivered = await telegram('sendMessage', { chat_id: targetId, ...premiumMessagePayload(me, senderId, text), protect_content: protectContent, ...extra });
     }
   } catch (error) {
     const errorText = String(error?.message || error);
@@ -2788,6 +2833,7 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
     return null;
   }
   await rememberReplyMessage(client, senderId, sourceMessageId, targetId, delivered?.message_id);
+  await rememberChatDelivery(client, senderId, targetId, delivered?.message_id);
   return delivered;
 }
 
@@ -2960,6 +3006,16 @@ async function handleText(id, text, meta = {}) {
     if (me.action_state === 'chatgift:coin_custom') { const amount = Number(value); if (!Number.isInteger(amount) || amount < 1 || amount > 100000) return send(id, 'مقدار باید عدد صحیح بین 1 تا 100000 باشد.'); await updateAction(client, id, `chatgift:coins:${amount}`); return send(id, `مقدار انتخابی: ${amount} مانو کوین`, chatGiftCoinKeyboard(amount)); }
     if (me.action_state === 'coins:custom_amount') { const amount=Number(value.replace(/[,،]/g,'')); const min=Number(await botSettingValue(client,'crypto_coin_min','100')); const max=Number(await botSettingValue(client,'crypto_coin_max','1000')); if(!Number.isInteger(amount)||amount<min||amount>max) return send(id, `مقدار باید عدد صحیح بین ${min} و ${max} باشد.`, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:buy' }]] } }); return paymentMethodsForAmount(client,id,amount); }
     if (me.action_state === 'coins:gift') { const code = value.replace(/^\/gift\s+/i, '').replace(/^\//, '').trim(); const result = await redeemGift(client, id, code); await updateAction(client, id, null); return result; }
+    if ((value === 'ویس‌کال' || value === 'ویس کال' || publicActionId === 'voice_call') && me.status === 'chatting' && me.partner_id) {
+      const partnerId = Number(me.partner_id);
+      const room = createVoiceRoom(id, partnerId);
+      const mine = room.participants.find(p => p.userId === id);
+      const theirs = room.participants.find(p => p.userId === partnerId);
+      const voiceMarkup = url => ({ reply_markup: { inline_keyboard: [[{ text: '🎙 باز کردن تماس صوتی', url }]] } });
+      const appearance = publicAppearance(s);
+      await send(partnerId, feedbackMessagePayload(appearance, 'voice_call_received', '🎙 طرف مکالمه‌ات درخواست تماس صوتی ناشناس داده است. برای شروع، دکمه را بزن.'), voiceMarkup(voiceRoomUrl(room, theirs)));
+      return send(id, feedbackMessagePayload(appearance, 'voice_call', '🎙 درخواست تماس صوتی برای طرف مقابل ارسال شد؛ با زدن دکمه زیر وارد تماس شو.'), voiceMarkup(voiceRoomUrl(room, mine)));
+    }
     if ((publicActionId === 'gift' || value === 'هدیه دادن') && me.status === 'chatting' && me.partner_id) return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard());
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
@@ -3639,7 +3695,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (me.action_state === 'confirm_stop') {
       if (publicActionId === 'continue' || value === 'نه ادامه میدم') { await updateAction(client, id, null); return send(id, 'ادامه بده؛ مکالمه برقرار است.', chatKeyboard(s, isAdmin(id))); }
       if (publicActionId === 'confirm' || value === 'اره مطمئنم') {
-        const partnerId = await disconnect(id); await updateAction(client, id, 'after_stop'); if (partnerId) await send(partnerId, 'مکالمه از طرف مقابل شما بسته شد.', mainKeyboard(s)); return send(id, 'مکالمه بسته شد. دوست داری چه کار کنی؟', afterStopKeyboard(s));
+        const partnerId = await disconnect(id); await updateAction(client, id, 'after_stop'); if (partnerId) await notifyClosedChatPartner(client, id, partnerId, s); const finalNotice = await send(id, 'مکالمه بسته شد.', cleanupChatKeyboard()); if (partnerId) await rememberChatDelivery(client, partnerId, id, finalNotice?.message_id); const next = await send(id, 'دوست داری چه کار کنی؟', afterStopKeyboard(s)); if (partnerId) await rememberChatDelivery(client, partnerId, id, next?.message_id); return next;
       }
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', confirmStopKeyboard(s));
     }
@@ -3654,12 +3710,21 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
       if (!found) return send(id, 'یکی از دلایل را انتخاب کن.', blockKeyboard(s));
       const target = me.last_partner_id ? Number(me.last_partner_id) : null;
       if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
-      await block(id, target, found[1]); await updateAction(client, id, null); await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`); return send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', mainKeyboard(s));
+      await block(id, target, found[1]); await updateAction(client, id, null); const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`, cleanupChatKeyboard()); await rememberChatDelivery(client, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s)); const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(client, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s));
     }
     if ((value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
       // Use the exact same resolver/panel path as /<numeric-id>, so the in-chat
       // admin button cannot drift from the standalone user-control flow.
       return openAdminUserPanel(id, String(me.partner_id));
+    }
+    if ((publicActionId === 'secure_chat' || value === '🔒 مکالمه ایمن' || value === 'مکالمه ایمن') && me.status === 'chatting' && me.partner_id) {
+      const enabled = !Boolean(me.secure_chat_enabled);
+      await client.query('UPDATE users SET secure_chat_enabled=$2, updated_at=NOW() WHERE telegram_id=$1', [id, enabled]);
+      me.secure_chat_enabled = enabled;
+      const notice = enabled
+        ? '🔒 ایمن‌سازی برای پیام‌های تو نزد طرف مقابل فعال شد.'
+        : '🔓 ایمن‌سازی پیام‌های تو برای طرف مقابل خاموش شد.';
+      return send(id, notice, chatKeyboard(s, isAdmin(id), enabled));
     }
     if ((publicActionId === 'games' || value === 'بازی') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
     if ((publicActionId === 'ideas' || value === 'ایده صحبت') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
@@ -3813,6 +3878,33 @@ export async function coinRushApi(req, res) {
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
+export async function gameVoiceApi(req, res) {
+  if (req.method !== 'POST') return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
+  const source = req.body || {}; const kind = String(source.game || '').trim(); const roomId = String(source.room || '').trim(); const token = String(source.token || '').trim(); const player = Number(source.player); const action = String(source.action || 'status');
+  if (!['duel', 'coin-rush'].includes(kind) || !roomId || !token || !Number.isSafeInteger(player) || player <= 0) return coinRushApiJson(res, 400, { ok: false, error: 'invalid_session' });
+  const table = kind === 'duel' ? 'duel_game_sessions' : 'coin_rush_sessions';
+  const row = (await pool.query(`SELECT player_one,player_two,status FROM ${table} WHERE room_id=$1 AND access_token=$2`, [roomId, token])).rows[0];
+  if (!row || ![Number(row.player_one), Number(row.player_two)].includes(player) || !['waiting','active'].includes(row.status)) return coinRushApiJson(res, 404, { ok: false, error: 'game_not_active' });
+  const opponent = Number(row.player_one) === player ? Number(row.player_two) : Number(row.player_one);
+  let request = (await pool.query('SELECT * FROM game_voice_requests WHERE game_kind=$1 AND game_room=$2', [kind, roomId])).rows[0];
+  if (action === 'request') {
+    if (!request || request.status === 'rejected') {
+      request = (await pool.query(`INSERT INTO game_voice_requests(game_kind,game_room,requester_id,opponent_id,status) VALUES($1,$2,$3,$4,'pending') ON CONFLICT (game_kind,game_room) DO UPDATE SET requester_id=EXCLUDED.requester_id,opponent_id=EXCLUDED.opponent_id,status='pending',updated_at=NOW() RETURNING *`, [kind, roomId, player, opponent])).rows[0];
+    }
+  } else if (action === 'accept' || action === 'reject') {
+    if (!request || request.status !== 'pending' || Number(request.requester_id) === player) return coinRushApiJson(res, 409, { ok: false, error: 'voice_request_unavailable' });
+    request = (await pool.query('UPDATE game_voice_requests SET status=$3,updated_at=NOW() WHERE game_kind=$1 AND game_room=$2 RETURNING *', [kind, roomId, action === 'accept' ? 'accepted' : 'rejected'])).rows[0];
+  }
+  request = request || (await pool.query('SELECT * FROM game_voice_requests WHERE game_kind=$1 AND game_room=$2', [kind, roomId])).rows[0];
+  if (!request) return coinRushApiJson(res, 200, { ok: true, status: 'none' });
+  let url = null;
+  if (request.status === 'accepted') {
+    const players = [Number(row.player_one), Number(row.player_two)].sort((a,b)=>a-b); const key = `${kind}:${roomId}`; let voiceRoom = gameVoiceRooms.get(key);
+    if (!voiceRoom || voiceRoom.participants.length !== 2 || !players.every(id => voiceRoom.participants.some(p => Number(p.userId) === id))) { voiceRoom = createVoiceRoom(players[0], players[1]); gameVoiceRooms.set(key, voiceRoom); }
+    const participant = voiceRoom.participants.find(p => Number(p.userId) === player); url = participant ? voiceRoomUrl(voiceRoom, participant) : null;
+  }
+  return coinRushApiJson(res, 200, { ok: true, status: request.status, requester: Number(request.requester_id), canRespond: request.status === 'pending' && Number(request.requester_id) !== player, url });
+}
 export async function duelApi(req, res) {
   const source = req.method === 'GET' ? req.query : req.body;
   const room = String(source?.room || '').trim(); const token = String(source?.token || '').trim(); const player = Number(source?.player);
