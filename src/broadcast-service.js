@@ -294,8 +294,21 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
           await client.query('UPDATE broadcast_campaigns SET report_source_message_id=$2 WHERE id=$1', [row.id, reportSourceMessageId]);
         }
       }
-      if (row.report_message_id) {
-        try { await callWithRateLimitRetry(telegramCall, 'editMessageText', { chat_id: row.report_channel_id, message_id: row.report_message_id, text, reply_markup: markup }); }
+      let reportMessageId = row.report_message_id;
+      if (reportMessageId && !row.report_source_message_id && reportSourceMessageId) {
+        try {
+          await callWithRateLimitRetry(telegramCall, 'deleteMessage', { chat_id: row.report_channel_id, message_id: reportMessageId });
+          await client.query('UPDATE broadcast_campaigns SET report_message_id=NULL WHERE id=$1 AND report_message_id=$2', [row.id, reportMessageId]);
+          reportMessageId = null;
+        } catch (error) {
+          if (/message to delete not found|message not found/i.test(String(error?.message || error))) {
+            await client.query('UPDATE broadcast_campaigns SET report_message_id=NULL WHERE id=$1 AND report_message_id=$2', [row.id, reportMessageId]);
+            reportMessageId = null;
+          } else console.error('broadcast_legacy_report_delete_error', String(error?.message || error).slice(0, 300));
+        }
+      }
+      if (reportMessageId) {
+        try { await callWithRateLimitRetry(telegramCall, 'editMessageText', { chat_id: row.report_channel_id, message_id: reportMessageId, text, reply_markup: markup }); }
         catch (error) { if (!/message is not modified/i.test(String(error?.message || error))) throw error; }
         await client.query('UPDATE broadcast_campaigns SET report_channel_updated_at=$2 WHERE id=$1', [row.id, row.updated_at]);
       } else {

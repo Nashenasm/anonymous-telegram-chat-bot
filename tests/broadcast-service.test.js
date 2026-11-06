@@ -100,6 +100,34 @@ describe('broadcast report controls', () => {
     expect(calls[1].payload.reply_parameters).toMatchObject({ message_id: 88, allow_sending_without_reply: true });
   });
 
+  it('replaces a legacy standalone report with a reply to the forwarded campaign message', async () => {
+    const date = new Date();
+    const campaign = {
+      id: '11', status: 'completed', pin_state: 'unpinned', report_channel_id: '-100123',
+      report_message_id: 77, report_source_message_id: null, admin_chat_id: null, admin_message_id: null,
+      source_chat_id: '321', source_message_id: 654, created_at: date, updated_at: date, started_at: date,
+      total_targets: 1, sent_count: 1, failed_count: 0, saved: false,
+    };
+    const calls = [];
+    const updates = [];
+    const client = {
+      async query(sql) {
+        if (sql.includes('FROM broadcast_campaigns WHERE id=$1')) return { rows: [{ ...campaign, report_channel_needs_update: true, admin_report_needs_update: false }] };
+        if (sql.includes('FROM broadcast_deliveries d JOIN users')) return { rows: [{ total: 1, sent: 1, failed: 0, pending: 0, deleted: 0, pinned: 0, pin_errors: 0 }] };
+        updates.push(sql);
+        return { rows: [], rowCount: 1 };
+      },
+    };
+    await publishBroadcastReport(client, async (method, payload) => {
+      calls.push({ method, payload });
+      return { message_id: method === 'forwardMessage' ? 88 : 99 };
+    }, 11);
+    expect(calls.map(call => call.method)).toEqual(['forwardMessage', 'deleteMessage', 'sendMessage']);
+    expect(calls[2].payload.reply_parameters.message_id).toBe(88);
+    expect(updates.some(sql => sql.includes('report_message_id=NULL'))).toBe(true);
+    expect(updates.some(sql => sql.includes('report_message_id=$2'))).toBe(true);
+  });
+
   it('does not edit an unchanged completed report on every scheduled job run', async () => {
     let queryCount = 0;
     let telegramCalls = 0;
