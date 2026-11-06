@@ -54,6 +54,9 @@ describe('broadcast report controls', () => {
     const pinButton = row => broadcastReportKeyboard(row).inline_keyboard.flat().find(button => button.callback_data.includes(':pin:') || button.callback_data.includes(':unpin:'));
     expect(pinButton({ id: 7, status: 'completed', pin_state: 'unpinned' })).toMatchObject({ text: 'پین کردن🤌', callback_data: 'broadcast:report:pin:7' });
     expect(pinButton({ id: 7, status: 'completed', pin_state: 'pinned' })).toMatchObject({ text: 'برداشتن پین😶‍🌫️', callback_data: 'broadcast:report:unpin:7' });
+    const partialButtons = broadcastReportKeyboard({ id: 7, status: 'completed', pin_state: 'partial_pin' }).inline_keyboard.flat();
+    expect(partialButtons).toContainEqual({ text: 'تکمیل پین🤌', callback_data: 'broadcast:report:pin:7' });
+    expect(partialButtons).toContainEqual({ text: 'برداشتن پین😶‍🌫️', callback_data: 'broadcast:report:unpin:7' });
   });
 
   it('pins each delivered message in its recipient private chat and completes the campaign state', async () => {

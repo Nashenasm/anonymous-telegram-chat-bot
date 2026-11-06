@@ -231,7 +231,12 @@ export function broadcastReportKeyboard(row) {
     const unpin = pinState === 'pinned' || pinState === 'partial_unpin' || pinState === 'unpinning';
     const pinText = pinState === 'pinning' ? 'در حال پین شدن…' : pinState === 'unpinning' ? 'در حال برداشتن پین…' : pinState === 'partial_pin' ? 'تکمیل پین🤌' : pinState === 'partial_unpin' ? 'تکمیل برداشتن پین😶‍🌫️' : unpin ? 'برداشتن پین😶‍🌫️' : 'پین کردن🤌';
     const pinAction = busy ? 'noop' : unpin ? 'unpin' : 'pin';
-    return { inline_keyboard: [[{ text: 'حذف پیام | Delete❌', callback_data: `broadcast:report:delete:${id}` }, { text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], [{ text: pinText, callback_data: `broadcast:report:${pinAction}:${id}` }], [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
+    const pinButtons = busy
+      ? [[{ text: pinText, callback_data: `broadcast:report:${pinAction}:${id}` }]]
+      : pinState === 'partial_pin'
+        ? [[{ text: 'تکمیل پین🤌', callback_data: `broadcast:report:pin:${id}` }, { text: 'برداشتن پین😶‍🌫️', callback_data: `broadcast:report:unpin:${id}` }]]
+        : [[{ text: pinText, callback_data: `broadcast:report:${pinAction}:${id}` }]];
+    return { inline_keyboard: [[{ text: 'حذف پیام | Delete❌', callback_data: `broadcast:report:delete:${id}` }, { text: 'ارسال دوباره | Again♻️', callback_data: `broadcast:report:resend:${id}` }], ...pinButtons, [{ text: row.saved ? 'برداشتن ذخیره | Unsaved☑️' : 'ذخیره | Save✅', callback_data: `broadcast:report:${row.saved ? 'unsave' : 'save'}:${id}` }]] };
   }
   return { inline_keyboard: [] };
 }

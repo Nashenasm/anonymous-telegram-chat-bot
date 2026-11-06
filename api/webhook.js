@@ -2166,7 +2166,7 @@ async function handleCallback(id, data, callbackQuery = null) {
         if (reportAction === 'pin' || reportAction === 'unpin') {
           const targetPinned = reportAction === 'pin';
           const nextState = targetPinned ? 'pinning' : 'unpinning';
-          const allowedStates = targetPinned ? ['unpinned', 'partial_pin'] : ['pinned', 'partial_unpin'];
+          const allowedStates = targetPinned ? ['unpinned', 'partial_pin'] : ['pinned', 'partial_unpin', 'partial_pin'];
           const changed = await sClient.query(`UPDATE broadcast_campaigns SET pin_state=$2,updated_at=NOW()
             WHERE id=$1 AND status IN ('completed','failed','cancelled') AND pin_state=ANY($3::text[]) RETURNING id`, [campaignId, nextState, allowedStates]);
           if (!changed.rowCount) return send(id, targetPinned ? 'این همگانی در حال ارسال یا پین است؛ بعد از پایان دوباره امتحان کن.' : 'این همگانی پین‌شده‌ای برای برداشتن ندارد یا عملیات دیگری در جریان است.');
