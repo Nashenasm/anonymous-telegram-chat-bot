@@ -247,7 +247,7 @@ export function broadcastProgressText(campaign, extra = '') {
   return `📢 وضعیت ارسال پیام همگانی\n\nوضعیت: ${broadcastStatusLabel(campaign.status)}\nکاربران کل (ALL): ${total}\nارسال موفق🟢: ${sent}/${total}\nارسال ناموفق🔴: ${failed}/${total}\nسرعت/آخرین بروزرسانی: ${iranDate(campaign.updated_at || new Date())}\n${extra}`.trim();
 }
 export async function publishBroadcastReport(client, telegramCall, campaignId) {
-  const row = (await client.query(`SELECT *,
+  const row = (await client.query(`SELECT *, updated_at::text AS report_version,
     (report_channel_updated_at IS NULL OR report_channel_updated_at < updated_at) AS report_channel_needs_update,
     (admin_report_updated_at IS NULL OR admin_report_updated_at < updated_at) AS admin_report_needs_update
     FROM broadcast_campaigns WHERE id=$1`, [campaignId])).rows[0];
@@ -335,10 +335,10 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
       if (reportMessageId) {
         try { await callWithRateLimitRetry(telegramCall, 'editMessageText', { chat_id: row.report_channel_id, message_id: reportMessageId, text, reply_markup: markup }); }
         catch (error) { if (!/message is not modified/i.test(String(error?.message || error))) throw error; }
-        await client.query('UPDATE broadcast_campaigns SET report_channel_updated_at=$2 WHERE id=$1', [row.id, row.updated_at]);
+        await client.query('UPDATE broadcast_campaigns SET report_channel_updated_at=$2::timestamptz WHERE id=$1', [row.id, row.report_version || row.updated_at]);
       } else {
         const sent = await callWithRateLimitRetry(telegramCall, 'sendMessage', { chat_id: row.report_channel_id, text, reply_markup: markup, protect_content: true, ...(reportSourceMessageId ? { reply_parameters: { message_id: reportSourceMessageId, allow_sending_without_reply: true } } : {}) });
-        await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,report_channel_updated_at=$3,report_reply_to_source=$4 WHERE id=$1', [row.id, sent.message_id, row.updated_at, Boolean(reportSourceMessageId)]);
+        await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,report_channel_updated_at=$3::timestamptz,report_reply_to_source=$4 WHERE id=$1', [row.id, sent.message_id, row.report_version || row.updated_at, Boolean(reportSourceMessageId)]);
       }
     } catch (error) { console.error('broadcast_report_channel_error', String(error?.message || error).slice(0, 300)); }
   }
@@ -346,7 +346,7 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
     try {
       try { await callWithRateLimitRetry(telegramCall, 'editMessageText', { chat_id: row.admin_chat_id, message_id: row.admin_message_id, text, reply_markup: markup }); }
       catch (error) { if (!/message is not modified/i.test(String(error?.message || error))) throw error; }
-      await client.query('UPDATE broadcast_campaigns SET admin_report_updated_at=$2 WHERE id=$1', [row.id, row.updated_at]);
+      await client.query('UPDATE broadcast_campaigns SET admin_report_updated_at=$2::timestamptz WHERE id=$1', [row.id, row.report_version || row.updated_at]);
     } catch (error) { console.error('broadcast_report_admin_error', String(error?.message || error).slice(0, 300)); }
   }
 }

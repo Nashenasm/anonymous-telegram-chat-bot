@@ -91,13 +91,16 @@ describe('broadcast report controls', () => {
       id: '9', status: 'completed', pin_state: 'unpinned', report_channel_id: '-100123',
       report_message_id: null, report_source_message_id: null, admin_chat_id: null, admin_message_id: null,
       source_chat_id: '321', source_message_id: 654, created_at: date, updated_at: date, started_at: date,
+      report_version: '2026-11-06 21:00:00.123456+00',
       total_targets: 1, sent_count: 1, failed_count: 0, saved: false,
     };
     const calls = [];
+    const updates = [];
     const client = {
-      async query(sql) {
+      async query(sql, values) {
         if (sql.includes('FROM broadcast_campaigns WHERE id=$1')) return { rows: [{ ...campaign, report_channel_needs_update: true, admin_report_needs_update: false }] };
         if (sql.includes('FROM broadcast_deliveries d JOIN users')) return { rows: [{ total: 1, sent: 1, failed: 0, pending: 0, deleted: 0, pinned: 0, pin_errors: 0 }] };
+        updates.push({ sql, values });
         return { rows: [], rowCount: 1 };
       },
     };
@@ -108,6 +111,7 @@ describe('broadcast report controls', () => {
     expect(calls[0]).toMatchObject({ method: 'forwardMessage', payload: { chat_id: '-100123', from_chat_id: '321', message_id: 654 } });
     expect(calls[1].method).toBe('sendMessage');
     expect(calls[1].payload.reply_parameters).toMatchObject({ message_id: 88, allow_sending_without_reply: true });
+    expect(updates.find(update => update.sql.includes('report_reply_to_source=$4')).values[2]).toBe(campaign.report_version);
   });
 
   it('replaces a legacy standalone report with a reply to the forwarded campaign message', async () => {
