@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   broadcastReportKeyboard,
   callWithRateLimitRetry,
+  ensureBroadcastSchema,
   publishBroadcastReport,
   runBroadcastJobs,
   runBroadcastPinJob,
@@ -36,6 +37,15 @@ describe('broadcast worker safeguards', () => {
     }, 'copyMessage', { chat_id: 99 });
     expect(result).toEqual({ message_id: 12 });
     expect(attempts).toBe(2);
+  });
+
+  it('backfills report versions only once so later refresh requests stay queued', async () => {
+    const queries = [];
+    await ensureBroadcastSchema({ query: async sql => { queries.push(sql); return { rows: [], rowCount: 0 }; } });
+    const migration = queries.find(sql => sql.includes('broadcast-report-version-v1'));
+    expect(migration).toContain('ON CONFLICT DO NOTHING');
+    expect(migration).toContain('WHERE EXISTS (SELECT 1 FROM inserted)');
+    expect(queries.filter(sql => sql.includes('report_channel_updated_at=updated_at'))).toHaveLength(0);
   });
 });
 

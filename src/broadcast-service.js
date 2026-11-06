@@ -98,10 +98,18 @@ export async function ensureBroadcastSchema(client) {
   await client.query("ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS pin_state TEXT NOT NULL DEFAULT 'unpinned'");
   await client.query('ALTER TABLE broadcast_deliveries ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
   await client.query('ALTER TABLE broadcast_deliveries ADD COLUMN IF NOT EXISTS pin_error TEXT');
-  await client.query(`UPDATE broadcast_campaigns SET report_channel_updated_at=updated_at
-    WHERE report_channel_id IS NOT NULL AND report_message_id IS NOT NULL AND report_channel_updated_at IS NULL`);
-  await client.query(`UPDATE broadcast_campaigns SET admin_report_updated_at=updated_at
-    WHERE admin_chat_id IS NOT NULL AND admin_message_id IS NOT NULL AND admin_report_updated_at IS NULL`);
+  await client.query(`CREATE TABLE IF NOT EXISTS broadcast_schema_migrations (
+    migration_key TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await client.query(`WITH inserted AS (
+    INSERT INTO broadcast_schema_migrations(migration_key)
+    VALUES ('broadcast-report-version-v1') ON CONFLICT DO NOTHING RETURNING migration_key
+  )
+  UPDATE broadcast_campaigns c
+     SET report_channel_updated_at = CASE WHEN c.report_channel_id IS NOT NULL AND c.report_message_id IS NOT NULL AND c.report_channel_updated_at IS NULL THEN c.updated_at ELSE c.report_channel_updated_at END,
+         admin_report_updated_at = CASE WHEN c.admin_chat_id IS NOT NULL AND c.admin_message_id IS NOT NULL AND c.admin_report_updated_at IS NULL THEN c.updated_at ELSE c.admin_report_updated_at END
+   WHERE EXISTS (SELECT 1 FROM inserted)`);
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_campaigns_schedule_idx ON broadcast_campaigns(status, scheduled_at)');
   await client.query('CREATE INDEX IF NOT EXISTS broadcast_deliveries_status_idx ON broadcast_deliveries(campaign_id, status)');
 }
