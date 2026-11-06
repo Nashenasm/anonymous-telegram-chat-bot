@@ -17,7 +17,7 @@ import { adminUserSummary, CHAT_PERMISSION_LABELS, DEFAULT_CHAT_PERMISSIONS, dur
 import { applyCoinDelta, newFinanceIdempotencyKey } from '../src/finance-ledger.js';
 import { BONUS_DEFINITIONS, BONUS_KEYS, bonusRow, bonusRows, claimBonus, ensureBonusDefaults } from '../src/bonus-service.js';
 import { scanTronUsdtDeposits } from '../src/crypto-monitor-service.js';
-import { runBroadcastJobs as runBroadcastJobsImpl, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
+import { runBroadcastJobs as runBroadcastJobsImpl, runBroadcastPinJob, ensureBroadcastSchema, broadcastMessageKind, broadcastStats, broadcastStatsText, normalizeBroadcastAudience, broadcastAudienceLabel, broadcastTargetCount, prepareBroadcastTargets, broadcastProgressText } from '../src/broadcast-service.js';
 import { ensureCryptoWalletSchema, walletAssetKeyboard, walletDetailsKeyboard, walletDetailsText, walletPanelKeyboard, walletPanelText, walletRows, walletAssetLabel, normalizeWalletAsset, validateTronAddress, walletManagementReplyKeyboard, walletChannelReplyKeyboard, walletBackReplyKeyboard } from '../src/crypto-wallet-service.js';
 import { coinRushAction, coinRushState, createCoinRushSession, ensureCoinRushSchema, latestCoinRushSession } from '../src/coin-rush-service.js';
 import { DUEL_GAMES, createDuelSession, duelAction, duelState, ensureDuelSchema, latestDuelSession } from '../src/duel-game-service.js';
@@ -507,7 +507,12 @@ async function telegram(method, body, { timeoutMs = 12_000, applyAppearance = tr
         signal: AbortSignal.timeout(timeoutMs),
       });
       const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(`Telegram ${method}: ${result.description || response.status}`);
+      if (!response.ok || !result.ok) {
+        const error = new Error(`Telegram ${method}: ${result.description || response.status}`);
+        error.error_code = Number(result.error_code || response.status);
+        error.parameters = result.parameters || {};
+        throw error;
+      }
       return result.result;
     } catch (error) {
       lastError = error;
@@ -2140,6 +2145,7 @@ async function handleCallback(id, data, callbackQuery = null) {
         if (templateAction === 'schedule') { await updateAction(sClient, id, `admin:broadcast:template_schedule:${templateId}`); return editAudienceCallback(callbackQuery, id, 'زمان شروع را با قالب 1405/7/10-20:00 بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'حذف زمان‌بندی', callback_data: `broadcast:template:${templateId}:clear_schedule` }], [{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
         if (templateAction === 'count') { await updateAction(sClient, id, `admin:broadcast:template_count:${templateId}`); return editAudienceCallback(callbackQuery, id, 'تعداد گیرندگان را به‌صورت عدد بفرست؛ برای همه کلمه «همه» را بفرست.', { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: `broadcast:template:${templateId}` }]] } }); }
         if (templateAction === 'send') {
+          if (['pinning', 'pinned', 'unpinning', 'partial_pin', 'partial_unpin'].includes(row.pin_state)) return send(id, 'برای ارسال دوبارهٔ این پیام آماده، ابتدا پین قبلی را کامل بردار.');
           await sClient.query('DELETE FROM broadcast_deliveries WHERE campaign_id=$1', [row.campaign_id]);
           const audience = normalizeBroadcastAudience(row.audience); const count = await prepareBroadcastTargets(sClient, row.campaign_id, audience, row.target_limit);
           const reportChannel = await botSettingValue(sClient, 'broadcast_report_channel_id', '');
@@ -2157,22 +2163,55 @@ async function handleCallback(id, data, callbackQuery = null) {
       if (action === 'report') {
         const reportAction = parts[2];
         if (reportAction === 'noop') return;
+        if (reportAction === 'pin' || reportAction === 'unpin') {
+          const targetPinned = reportAction === 'pin';
+          const nextState = targetPinned ? 'pinning' : 'unpinning';
+          const allowedStates = targetPinned ? ['unpinned', 'partial_pin'] : ['pinned', 'partial_unpin'];
+          const changed = await sClient.query(`UPDATE broadcast_campaigns SET pin_state=$2,updated_at=NOW()
+            WHERE id=$1 AND status IN ('completed','failed','cancelled') AND pin_state=ANY($3::text[]) RETURNING id`, [campaignId, nextState, allowedStates]);
+          if (!changed.rowCount) return send(id, targetPinned ? 'این همگانی در حال ارسال یا پین است؛ بعد از پایان دوباره امتحان کن.' : 'این همگانی پین‌شده‌ای برای برداشتن ندارد یا عملیات دیگری در جریان است.');
+          void runBroadcastPinJob({ pool, telegramCall: telegram, campaignId }).catch(error => console.error('broadcast_pin_job_error', String(error?.message || error).slice(0, 300)));
+          return send(id, targetPinned ? 'پین پیام برای کاربران شروع شد؛ وضعیت و نتیجه در کانال گزارش به‌روزرسانی می‌شود.' : 'برداشتن پین پیام برای کاربران شروع شد؛ وضعیت و نتیجه در کانال گزارش به‌روزرسانی می‌شود.');
+        }
         if (reportAction === 'send_now') { await sClient.query("UPDATE broadcast_campaigns SET scheduled_at=NOW(),status='running',started_at=COALESCE(started_at,NOW()),updated_at=NOW() WHERE id=$1 AND status='scheduled'", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_send_now_error', error)); return broadcastStatsPanel(sClient, id); }
         if (reportAction === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','running')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_cancel_error', error)); return broadcastStatsPanel(sClient, id); }
         if (reportAction === 'delete') {
-          await sClient.query("UPDATE broadcast_campaigns SET status='deleting',updated_at=NOW() WHERE id=$1 AND status='completed'", [campaignId]);
+          const deleting = await sClient.query("UPDATE broadcast_campaigns SET status='deleting',updated_at=NOW() WHERE id=$1 AND status='completed' AND pin_state NOT IN ('pinning','unpinning') RETURNING id", [campaignId]);
+          if (!deleting.rowCount) return send(id, 'این همگانی در حال پین یا برداشتن پین است؛ بعد از پایان دوباره حذف را انجام بده.');
           const current = (await sClient.query('SELECT * FROM broadcast_campaigns WHERE id=$1', [campaignId])).rows[0];
           const notice = await send(id, broadcastProgressText({ ...current, status: 'deleting' }, 'حذف پیام‌های ارسال‌شده شروع شد؛ میزان ارسال موفق حفظ می‌شود و تعداد حذف‌شده در همین گزارش افزایش پیدا می‌کند.'));
           if (notice?.message_id) await sClient.query('UPDATE broadcast_campaigns SET admin_chat_id=$2,admin_message_id=$3,updated_at=NOW() WHERE id=$1', [campaignId, id, notice.message_id]);
           void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_delete_error', error));
           return;
         }
-        if (reportAction === 'resend') { await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL,message_id=NULL WHERE campaign_id=$1 AND status IN ('sent','failed','deleted')", [campaignId]); await sClient.query("UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,deleted_count=0,started_at=NOW(),finished_at=NULL,updated_at=NOW() WHERE id=$1", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_resend_error', error)); return broadcastStatsPanel(sClient, id); }
+        if (reportAction === 'resend') {
+          await sClient.query('BEGIN');
+          try {
+            const reset = await sClient.query(`UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,deleted_count=0,started_at=NOW(),finished_at=NULL,updated_at=NOW()
+              WHERE id=$1 AND status IN ('completed','failed','cancelled','deleted') AND pin_state NOT IN ('pinning','pinned','unpinning','partial_pin','partial_unpin') RETURNING id`, [campaignId]);
+            if (!reset.rowCount) { await sClient.query('ROLLBACK'); return send(id, 'این همگانی قابل ارسال مجدد نیست؛ اگر پیام پین شده، ابتدا پین را بردار و سپس دوباره تلاش کن.'); }
+            await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL,message_id=NULL,pinned=FALSE,pin_error=NULL WHERE campaign_id=$1 AND status IN ('sent','failed','deleted')", [campaignId]);
+            await sClient.query('COMMIT');
+          } catch (error) { await sClient.query('ROLLBACK').catch(() => {}); throw error; }
+          void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_report_resend_error', error));
+          return broadcastStatsPanel(sClient, id);
+        }
         if (reportAction === 'save' || reportAction === 'unsave') { if (reportAction === 'save') await sClient.query("INSERT INTO broadcast_templates(owner_id,title,campaign_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", [id, `پیام همگانی #${campaignId}`, campaignId]); else await sClient.query('DELETE FROM broadcast_templates WHERE owner_id=$1 AND campaign_id=$2', [id, campaignId]); await sClient.query('UPDATE broadcast_campaigns SET saved=$2,updated_at=NOW() WHERE id=$1', [campaignId, reportAction === 'save']); return broadcastStatsPanel(sClient, id); }
       }
       if (action === 'campaign') return editAudienceCallback(callbackQuery, id, broadcastProgressText(campaign, `نوع پیام: ${campaign.message_kind}`), broadcastCampaignKeyboard(campaign));
       if (action === 'continue') { await sClient.query("UPDATE broadcast_campaigns SET status='running',updated_at=NOW() WHERE id=$1 AND status IN ('scheduled','failed','cancelled')", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_continue_error', error)); return editAudienceCallback(callbackQuery, id, 'ادامهٔ ارسال کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
-      if (action === 'resend') { await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL WHERE campaign_id=$1 AND status IN ('failed','sent')", [campaignId]); await sClient.query("UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,updated_at=NOW() WHERE id=$1", [campaignId]); void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_resend_error', error)); return editAudienceCallback(callbackQuery, id, 'ارسال مجدد کمپین شروع شد.', broadcastCampaignKeyboard(campaign)); }
+      if (action === 'resend') {
+        await sClient.query('BEGIN');
+        try {
+          const reset = await sClient.query(`UPDATE broadcast_campaigns SET status='running',sent_count=0,failed_count=0,updated_at=NOW()
+            WHERE id=$1 AND status IN ('completed','failed','cancelled','deleted') AND pin_state NOT IN ('pinning','pinned','unpinning','partial_pin','partial_unpin') RETURNING id`, [campaignId]);
+          if (!reset.rowCount) { await sClient.query('ROLLBACK'); return send(id, 'این همگانی قابل ارسال مجدد نیست؛ اگر پیام پین شده، ابتدا پین را بردار و سپس دوباره تلاش کن.'); }
+          await sClient.query("UPDATE broadcast_deliveries SET status='pending',error_text=NULL,message_id=NULL,pinned=FALSE,pin_error=NULL WHERE campaign_id=$1 AND status IN ('failed','sent','deleted')", [campaignId]);
+          await sClient.query('COMMIT');
+        } catch (error) { await sClient.query('ROLLBACK').catch(() => {}); throw error; }
+        void runBroadcastJobsImpl({ pool, telegramCall: telegram, sendAdmin: send }).catch(error => console.error('broadcast_resend_error', error));
+        return editAudienceCallback(callbackQuery, id, 'ارسال مجدد کمپین شروع شد.', broadcastCampaignKeyboard({ ...campaign, status: 'running' }));
+      }
       if (action === 'cancel') { await sClient.query("UPDATE broadcast_campaigns SET status='cancelled',updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','deleted')", [campaignId]); return editAudienceCallback(callbackQuery, id, 'کمپین لغو شد.', broadcastCampaignKeyboard({ ...campaign, status: 'cancelled' })); }
       if (action === 'segment') {
         const key = parts[3];
