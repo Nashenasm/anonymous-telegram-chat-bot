@@ -57,6 +57,7 @@ export async function ensureBroadcastSchema(client) {
     report_message_id BIGINT,
     report_source_message_id BIGINT,
     report_channel_updated_at TIMESTAMPTZ,
+    report_reply_to_source BOOLEAN NOT NULL DEFAULT FALSE,
     admin_report_updated_at TIMESTAMPTZ,
     pin_state TEXT NOT NULL DEFAULT 'unpinned',
     admin_message_id BIGINT,
@@ -94,6 +95,7 @@ export async function ensureBroadcastSchema(client) {
   await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS protect_content BOOLEAN NOT NULL DEFAULT TRUE');
   await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS report_source_message_id BIGINT');
   await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS report_channel_updated_at TIMESTAMPTZ');
+  await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS report_reply_to_source BOOLEAN NOT NULL DEFAULT FALSE');
   await client.query('ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS admin_report_updated_at TIMESTAMPTZ');
   await client.query("ALTER TABLE broadcast_campaigns ADD COLUMN IF NOT EXISTS pin_state TEXT NOT NULL DEFAULT 'unpinned'");
   await client.query('ALTER TABLE broadcast_deliveries ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE');
@@ -250,7 +252,7 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
     (admin_report_updated_at IS NULL OR admin_report_updated_at < updated_at) AS admin_report_needs_update
     FROM broadcast_campaigns WHERE id=$1`, [campaignId])).rows[0];
   if (!row) return;
-  const channelNeedsUpdate = Boolean(row.report_channel_id && (!row.report_message_id || row.report_channel_needs_update));
+  const channelNeedsUpdate = Boolean(row.report_channel_id && (!row.report_message_id || row.report_channel_needs_update || (row.report_source_message_id && !row.report_reply_to_source)));
   const adminNeedsUpdate = Boolean(row.admin_chat_id && row.admin_message_id && row.admin_report_needs_update);
   if (!channelNeedsUpdate && !adminNeedsUpdate) return;
   const counts = (await client.query(`SELECT
@@ -303,16 +305,31 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
         }
       }
       let reportMessageId = row.report_message_id;
-      if (reportMessageId && !row.report_source_message_id && reportSourceMessageId) {
+      if (reportMessageId && !row.report_reply_to_source && reportSourceMessageId) {
+        let legacyMessageHandled = false;
         try {
           await callWithRateLimitRetry(telegramCall, 'deleteMessage', { chat_id: row.report_channel_id, message_id: reportMessageId });
-          await client.query('UPDATE broadcast_campaigns SET report_message_id=NULL WHERE id=$1 AND report_message_id=$2', [row.id, reportMessageId]);
-          reportMessageId = null;
+          legacyMessageHandled = true;
         } catch (error) {
           if (/message to delete not found|message not found/i.test(String(error?.message || error))) {
-            await client.query('UPDATE broadcast_campaigns SET report_message_id=NULL WHERE id=$1 AND report_message_id=$2', [row.id, reportMessageId]);
-            reportMessageId = null;
-          } else console.error('broadcast_legacy_report_delete_error', String(error?.message || error).slice(0, 300));
+            legacyMessageHandled = true;
+          } else {
+            try {
+              try {
+                await callWithRateLimitRetry(telegramCall, 'editMessageText', {
+                  chat_id: row.report_channel_id,
+                  message_id: reportMessageId,
+                  text: `گزارش نهایی همگانی #${row.id} در پاسخ به پیام اصلی فورواردشده درج شده است.`,
+                  reply_markup: { inline_keyboard: [] },
+                });
+              } catch (editError) { if (!/message is not modified/i.test(String(editError?.message || editError))) throw editError; }
+              legacyMessageHandled = true;
+            } catch (editError) { console.error('broadcast_legacy_report_migration_error', String(editError?.message || error).slice(0, 300)); }
+          }
+        }
+        if (legacyMessageHandled) {
+          await client.query('UPDATE broadcast_campaigns SET report_message_id=NULL WHERE id=$1 AND report_message_id=$2', [row.id, reportMessageId]);
+          reportMessageId = null;
         }
       }
       if (reportMessageId) {
@@ -321,7 +338,7 @@ export async function publishBroadcastReport(client, telegramCall, campaignId) {
         await client.query('UPDATE broadcast_campaigns SET report_channel_updated_at=$2 WHERE id=$1', [row.id, row.updated_at]);
       } else {
         const sent = await callWithRateLimitRetry(telegramCall, 'sendMessage', { chat_id: row.report_channel_id, text, reply_markup: markup, protect_content: true, ...(reportSourceMessageId ? { reply_parameters: { message_id: reportSourceMessageId, allow_sending_without_reply: true } } : {}) });
-        await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,report_channel_updated_at=$3 WHERE id=$1', [row.id, sent.message_id, row.updated_at]);
+        await client.query('UPDATE broadcast_campaigns SET report_message_id=$2,report_channel_updated_at=$3,report_reply_to_source=$4 WHERE id=$1', [row.id, sent.message_id, row.updated_at, Boolean(reportSourceMessageId)]);
       }
     } catch (error) { console.error('broadcast_report_channel_error', String(error?.message || error).slice(0, 300)); }
   }
@@ -400,7 +417,7 @@ export async function runBroadcastJobs({ pool, telegramCall, sendAdmin, batchSiz
     const waitingReports = await client.query(`SELECT id FROM broadcast_campaigns
       WHERE (report_channel_id IS NOT NULL OR (admin_chat_id IS NOT NULL AND admin_message_id IS NOT NULL))
         AND status IN ('scheduled','running','cancelled','completed','deleting','deleted')
-        AND ((report_channel_id IS NOT NULL AND (report_message_id IS NULL OR report_channel_updated_at IS NULL OR report_channel_updated_at < updated_at))
+        AND ((report_channel_id IS NOT NULL AND (report_message_id IS NULL OR report_channel_updated_at IS NULL OR report_channel_updated_at < updated_at OR (report_source_message_id IS NOT NULL AND report_reply_to_source=FALSE)))
           OR (admin_chat_id IS NOT NULL AND admin_message_id IS NOT NULL AND (admin_report_updated_at IS NULL OR admin_report_updated_at < updated_at)))
       ORDER BY updated_at DESC,id DESC LIMIT 10`);
     for (const report of waitingReports.rows) await publishBroadcastReport(client, telegramCall, report.id);
