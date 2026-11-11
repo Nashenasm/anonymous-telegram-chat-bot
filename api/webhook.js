@@ -1857,7 +1857,12 @@ async function handleStart(id, payload = null) {
     if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
     if (!isAdmin(id)) {
       const missing = await mandatoryRequirements(id, client, { profile: me });
-      if (missing.length) return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
+      if (missing.length) {
+        if (payload !== null && !payload.startsWith('ref_') && /^[A-Za-z0-9_-]{32,64}$/.test(payload)) {
+          try { await updateAction(client, id, `pending_anon:${payload}`); } catch {}
+        }
+        return send(id, mandatoryJoinMessage(missing, s), mandatoryJoinMarkup(missing, s, id));
+      }
     }
     if (payload !== null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
@@ -1953,7 +1958,18 @@ async function handleCallback(id, data, callbackQuery = null) {
       const displaySettings = await settings(c);
       const missing = await mandatoryRequirements(id, c, { recordJoins: true, profile });
       if (missing.length) return send(id, mandatoryJoinMessage(missing, displaySettings), mandatoryJoinMarkup(missing, displaySettings, id));
-      let referralNotice = ''; const refreshed = await user(c, id); if (refreshed?.referred_by) { const grant = await completeReferralCondition(c, id, 'join'); if (grant.granted) { await notifyReferralGrant(grant, id); referralNotice = `\n\n🎁 شرط جویین اجباری تکمیل شد و ${grant.granted} مانوکوین برای دعوت‌کننده ثبت شد.`; } } return send(id, `✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد.${referralNotice}\nحالا می‌توانی از ربات استفاده کنی.`, mainKeyboard(displaySettings));
+      const pendingRow = await c.query('SELECT action_state FROM users WHERE telegram_id=$1', [id]);
+      const pendingState = pendingRow.rows[0]?.action_state || null;
+      const pendingAnon = (typeof pendingState === 'string' && pendingState.startsWith('pending_anon:')) ? pendingState.slice('pending_anon:'.length) : null;
+      let referralNotice = ''; const refreshed = await user(c, id); if (refreshed?.referred_by) { const grant = await completeReferralCondition(c, id, 'join'); if (grant.granted) { await notifyReferralGrant(grant, id); referralNotice = `\n\n🎁 شرط جویین اجباری تکمیل شد و ${grant.granted} مانوکوین برای دعوت‌کننده ثبت شد.`; } }
+      if (pendingAnon && /^[A-Za-z0-9_-]{32,64}$/.test(pendingAnon)) {
+        await c.query('UPDATE users SET action_state=NULL, updated_at=NOW() WHERE telegram_id=$1', [id]);
+        try {
+          const resumed = await flowFor(displaySettings).handleStartPayload(id, pendingAnon);
+          if (resumed) return;
+        } catch (resumeError) { console.error('pending_anon_resume_error', String(resumeError?.message || resumeError).slice(0, 200)); }
+      }
+      return send(id, `✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد.${referralNotice}\nحالا می‌توانی از ربات استفاده کنی.`, mainKeyboard(displaySettings));
     } finally { c.release(); }
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
