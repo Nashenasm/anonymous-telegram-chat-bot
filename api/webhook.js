@@ -389,7 +389,12 @@ function chatGiftPlusKeyboard() { return { reply_markup: { inline_keyboard: [[{ 
 function contactTargetIdFromMessage(message) { return Number(message?.forward_origin?.sender_user?.id || message?.forward_from?.id || 0) || null; }
 async function sendContactNotice(client, recipientId, messageId) { return send(recipientId, '📨 یک کاربر از داخل ربات برایت پیامی فرستاده است. اگر مایل بودی پیام را ببین و پاسخ بده.', contactNoticeKeyboard(messageId)); }
 async function contactPanelFor(client, id, messageId, callbackQuery = null) { const row = (await client.query('SELECT body FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!row) return send(id, 'این پیام دیگر در دسترس نیست.'); return callbackQuery ? editAudienceCallback(callbackQuery, id, row.body, contactMessageKeyboard(messageId)) : send(id, row.body, contactMessageKeyboard(messageId)); }
-async function startContactFlow(client, id) { await updateAction(client, id, 'contact:target'); return send(id, '🔎 اتصال به مخاطب خاص\n\nآیدی عددی تلگرام او را بفرست یا یک پیام مستقیم از همان کاربر فوروارد کن.\n\nنگران نباش؛ تا زمانی که پیام را تأیید نکنی چیزی برای او ارسال نمی‌شود.', contactTargetKeyboard()); }
+async function startContactFlow(client, id, settings = {}) {
+  await updateAction(client, id, 'contact:target');
+  const appearance = publicAppearance(settings);
+  const fallback = '🔎 اتصال به مخاطب خاص\n\nآیدی عددی تلگرام او را بفرست یا یک پیام مستقیم از همان کاربر فوروارد کن.\n\nنگران نباش؛ تا زمانی که پیام را تأیید نکنی چیزی برای او ارسال نمی‌شود.';
+  return send(id, feedbackMessagePayload(appearance, 'contact_special', fallback), contactTargetKeyboard());
+}
 async function sendChatGift(client, senderId, recipientId, type, amount) {
   if (senderId === recipientId) throw new Error('self_gift');
   await client.query('BEGIN');
@@ -3039,7 +3044,7 @@ async function handleText(id, text, meta = {}) {
     }
     const publicActionId = visiblePublicAction(value, s);
     const privateActionId = visiblePrivateAction(value, s);
-    if (publicActionId === 'contact_special' || value === 'اتصال به مخاطب خاص') return startContactFlow(client, id);
+    if (publicActionId === 'contact_special' || value === 'اتصال به مخاطب خاص') return startContactFlow(client, id, s);
     if (value === 'بازگشت' && (me.action_state === 'contact:target' || me.action_state?.startsWith('contact:compose:') || me.action_state?.startsWith('contact:reply:'))) {
       await updateAction(client, id, null);
       return send(id, 'به منوی اصلی برگشتی.', mainKeyboard(s));

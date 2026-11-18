@@ -32,6 +32,14 @@ describe('appearance configuration', () => {
     expect(appearanceKeyboard(normalizeAppearance('public', null))[0][0]).toBe('وصل کن به ناشناس');
   });
 
+  it('keeps the special-contact button editable through the Beauty panel', () => {
+    const appearance = normalizeAppearance('public', null);
+    expect(appearance.buttons.flat().some(item => item.id === 'contact_special')).toBe(true);
+    expect(appearance.feedback.contact_special).toContain('آیدی عددی');
+    const edited = setAppearancePath(appearance, 'feedback.contact_special', 'پیام سفارشی مخاطب خاص');
+    expect(edited.feedback.contact_special).toBe('پیام سفارشی مخاطب خاص');
+  });
+
   it('captures custom emoji entities after trimming and shifts offsets when combining response text', () => {
     const message = { text: '  😀 سلام', entities: [{ type: 'custom_emoji', offset: 2, length: 2, custom_emoji_id: '12345' }] };
     const entities = captureCustomEmojiEntities(message, message.text.trim());
@@ -100,6 +108,7 @@ describe('appearance configuration', () => {
     expect(source).toContain("text: 'Icon✨'");
     expect(source).toContain("text: 'Style🎨'");
     expect(source).toContain('captureCustomEmojiEntities(incoming, responseText)');
+    expect(source).toContain("feedbackMessagePayload(appearance, 'contact_special', fallback)");
     expect(source).toContain('target.parent[`${target.key}_source`] =');
     expect(source).toContain("telegram('copyMessage', copyBody)");
     expect(source).toContain('setAppearanceMessageSource(next, tail, incoming)');
