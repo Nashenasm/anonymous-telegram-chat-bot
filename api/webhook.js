@@ -910,6 +910,7 @@ function beautyParentPath(path, appearance = null) {
   return 'root';
 }
 function beautyMessageTarget(appearance, path, itemId) {
+  if (path === 'root' && itemId === 'contact_special' && appearance.screens?.specific_target) return { parent: appearance.screens.specific_target, key: 'message' };
   const nextPath = beautyChildPath(path, itemId, appearance);
   if (nextPath && nextPath !== path) {
     if (nextPath === 'root') return { parent: appearance, key: 'message' };
