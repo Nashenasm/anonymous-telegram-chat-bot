@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { SPECIFIC_NOT_FOUND, SPECIFIC_FOUND_CONFIRM, SPECIFIC_SENDER_WAITING, SPECIFIC_RECEIVER_PROMPT, SPECIFIC_RECEIVER_EXPIRED, SPECIFIC_SENDER_DECLINED, specificConfirmKeyboard, specificWaitingKeyboard, specificRequestInlineKeyboard, handleSpecificTextRoute, handleSpecificCallbackRoute, specificTargetMessage, specificTargetKeyboard, specificTargetFeedback, specificConfirmMessage, specificConfirmKeyboardFromSettings } from '../src/specific-contact.js';
 import crypto from 'node:crypto';
 import dns from 'node:dns';
 
@@ -389,12 +390,7 @@ function chatGiftPlusKeyboard() { return { reply_markup: { inline_keyboard: [[{ 
 function contactTargetIdFromMessage(message) { return Number(message?.forward_origin?.sender_user?.id || message?.forward_from?.id || 0) || null; }
 async function sendContactNotice(client, recipientId, messageId) { return send(recipientId, '📨 یک کاربر از داخل ربات برایت پیامی فرستاده است. اگر مایل بودی پیام را ببین و پاسخ بده.', contactNoticeKeyboard(messageId)); }
 async function contactPanelFor(client, id, messageId, callbackQuery = null) { const row = (await client.query('SELECT body FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!row) return send(id, 'این پیام دیگر در دسترس نیست.'); return callbackQuery ? editAudienceCallback(callbackQuery, id, row.body, contactMessageKeyboard(messageId)) : send(id, row.body, contactMessageKeyboard(messageId)); }
-async function startContactFlow(client, id, settings = {}) {
-  await updateAction(client, id, 'contact:target');
-  const appearance = publicAppearance(settings);
-  const fallback = '🔎 اتصال به مخاطب خاص\n\nآیدی عددی تلگرام او را بفرست یا یک پیام مستقیم از همان کاربر فوروارد کن.\n\nنگران نباش؛ تا زمانی که پیام را تأیید نکنی چیزی برای او ارسال نمی‌شود.';
-  return send(id, feedbackMessagePayload(appearance, 'contact_special', fallback), contactTargetKeyboard());
-}
+async function startContactFlow(client, id, s = null) { await updateAction(client, id, 'contact:target'); try { if (s) return send(id, specificTargetMessage(s), specificTargetKeyboard(s)); } catch {} return send(id, '🔎 اتصال به مخاطب خاص\n\nآیدی عددی تلگرام او را بفرست یا یک پیام مستقیم از همان کاربر فوروارد کن.\n\nنگران نباش؛ تا زمانی که پیام را تأیید نکنی چیزی برای او ارسال نمی‌شود.', contactTargetKeyboard()); }
 async function sendChatGift(client, senderId, recipientId, type, amount) {
   if (senderId === recipientId) throw new Error('self_gift');
   await client.query('BEGIN');
@@ -2066,6 +2062,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data.startsWith('coins:crypto_wallet:')) { const amount=await selectedCoinAmount(sClient,id); if(!amount) return coinAmountPanel(sClient,id,callbackQuery); return createCryptoPurchase(sClient,id,amount,Number(data.split(':')[2])); }
     if (data === 'coins:method:stars') { const key='finance_stars_text'; const text=await botSettingValue(sClient,key,'اطلاعات این روش هنوز توسط مدیریت ثبت نشده است.'); return send(id, text, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت به روش‌های واریز', callback_data: 'coins:amount_methods' }]] } }); }
     if (data === 'coins:back') { await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, publicAppearance(s).message, { reply_markup: { inline_keyboard: [] } }); }
+    { const _scb = await handleSpecificCallbackRoute({ sClient, id, data, callbackQuery, s, send, editAudienceCallback, mainKeyboard, chatKeyboard, updateAction, sendConnectionNotice, isAdmin }); if (_scb !== false) return _scb; }
     if (data.startsWith('contact:view:')) return contactPanelFor(sClient, id, Number(data.split(':')[2]), callbackQuery);
     if (data.startsWith('contact:reply:')) { const messageId = Number(data.split(':')[2]); const row = (await sClient.query('SELECT recipient_id FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!row) return send(id, 'این پیام دیگر در دسترس نیست.'); await updateAction(sClient, id, `contact:reply:${messageId}`); return editAudienceCallback(callbackQuery, id, 'پاسخت را بنویس؛ پس از ارسال پیام جدید، اعلان بعدی با دکمه‌های پاسخ و بلاک نمایش داده می‌شود.', { reply_markup: { inline_keyboard: [] } }); }
     if (data.startsWith('contact:block:')) { const messageId = Number(data.split(':')[2]); const row = (await sClient.query('SELECT sender_id FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!row) return send(id, 'این پیام دیگر در دسترس نیست.'); return editAudienceCallback(callbackQuery, id, 'دلیل بلاک را انتخاب کن:', contactBlockReasonKeyboard(messageId)); }
@@ -3044,18 +3041,19 @@ async function handleText(id, text, meta = {}) {
     }
     const publicActionId = visiblePublicAction(value, s);
     const privateActionId = visiblePrivateAction(value, s);
-    if (publicActionId === 'contact_special' || value === 'اتصال به مخاطب خاص') return startContactFlow(client, id, s);
+    if (publicActionId === 'contact_special' || value === 'اتصال به مخاطب خاص') return startContactFlow(client, id, (typeof s !== 'undefined' ? s : null));
+    { const _specificTextRes = await handleSpecificTextRoute({ client, id, value, s, me, send, mainKeyboard, chatKeyboard, updateAction, isAdmin }); if (_specificTextRes !== false) return _specificTextRes; }
     if (value === 'بازگشت' && (me.action_state === 'contact:target' || me.action_state?.startsWith('contact:compose:') || me.action_state?.startsWith('contact:reply:'))) {
       await updateAction(client, id, null);
       return send(id, 'به منوی اصلی برگشتی.', mainKeyboard(s));
     }
     if (me.action_state === 'contact:target') {
       const forwardedId = meta.forwardedUserId; const numericId = value.match(/^@?(\d{3,20})$/)?.[1] ? Number(value.replace(/^@/, '')) : null; const username = value.match(/^@([A-Za-z0-9_]{3,32})$/)?.[1] || null;
-      if (!forwardedId && !numericId && !username) return send(id, 'آیدی عددی، @username معتبر یا پیام فورواردشدهٔ همان کاربر را بفرست.', contactTargetKeyboard());
+      if (!forwardedId && !numericId && !username) { try { return send(id, specificTargetFeedback(s, 'invalid', 'آیدی عددی، @username معتبر یا پیام فورواردشدهٔ همان کاربر را بفرست.'), specificTargetKeyboard(s)); } catch {} return send(id, 'آیدی عددی، @username معتبر یا پیام فورواردشدهٔ همان کاربر را بفرست.', contactTargetKeyboard()); }
       const target = (await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1 OR ($2::text IS NOT NULL AND lower(username)=lower($2)) LIMIT 1', [forwardedId || numericId, username])).rows[0];
-      if (Number(target?.telegram_id) === id) return send(id, 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.', contactTargetKeyboard());
-      if (!target) { await updateAction(client, id, null); return send(id, 'این کاربر هنوز عضو ربات نیست. اگر دوست داری، لینک ربات را برایش بفرست تا بعد از ورود بتوانی برایش پیام ارسال کنی.', mainKeyboard(s)); }
-      await updateAction(client, id, `contact:compose:${target.telegram_id}`); return send(id, '✅ مخاطب پیدا شد. حالا پیامی را که می‌خواهی برای او ارسال شود بنویس. پیام بدون نام و مشخصات تو به دستش می‌رسد.', contactReplyKeyboard());
+      if (Number(target?.telegram_id) === id) { try { return send(id, specificTargetFeedback(s, 'self', 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.'), specificTargetKeyboard(s)); } catch {} return send(id, 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.', contactTargetKeyboard()); }
+      if (!target) { await updateAction(client, id, null); try { return send(id, specificTargetFeedback(s, 'not_found', SPECIFIC_NOT_FOUND), mainKeyboard(s)); } catch {} return send(id, SPECIFIC_NOT_FOUND, mainKeyboard(s)); }
+      await updateAction(client, id, `contact:request_confirm:${target.telegram_id}`); try { return send(id, specificConfirmMessage(s), specificConfirmKeyboardFromSettings(s)); } catch {} return send(id, SPECIFIC_FOUND_CONFIRM, specificConfirmKeyboard());
     }
     if (me.action_state?.startsWith('contact:compose:')) {
       const targetId = Number(me.action_state.split(':')[2]); if (!value) return send(id, 'پیام نمی‌تواند خالی باشد.', contactReplyKeyboard()); const result = await client.query('INSERT INTO contact_messages(sender_id,recipient_id,body) VALUES ($1,$2,$3) RETURNING id', [id, targetId, value]); await updateAction(client, id, null); await sendContactNotice(client, targetId, result.rows[0].id); return send(id, 'پیامت به مخاطب ارسال شد. اگر او پاسخ بدهد، اعلانش را دریافت می‌کنی.', mainKeyboard(s));
