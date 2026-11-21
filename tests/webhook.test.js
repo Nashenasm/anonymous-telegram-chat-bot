@@ -118,6 +118,14 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('کاربران درآمدزا در ۳۰ روز اخیر');
     expect(source).toContain("state === 'admin:daily_coin:command'");
   });
+  it('charges Plus chat gifts at the plan price and shows balance before gift choices', () => {
+    expect(source).toContain("const coinCost = type === 'coins' ? amount : PLUS_PRICES[amount];");
+    expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -coinCost, kind: 'gift'");
+    expect(source).toContain('error.requiredCoins = coinCost;');
+    expect(source).toContain('error.currentCoins = Number(sender.coins || 0);');
+    expect(source).toContain('مبلغ لازم: ${error.requiredCoins || requiredCoins} مانو کوین');
+    expect(source).toContain('await send(id, `موجودی فعلی مانو کوینت: ${Number(balance)} مانو کوین`);');
+  });
 
   it('supports private contact usernames and in-place reply/block actions', () => {
     expect(source).toContain("value.match(/^@([A-Za-z0-9_]{3,32})$/)");

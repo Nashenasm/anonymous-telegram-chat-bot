@@ -397,10 +397,21 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
   try {
     const sender = (await client.query('SELECT coins FROM users WHERE telegram_id=$1 FOR UPDATE', [senderId])).rows[0];
     const recipient = (await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1', [recipientId])).rows[0];
-    const coinCost = type === 'coins' ? amount : 0;
+    const coinCost = type === 'coins' ? amount : PLUS_PRICES[amount];
     if (!recipient) { await client.query('ROLLBACK'); throw new Error('recipient_missing'); }
-    if (type === 'coins' && (!sender || Number(sender.coins) < amount)) { await client.query('ROLLBACK'); throw new Error('insufficient_coins'); }
-    if (type === 'coins') await applyCoinDelta(client, { userId: senderId, delta: -amount, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}:${type}:${amount}:${Date.now()}`), metadata: { recipientId, amount } });
+    if (!sender || !Number.isInteger(coinCost) || coinCost <= 0) { await client.query('ROLLBACK'); throw new Error('invalid_gift_cost'); }
+    try {
+      await applyCoinDelta(client, { userId: senderId, delta: -coinCost, kind: 'gift', idempotencyKey: newFinanceIdempotencyKey(`gift:${senderId}:${recipientId}:${type}:${amount}`), metadata: { recipientId, amount, coinCost } });
+    } catch (error) {
+      if (error.message === 'insufficient_coins') {
+        error.requiredCoins = coinCost;
+        error.currentCoins = Number(sender.coins || 0);
+      }
+      throw error;
+    }
+    if (type === 'coins') {
+      // The ledger mutation above preserves the existing Mano Coin gift behavior.
+    }
     else await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' months')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1", [recipientId, amount]);
     await client.query('INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4)', [senderId, recipientId, type, amount]); await client.query('COMMIT');
     const label = type === 'coins' ? `${amount} مانو کوین🐝` : `${amount === 12 ? '۱ سال' : `${amount} ماه`} مانو پلاس`;
@@ -411,7 +422,7 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
       console.error('chat_gift_delivery_error', { senderId, recipientId, type, amount, error: String(deliveryError?.message || deliveryError).slice(0, 240) });
       return { delivered: false };
     }
-  } catch (error) { if (error.message !== 'recipient_missing' && error.message !== 'insufficient_coins') await client.query('ROLLBACK'); if (error.message === 'insufficient_coins') throw error; if (error.message === 'recipient_missing') throw error; throw error; }
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
 function permissionInlineKeyboard(permissions = DEFAULT_CHAT_PERMISSIONS) { return { reply_markup: { inline_keyboard: permissionKeyboard(permissions).map(item => [{ text: item.label, callback_data: `conversation:permission:${item.key}` }]).concat([[{ text: 'بازگشت', callback_data: 'conversation:back' }]]) } }; }
 function entertainmentAdminKeyboard(settings = {}) {
@@ -2074,7 +2085,7 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'chatgift:noop') return false;
     if (data.startsWith('chatgift:coin:')) { const delta = data.split(':')[2]; if (delta === 'custom') { await updateAction(sClient, id, 'chatgift:coin_custom'); return send(id, 'مقدار دلخواه را به‌صورت عدد مثبت بفرست.'); } const current = Number(String(me.action_state || '').split(':')[2]) || 10; const next = Math.max(1, current + Number(delta)); await updateAction(sClient, id, `chatgift:coins:${next}`); return editAudienceCallback(callbackQuery, id, 'چه مقدار مانو کوین می‌خواهی هدیه بدهی؟', chatGiftCoinKeyboard(next)); }
     if (data === 'chatgift:send') { const amount = Number(String(me.action_state || '').split(':')[2]); if (!amount || me.status !== 'chatting' || !me.partner_id) return send(id, 'مکالمهٔ فعال برای ارسال هدیه پیدا نشد.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'coins', amount); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی مانو کوینت برای این هدیه کافی نیست.' : 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${amount} مانو کوین ارسال شد.` : `هدیهٔ ${amount} مانو کوین ثبت شد، اما اعلان آن به طرف مقابل نرسید و برای جلوگیری از ارسال دوباره، عملیات بسته شد.`, { reply_markup: { inline_keyboard: [] } }); }
-    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch { return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.` : 'هدیه ثبت شد، اما اعلان آن به طرف مقابل نرسید و عملیات بسته شد.', { reply_markup: { inline_keyboard: [] } }); }
+    if (data.startsWith('chatgift:plus:')) { const months = Number(data.split(':')[2]); if (![1,3,6,12].includes(months) || me.status !== 'chatting' || !me.partner_id) return send(id, 'هدیهٔ پلاس قابل ارسال نیست.'); const requiredCoins = PLUS_PRICES[months]; let result; try { result = await sendChatGift(sClient, id, Number(me.partner_id), 'plus', months); } catch (error) { if (error.message === 'insufficient_coins') return send(id, `موجودی مانو کوینت برای این هدیه کافی نیست.\nمبلغ لازم: ${error.requiredCoins || requiredCoins} مانو کوین\nموجودی فعلی: ${error.currentCoins ?? Number(me.coins || 0)} مانو کوین`); return send(id, 'ارسال هدیه انجام نشد.'); } await updateAction(sClient, id, null); return editAudienceCallback(callbackQuery, id, result?.delivered ? `هدیهٔ ${months === 12 ? '۱ سال' : `${months} ماه`} مانو پلاس ارسال شد.` : 'هدیه ثبت شد، اما اعلان آن به طرف مقابل نرسید و عملیات بسته شد.', { reply_markup: { inline_keyboard: [] } }); }
     if (isAdmin(id) && data === 'conversation:back') { await updateAction(sClient, id, 'admin:conversation_control'); return editAudienceCallback(callbackQuery, id, 'کنترل مکالمات کلی ربات', conversationControlKeyboard()); }
     if (isAdmin(id) && data.startsWith('conversation:permission:')) {
       const key = data.slice('conversation:permission:'.length); const current = JSON.parse(await botSettingValue(sClient, 'chat_permissions', JSON.stringify(DEFAULT_CHAT_PERMISSIONS)) || '{}');
@@ -3075,7 +3086,7 @@ async function handleText(id, text, meta = {}) {
       await send(partnerId, feedbackMessagePayload(appearance, 'voice_call_received', '🎙 طرف مکالمه‌ات درخواست تماس صوتی ناشناس داده است. برای شروع، دکمه را بزن.'), voiceMarkup(voiceRoomUrl(room, theirs)));
       return send(id, feedbackMessagePayload(appearance, 'voice_call', '🎙 درخواست تماس صوتی برای طرف مقابل ارسال شد؛ با زدن دکمه زیر وارد تماس شو.'), voiceMarkup(voiceRoomUrl(room, mine)));
     }
-    if ((publicActionId === 'gift' || value === 'هدیه دادن') && me.status === 'chatting' && me.partner_id) return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard());
+    if ((publicActionId === 'gift' || value === 'هدیه دادن') && me.status === 'chatting' && me.partner_id) { const balance = (await client.query('SELECT coins FROM users WHERE telegram_id=$1', [id])).rows[0]?.coins ?? 0; await send(id, `موجودی فعلی مانو کوینت: ${Number(balance)} مانو کوین`); return send(id, 'چه چیزی می‌خواهی برای طرف مکالمه‌ات هدیه بدهی؟', chatGiftTypeKeyboard()); }
     if (isAdmin(id) && me.action_state?.startsWith('appearance:')) {
       if (value === 'بازگشت کنترل ربات') { await updateAction(client, id, null); return send(id, 'کنترل ربات', controlKeyboard()); }
       const handledAppearance = await handleAppearanceText(client, id, value, me.action_state, s, meta);
