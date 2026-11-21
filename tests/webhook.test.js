@@ -126,6 +126,11 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain('مبلغ لازم: ${error.requiredCoins || requiredCoins} مانو کوین');
     expect(source).toContain('await send(id, `موجودی فعلی مانو کوینت: ${Number(balance)} مانو کوین`);');
   });
+  it('opens owner Plus adjustment as a signed manual input like Mano Coin', () => {
+    expect(source).toContain("await updateAction(sClient, id, `admin:plus:${targetId}:${messageId}`);");
+    expect(source).toContain('مقدار مانو پلاس را با علامت بفرست؛ مثال: +2M یا -1M.');
+    expect(source).toContain("const months = parsePlusPeriod(value);");
+  });
 
   it('supports private contact usernames and in-place reply/block actions', () => {
     expect(source).toContain("value.match(/^@([A-Za-z0-9_]{3,32})$/)");
