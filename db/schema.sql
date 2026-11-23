@@ -3,6 +3,16 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT,
   status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle','waiting','chatting')),
   gender TEXT NULL CHECK (gender IN ('male','female')),
+  profile_photo_file_id TEXT,
+  display_name TEXT,
+  age INTEGER NULL CHECK (age IS NULL OR age BETWEEN 15 AND 80),
+  country_code TEXT NULL CHECK (country_code IS NULL OR country_code = 'IR'),
+  province_code TEXT,
+  county_code TEXT,
+  profile_updated_at TIMESTAMPTZ NULL,
+  profile_viewed_at TIMESTAMPTZ NULL,
+  profile_gender_locked BOOLEAN NOT NULL DEFAULT FALSE,
+  profile_initial_fields JSONB NOT NULL DEFAULT '{}'::jsonb,
   coins INTEGER NOT NULL DEFAULT 20 CHECK (coins >= 0),
   discount_percent INTEGER NOT NULL DEFAULT 0,
   discount_code TEXT,
@@ -33,7 +43,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS last_partner_id BIGINT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS action_state TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS conversation_started_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo_file_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS age INTEGER;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS country_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS province_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS county_code TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_updated_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_viewed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_gender_locked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_initial_fields JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS users_waiting_idx ON users(status, updated_at) WHERE status = 'waiting';
+
+CREATE TABLE IF NOT EXISTS profile_view_events (
+  viewer_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  viewed_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  context TEXT NOT NULL DEFAULT 'chat',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (viewer_id, viewed_id, context, created_at)
+);
+CREATE INDEX IF NOT EXISTS profile_view_events_viewed_idx ON profile_view_events(viewed_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS processed_updates (
   update_id BIGINT PRIMARY KEY,
@@ -65,6 +94,13 @@ INSERT INTO bot_settings(key, value) VALUES
   ('appearance_private_enabled', 'true'),
   ('appearance_public', '{}'),
   ('appearance_private', '{}'),
+  ('regular_profile_mode', 'optional'),
+  ('plus_profile_mode', 'optional'),
+  ('admin_profile_mode', 'optional'),
+  ('owner_profile_mode', 'optional'),
+  ('profile_edit_cost', '1'),
+  ('profile_view_button_label', 'مشاهده پروفایل'),
+  ('profile_viewed_notice', 'پروفایل شما دیده شد.'),
   ('bot_enabled', 'true')
 ON CONFLICT (key) DO NOTHING;
 

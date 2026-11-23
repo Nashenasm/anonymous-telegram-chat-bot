@@ -150,8 +150,8 @@ const APPEARANCE_RUNTIME_CATALOG = {
     root: [{ id: 'contact_special', label: 'اتصال به مخاطب خاص' }],
     screens: {
       chat: {
-        buttons: [{ id: 'games', label: 'بازی' }, { id: 'ideas', label: 'ایده صحبت' }, { id: 'gift', label: 'هدیه دادن' }, { id: 'voice_call', label: 'ویس‌کال' }, { id: 'secure_chat', label: '🔒 مکالمه ایمن' }],
-        feedback: { games: 'بازی‌های میان چت را باز کن.', ideas: 'ایده‌های صحبت را باز کن.', gift: 'هدیه‌ای را برای طرف مکالمه انتخاب کن.' },
+        buttons: [{ id: 'games', label: 'بازی' }, { id: 'ideas', label: 'ایده صحبت' }, { id: 'gift', label: 'هدیه دادن' }, { id: 'profile_view', label: 'مشاهده پروفایل' }, { id: 'voice_call', label: 'ویس‌کال' }, { id: 'secure_chat', label: '🔒 مکالمه ایمن' }],
+        feedback: { games: 'بازی‌های میان چت را باز کن.', ideas: 'ایده‌های صحبت را باز کن.', gift: 'هدیه‌ای را برای طرف مکالمه انتخاب کن.', profile_view: 'پروفایل طرف مقابل را ببین.' },
       },
       specific_confirm: {
         title: '۲ تایید فرستنده — سوال + بله/خیر',
