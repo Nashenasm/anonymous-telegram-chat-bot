@@ -294,18 +294,19 @@ function profileBackKeyboard() { return replyKeyboard([['بازگشت']], true);
 function profileChoiceRows(items, columns = 4) { const rows = []; for (const item of items) { if (!rows.length || rows.at(-1).length >= columns) rows.push([]); rows.at(-1).push(item); } return rows; }
 function profileSkipKeyboard() { return profileBackKeyboard(); }
 function profileAgeKeyboard() {
-  const choices = Array.from({ length: 66 }, (_, index) => String(index + 15));
-  return replyKeyboard([...profileChoiceRows(choices), ['بازگشت']], true);
+  const choices = Array.from({ length: 66 }, (_, index) => ({ text: String(index + 15), callback_data: `profile:age:${index + 15}` }));
+  return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } };
 }
 function profileProvinceKeyboard() {
-  const choices = IRAN_PROVINCES.map(([, label]) => label);
-  return replyKeyboard([...profileChoiceRows(choices), ['بازگشت']], true);
+  const choices = IRAN_PROVINCES.map(([code, label]) => ({ text: label, callback_data: `profile:province:${code}` }));
+  return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } };
 }
 function profileCountyKeyboard(provinceCode) {
-  return replyKeyboard([...profileChoiceRows(countyLabels(provinceCode)), ['بازگشت']], true);
+  const choices = countyLabels(provinceCode).map((label, index) => ({ text: label, callback_data: `profile:county:${provinceCode}:${index}` }));
+  return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:province_menu' }]] } };
 }
-function profileCountryKeyboard(settings) { return replyKeyboard([[settings.profile_country_label || 'ایران'], ['بازگشت']], true); }
-function profileGenderKeyboard() { return replyKeyboard([['پسرم', 'دخترم'], ['بازگشت']], true); }
+function profileCountryKeyboard(settings) { return { reply_markup: { inline_keyboard: [[{ text: settings.profile_country_label || 'ایران', callback_data: 'profile:country:IR' }], [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } }; }
+function profileGenderKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پسرم', callback_data: 'profile:gender:male' }, { text: 'دخترم', callback_data: 'profile:gender:female' }], [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } }; }
 function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function emojiKeyboard(settings) { return replyKeyboard([['ریست ایموجی'], [settings.back_button || 'بازگشت']], true); }
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
