@@ -120,10 +120,13 @@ describe('anonymous chat public contract', () => {
   });
   it('charges Plus chat gifts at the plan price and shows balance before gift choices', () => {
     expect(source).toContain("const coinCost = type === 'coins' ? amount : PLUS_PRICES[amount];");
-    expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -coinCost, kind: 'gift'");
-    expect(source).toContain('error.requiredCoins = coinCost;');
+    expect(source).toContain("const feePercent = Number(await botSettingValue(client, 'chat_gift_fee_percent', '2'));");
+    expect(source).toContain("const totalCost = coinCost + fee;");
+    expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -totalCost, kind: 'gift'");
+    expect(source).toContain('error.requiredCoins = totalCost;');
     expect(source).toContain('error.currentCoins = Number(sender.coins || 0);');
-    expect(source).toContain('مبلغ لازم: ${error.requiredCoins || requiredCoins} مانو کوین');
+    expect(source).toContain('مجموع لازم: ${error.requiredCoins || requiredCoins + chatGiftFee(requiredCoins)} مانو کوین');
+    expect(source).toContain('chatGiftPlusConfirmKeyboard');
     expect(source).toContain('await send(id, `موجودی فعلی مانو کوینت: ${Number(balance)} مانو کوین`);');
   });
   it('opens owner Plus adjustment as a signed manual input like Mano Coin', () => {
@@ -233,8 +236,9 @@ describe('anonymous chat public contract', () => {
     expect(source).not.toContain("if (value === 'تنظیم دیلی کوین') { await updateAction(client, id, 'admin:daily_coin');");
   });
   it('places gift-code administration under bot finance ManoCoin controls', () => {
-    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
-    expect(source).toContain("function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("function manoCoinKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کارمزد هدیه'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("function manoCoinAdminKeyboard() { return replyKeyboard([['قیمت مانوکوین'], ['کارمزد هدیه'], ['کد هدیه', 'بونوس🎁'], ['زیرمجموعه✋🏻'], ['بازگشت امور مالی']], true); }");
+    expect(source).toContain("me.action_state === 'admin:chat_gift_fee'");
     expect(source).toContain("function referralAdminKeyboard() { return replyKeyboard([['کوین پله ای'], ['کوین زیرمجموعه'], ['شرایط زیرمجموعه'], ['دکمه پاور'], ['بازگشت مانوکوین']], true); }");
     expect(source).toContain("referral:staged_condition");
     expect(source).toContain("referral_stage_amounts");
