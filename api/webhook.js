@@ -273,7 +273,17 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
-function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
+function mainKeyboard(settings) {
+  const a = publicAppearance(settings);
+  let profileSeen = false;
+  const buttons = (a.buttons || []).map(row => (Array.isArray(row) ? row : []).filter(item => {
+    if (item?.id !== 'profile') return true;
+    if (profileSeen) return false;
+    profileSeen = true;
+    return true;
+  }));
+  return replyKeyboard(appearanceKeyboard({ ...a, buttons }));
+}
 function profileKeyboard(settings, me) {
   const numericId = String(me?.telegram_id || '');
   const rows = [[{ text: numericId, copy_text: { text: numericId } }]];
