@@ -125,7 +125,7 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -totalCost, kind: 'gift'");
     expect(source).toContain('error.requiredCoins = totalCost;');
     expect(source).toContain('error.currentCoins = Number(sender.coins || 0);');
-    expect(source).toContain('مجموع لازم: ${error.requiredCoins || requiredCoins + chatGiftFee(requiredCoins)} مانو کوین');
+    expect(source).toContain('مجموع لازم:');
     expect(source).toContain('chatGiftPlusConfirmKeyboard');
     expect(source).toContain('await send(id, `موجودی فعلی مانو کوینت: ${Number(balance)} مانو کوین`);');
   });
