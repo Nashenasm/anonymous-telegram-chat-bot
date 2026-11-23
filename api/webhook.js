@@ -273,13 +273,7 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
-function mainKeyboard(settings) {
-  const a = publicAppearance(settings);
-  const rows = appearanceKeyboard(a);
-  const profileLabel = settings.profile_button || 'پروفایل من';
-  if (!rows.some(row => Array.isArray(row) && row.includes(profileLabel))) rows.push([profileLabel]);
-  return replyKeyboard(rows);
-}
+function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
 function profileKeyboard(settings, me) {
   const numericId = String(me?.telegram_id || '');
   const rows = [[{ text: numericId, copy_text: { text: numericId } }]];
@@ -299,19 +293,19 @@ function profileEditKeyboard(me) {
 function profileBackKeyboard() { return replyKeyboard([['بازگشت']], true); }
 function profileChoiceRows(items, columns = 4) { const rows = []; for (const item of items) { if (!rows.length || rows.at(-1).length >= columns) rows.push([]); rows.at(-1).push(item); } return rows; }
 function profileSkipKeyboard() { return profileBackKeyboard(); }
-function profileAgeKeyboard() {
-  const choices = Array.from({ length: 66 }, (_, index) => ({ text: String(index + 15), callback_data: `profile:age:${index + 15}` }));
+function profileAgeKeyboard({ nonce = '' } = {}) {
+  const choices = Array.from({ length: 66 }, (_, index) => ({ text: String(index + 15), callback_data: `profile:age:${index + 15}${nonce ? `:${nonce}` : ''}` }));
   return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } };
 }
-function profileProvinceKeyboard() {
-  const choices = IRAN_PROVINCES.map(([code, label]) => ({ text: label, callback_data: `profile:province:${code}` }));
+function profileProvinceKeyboard({ nonce = '' } = {}) {
+  const choices = IRAN_PROVINCES.map(([code, label]) => ({ text: label, callback_data: `profile:province:${code}${nonce ? `:${nonce}` : ''}` }));
   return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } };
 }
-function profileCountyKeyboard(provinceCode) {
-  const choices = countyLabels(provinceCode).map((label, index) => ({ text: label, callback_data: `profile:county:${provinceCode}:${index}` }));
-  return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: 'profile:province_menu' }]] } };
+function profileCountyKeyboard(provinceCode, { editing = false, nonce = '' } = {}) {
+  const choices = countyLabels(provinceCode).map((label, index) => ({ text: label, callback_data: `profile:county:${provinceCode}:${index}${nonce ? `:${nonce}` : ''}` }));
+  return { reply_markup: { inline_keyboard: [...profileChoiceRows(choices), [{ text: 'بازگشت', callback_data: editing ? 'profile:edit' : 'profile:province_menu' }]] } };
 }
-function profileCountryKeyboard(settings) { return { reply_markup: { inline_keyboard: [[{ text: settings.profile_country_label || 'ایران', callback_data: 'profile:country:IR' }], [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } }; }
+function profileCountryKeyboard(settings, { nonce = '' } = {}) { return { reply_markup: { inline_keyboard: [[{ text: settings.profile_country_label || 'ایران', callback_data: `profile:country:IR${nonce ? `:${nonce}` : ''}` }], [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } }; }
 function profileGenderKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پسرم', callback_data: 'profile:gender:male' }, { text: 'دخترم', callback_data: 'profile:gender:female' }], [{ text: 'بازگشت', callback_data: 'profile:edit' }]] } }; }
 function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function emojiKeyboard(settings) { return replyKeyboard([['ریست ایموجی'], [settings.back_button || 'بازگشت']], true); }
@@ -534,6 +528,9 @@ async function saveInlineAppearanceConfig(client, config) {
 }
 async function prepareInlineTelegramBody(method, body) {
   if (!body?.reply_markup?.inline_keyboard) return body;
+  // Keep profile data, the edit/back controls, the quoted fee and four-column
+  // selectors intact; a dynamic styling rule must not replace or hide them.
+  if (body.reply_markup.inline_keyboard.some(row => Array.isArray(row) && row.some(item => String(item?.callback_data || '').startsWith('profile:')))) return body;
   try {
     let config = await loadInlineAppearanceConfig();
     const observation = observeInlineKeyboard(body.reply_markup, body.text);
@@ -1255,12 +1252,24 @@ function profileValue(me, field) {
   if (field === 'gender') return me?.gender === 'male' ? 'پسر' : me?.gender === 'female' ? 'دختر' : 'ثبت نشده';
   return me?.[field] || 'ثبت نشده';
 }
-function profileText(me, id) {
+function profilePayload(me, id) {
   const plusText = isAdmin(id) ? 'نامحدود' : (isPlus(me, id) ? `${Math.max(0, Math.ceil((new Date(me.plus_expires_at).getTime() - Date.now()) / 86400000))} روز` : 'ندارد');
-  return `پروفایل شما\n\n👤 نام: ${profileValue(me, 'display_name')}\n🎂 سن: ${profileValue(me, 'age')}\n🌍 کشور: ${profileValue(me, 'country_code')}\n🗺 استان: ${profileValue(me, 'province_code')}\n🏙 شهرستان: ${profileValue(me, 'county_code')}\n⚧ جنسیت: ${profileValue(me, 'gender')}\n🖼 عکس پروفایل: ${profileValue(me, 'profile_photo_file_id')}\n\n🪙 مانو کوین: ${Number(me.coins || 0)}\n✨ باقی مانده مانو پلاس: ${plusText}\n📅 تاریخ عضویت: ${iranDate(me.created_at)}`;
+  const beforeBadge = `پروفایل شما\n\n🪙 مانو کوین: ${Number(me.coins || 0)}\n✨ باقی مانده مانو پلاس: ${plusText} `;
+  const afterBadge = `\n📅 تاریخ عضویت: ${iranDate(me.created_at)}\n🆔 آیدی عددی: ${me.telegram_id}\n⚧ جنسیت: ${profileValue(me, 'gender')}\n\n👤 نام: ${profileValue(me, 'display_name')}\n🎂 سن: ${profileValue(me, 'age')}\n🌍 کشور: ${profileValue(me, 'country_code')}\n🗺 استان: ${profileValue(me, 'province_code')}\n🏙 شهرستان: ${profileValue(me, 'county_code')}\n🖼 عکس پروفایل: ${profileValue(me, 'profile_photo_file_id')}`;
+  const entities = badgeEntities(me, id).map(entity => ({ ...entity, offset: entity.offset + beforeBadge.length }));
+  return { text: `${beforeBadge}${badgeFor(me, id)}${afterBadge}`, ...(entities.length ? { entities } : {}) };
 }
-async function sendProfileEdit(client, id) { const me = await ensureUser(client, id); const rawCost = Number(await botSettingValue(client, 'profile_edit_cost', '1')); const cost = Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : 1; return send(id, `ویرایش پروفایل\n\nهزینه هر تغییر: ${cost} مانو کوین\nجنسیت بعد از ثبت قابل تغییر نیست.`, profileEditKeyboard(me)); }
+async function sendProfileEdit(client, id, note = '') { const me = await ensureUser(client, id); const cost = await profileEditCost(client); return send(id, `${note ? `${note}\n\n` : ''}ویرایش پروفایل\n\nهزینه هر تغییر: ${cost} مانو کوین\nجنسیت بعد از ثبت قابل تغییر نیست.`, profileEditKeyboard(me)); }
 function profileFieldIsSet(me, field) { return field === 'country_code' ? me?.country_code === 'IR' : me?.[field] !== null && me?.[field] !== undefined && String(me?.[field]).trim() !== ''; }
+async function profileEditCost(client) {
+  const value = await botSettingValue(client, 'profile_edit_cost', '1');
+  const cost = Number(value);
+  return /^\d+$/.test(String(value)) && Number.isSafeInteger(cost) && cost <= 2147483647 ? cost : 1;
+}
+function profileEditingState(state) {
+  const match = String(state || '').match(/^profile:editing:([^:]+):(\d+):([a-f0-9]{8})$/);
+  return match && PROFILE_FIELDS.includes(match[1]) ? { field: match[1], cost: Number(match[2]), nonce: match[3], state } : null;
+}
 function profileChangeError(field, error) {
   const code = String(error?.message || error);
   console.error('profile_change_error', { field, error: code.slice(0, 240) });
@@ -1268,51 +1277,76 @@ function profileChangeError(field, error) {
   if (code === 'profile_field_locked') return 'این بخش از پروفایل قابل تغییر نیست.';
   return `ذخیره ${PROFILE_FIELD_LABELS[field] || 'اطلاعات پروفایل'} انجام نشد؛ دوباره تلاش کن.`;
 }
-async function profileChange(client, id, field, value, { initial = false } = {}) {
-  const existingUser = await user(client, id);
-  if (!PROFILE_FIELDS.includes(field) || field === 'gender' && (existingUser?.profile_gender_locked || (existingUser?.gender !== null && existingUser?.gender !== undefined && String(existingUser.gender).trim() !== ''))) throw new Error('profile_field_locked');
-  const me = await user(client, id); if (!me) throw new Error('user_missing');
-  const alreadySet = profileFieldIsSet(me, field);
+async function profileChange(client, id, field, value, { initial = false, edit = null } = {}) {
+  if (!PROFILE_FIELDS.includes(field)) throw new Error('profile_field_locked');
   await client.query('BEGIN');
   try {
-    if (alreadySet && !initial) {
-      const rawCost = Number(await botSettingValue(client, 'profile_edit_cost', '1'));
-      const cost = Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : 1;
+    const me = (await client.query('SELECT * FROM users WHERE telegram_id=$1 FOR UPDATE', [id])).rows[0];
+    if (!me) throw new Error('user_missing');
+    if (edit && (me.action_state !== edit.state || edit.field !== field)) throw new Error('profile_edit_expired');
+    if (edit && field === 'county_code' && edit.province && String(me.province_code) !== edit.province) throw new Error('profile_edit_expired');
+    if (field === 'gender' && (me.profile_gender_locked || profileFieldIsSet(me, field))) throw new Error('profile_field_locked');
+    const alreadySet = profileFieldIsSet(me, field);
+    const unchanged = edit && alreadySet && String(me[field]) === String(value);
+    const cost = alreadySet && !initial ? await profileEditCost(client) : 0;
+    if (edit && !unchanged && cost !== edit.cost) throw new Error('profile_fee_changed');
+    if (!unchanged && alreadySet && !initial) {
       if (cost > 0) await applyCoinDelta(client, { userId: id, delta: -cost, kind: 'profile_edit', idempotencyKey: newFinanceIdempotencyKey(`profile-edit:${id}:${field}`), metadata: { field, value } });
     }
     const locked = field === 'gender' ? ', profile_gender_locked=TRUE' : '';
-    await client.query(`UPDATE users SET ${field}=$2, profile_updated_at=NOW(), updated_at=NOW()${locked} WHERE telegram_id=$1`, [id, value]);
+    if (edit && unchanged) await client.query("UPDATE users SET action_state='profile:editing', updated_at=NOW() WHERE telegram_id=$1", [id]);
+    else await client.query(`UPDATE users SET ${field}=$2, profile_updated_at=NOW(), updated_at=NOW()${locked}${edit ? ", action_state='profile:editing'" : ''} WHERE telegram_id=$1`, [id, value]);
     await client.query('COMMIT');
+    return { unchanged: Boolean(unchanged) };
   } catch (error) { await client.query('ROLLBACK'); throw error; }
 }
-async function beginProfileSetup(client, id, settings, { field = null, force = false } = {}) {
+async function beginProfileSetup(client, id, settings, { field = null, force = false, editing = false, notice = '' } = {}) {
   const me = await ensureUser(client, id); const mode = profileMode(settings, me, id);
   if (!force && mode === 'off') return false;
   const target = field || profileMissingFields(me)[0] || 'display_name';
-  const editingExistingField = Boolean(field) && profileFieldIsSet(me, target);
-  const rawCost = editingExistingField ? Number(await botSettingValue(client, 'profile_edit_cost', '1')) : null;
-  const editCost = editingExistingField && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : 0;
-  const feeNotice = editingExistingField ? `\n\nکارمزد تغییر این بخش: ${editCost} مانوکوین` : '';
-  await updateAction(client, id, `profile:setup:${target}`);
-  if (target === 'profile_photo_file_id') return send(id, `${settings.profile_photo_prompt || 'عکس پروفایلت را بفرست یا دکمه بازگشت را بزن.'}${feeNotice}`, profileSkipKeyboard());
-  if (target === 'display_name') return send(id, `${settings.profile_name_prompt || 'نامت را بفرست.'}${feeNotice}`, profileSkipKeyboard());
-  if (target === 'age') return send(id, `${settings.profile_age_prompt || 'سنت را انتخاب کن.'}${feeNotice}`, profileAgeKeyboard());
-  if (target === 'country_code') return send(id, `کشورت را انتخاب کن.${feeNotice}`, profileCountryKeyboard(settings));
-  if (target === 'province_code') return send(id, `${settings.profile_province_prompt || 'استانت را انتخاب کن.'}${feeNotice}`, profileProvinceKeyboard());
-  if (target === 'county_code') return send(id, `${settings.profile_county_prompt || 'شهرستانت را انتخاب کن.'}${feeNotice}`, profileCountyKeyboard(me.province_code));
-  if (target === 'gender') return send(id, `${settings.profile_gender_prompt || 'جنسیتت را انتخاب کن؛ این گزینه بعداً قابل تغییر نیست.'}${feeNotice}`, profileGenderKeyboard());
+  const editCost = editing && profileFieldIsSet(me, target) ? await profileEditCost(client) : 0;
+  const nonce = editing ? crypto.randomBytes(4).toString('hex') : '';
+  const feeNotice = editing ? `\n\nکارمزد تغییر این بخش: ${editCost} مانوکوین` : '';
+  const prefix = notice ? `${notice}\n\n` : '';
+  await updateAction(client, id, editing ? `profile:editing:${target}:${editCost}:${nonce}` : `profile:setup:${target}`);
+  if (target === 'profile_photo_file_id') return send(id, `${prefix}${settings.profile_photo_prompt || 'عکس پروفایلت را بفرست یا دکمه بازگشت را بزن.'}${feeNotice}`, profileSkipKeyboard());
+  if (target === 'display_name') return send(id, `${prefix}${settings.profile_name_prompt || 'نامت را بفرست.'}${feeNotice}`, profileSkipKeyboard());
+  if (target === 'age') return send(id, `${prefix}${settings.profile_age_prompt || 'سنت را انتخاب کن.'}${feeNotice}`, profileAgeKeyboard({ nonce }));
+  if (target === 'country_code') return send(id, `${prefix}کشورت را انتخاب کن.${feeNotice}`, profileCountryKeyboard(settings, { nonce }));
+  if (target === 'province_code') return send(id, `${prefix}${settings.profile_province_prompt || 'استانت را انتخاب کن.'}${feeNotice}`, profileProvinceKeyboard({ nonce }));
+  if (target === 'county_code') return send(id, `${prefix}${settings.profile_county_prompt || 'شهرستانت را انتخاب کن.'}${feeNotice}`, profileCountyKeyboard(me.province_code, { editing, nonce }));
+  if (target === 'gender') return send(id, `${prefix}${settings.profile_gender_prompt || 'جنسیتت را انتخاب کن؛ این گزینه بعداً قابل تغییر نیست.'}${feeNotice}`, profileGenderKeyboard());
   return false;
+}
+async function saveProfileEdit(client, id, settings, field, value, edit) {
+  try {
+    const result = await profileChange(client, id, field, value, { edit });
+    return sendProfileEdit(client, id, result.unchanged ? 'این مقدار تغییری نکرد؛ مانوکوینی کسر نشد.' : `${PROFILE_FIELD_LABELS[field]} ذخیره شد.`);
+  } catch (error) {
+    if (error.message === 'profile_fee_changed') return beginProfileSetup(client, id, settings, { field, force: true, editing: true, notice: 'کارمزد تغییر کرده است؛ لطفاً مبلغ جدید را بررسی و دوباره انتخاب کن.' });
+    if (error.message === 'profile_edit_expired') return send(id, 'این انتخاب قدیمی است؛ دوباره از منوی ویرایش انتخاب کن.');
+    return send(id, profileChangeError(field, error));
+  }
+}
+async function advanceProfileSetup(client, id, settings, field) {
+  const updated = await user(client, id);
+  const currentIndex = PROFILE_FIELDS.indexOf(field);
+  const next = profileMissingFields(updated).find(item => PROFILE_FIELDS.indexOf(item) > currentIndex);
+  if (next && profileMode(settings, updated, id) !== 'off') return beginProfileSetup(client, id, settings, { field: next, force: true });
+  await updateAction(client, id, null);
+  return send(id, settings.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(settings));
 }
 async function sendProfile(id, settings) {
   const client = await pool.connect();
   try {
     const me = await ensureUser(client, id);
     const markup = profileKeyboard(settings, me);
+    const payload = profilePayload(me, id);
     if (me.profile_photo_file_id) {
-      try { return await telegram('sendPhoto', { chat_id: id, photo: me.profile_photo_file_id, caption: profileText(me, id), protect_content: await privacyProtectionEnabled(), reply_markup: markup.reply_markup || markup }); }
+      try { return await telegram('sendPhoto', { chat_id: id, photo: me.profile_photo_file_id, caption: payload.text, ...(payload.entities?.length ? { caption_entities: payload.entities } : {}), protect_content: await privacyProtectionEnabled(), reply_markup: markup.reply_markup || markup }); }
       catch { /* fall back to a text profile if Telegram rejects the stored file id */ }
     }
-    return send(id, profileText(me, id), markup);
+    return send(id, payload, markup);
   } finally { client.release(); }
 }
 async function sendPartnerProfile(client, id, settings) {
@@ -2091,7 +2125,7 @@ async function handleMandatoryTrackingCallback(id, data) {
 
 function isAdminActivityCallback(data) { return /^(admins:(toggle|perm|role_set|delete)|admin:(?!.*:(back|list|view|open|noop)$)|bonus:(toggle|amount)|conversation:(permission|entertainment)|referral:(staged_toggle|power_toggle|condition:)|financecard:(toggle|button|delete_confirm)|wallet:(auto|monitor)|gift:(cancel|increase)|mandatory:(activate|schedule|pause|cancel|resume|audience:confirm))/.test(String(data || '')); }
 function adminTextActivityDetails(state, value) { const sensitive = String(state || '').includes('admin:message'); return { state: String(state || 'پنل اصلی').slice(0, 180), text: sensitive ? `[متن پیام خصوصی، ${String(value || '').length} نویسه]` : String(value || '').slice(0, 300) }; }
-async function handleCallback(id, data, callbackQuery = null) {
+export async function handleCallback(id, data, callbackQuery = null) {
   if (isAdmin(id) && /^mandatory:/.test(String(data || ''))) { const activityClient = await pool.connect(); try { await audit(activityClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: 'mandatory', messageId: callbackQuery?.message?.message_id || null }); } finally { activityClient.release(); } }
   if (data.startsWith('mandatory:audience:')) return handleMandatoryAudienceCallback(id, data, callbackQuery);
   if (data === 'mandatory:verify') {
@@ -2170,19 +2204,37 @@ async function handleCallback(id, data, callbackQuery = null) {
     if (isAdmin(id) && data.startsWith('bonus:open:')) { const row = await bonusRow(sClient, data.slice('bonus:open:'.length)); if (!row) return send(id, 'بونوس پیدا نشد.'); return editAudienceCallback(callbackQuery, id, bonusDetailText(row), bonusDetailKeyboard(row)); }
     if (isAdmin(id) && data.startsWith('bonus:toggle:')) { const key = data.slice('bonus:toggle:'.length); await sClient.query('UPDATE bonus_settings SET enabled=NOT enabled,updated_at=NOW() WHERE bonus_key=$1', [key]); const row = await bonusRow(sClient, key); return editAudienceCallback(callbackQuery, id, bonusDetailText(row), bonusDetailKeyboard(row)); }
     if (isAdmin(id) && data.startsWith('bonus:amount:')) { const key = data.slice('bonus:amount:'.length); const row = await bonusRow(sClient, key); if (!row) return send(id, 'بونوس پیدا نشد.'); const messageId = callbackQuery?.message?.message_id || ''; await updateAction(sClient, id, `admin:bonus:amount:${key}:${messageId}`); return editAudienceCallback(callbackQuery, id, bonusDetailText(row, 'مقدار جدید را به عدد صحیح و غیرمنفی بفرست.'), bonusDetailKeyboard(row)); }
-    if (data === 'profile:edit') { return sendProfileEdit(sClient, id); }
-    if (data === 'profile:back_view') { return sendProfile(id, s); }
+    if (data === 'profile:edit') { await updateAction(sClient, id, 'profile:editing'); return await sendProfileEdit(sClient, id); }
+    if (data === 'profile:back_view') { await updateAction(sClient, id, null); return sendProfile(id, s); }
     if (data === 'profile:skip') {
       if (profileMode(s, me, id) === 'required') return send(id, 'تکمیل پروفایل برای شما اجباری است؛ این مرحله را رد نکن.', profileSkipKeyboard());
       await updateAction(sClient, id, null); return send(id, 'ثبت پروفایل فعلاً رد شد.', mainKeyboard(s));
     }
-    if (data === 'profile:province_menu') return editAudienceCallback(callbackQuery, id, s.profile_province_prompt || 'استانت را انتخاب کن.', profileProvinceKeyboard());
-    if (data === 'profile:country:IR') { try { await profileChange(sClient, id, 'country_code', 'IR'); } catch (error) { return send(id, profileChangeError('country_code', error)); } await updateAction(sClient, id, 'profile:setup:province_code'); return editAudienceCallback(callbackQuery, id, s.profile_province_prompt || 'استانت را انتخاب کن.', profileProvinceKeyboard()); }
-    if (data.startsWith('profile:age:')) { const age = Number(data.split(':')[2]); if (age < 15 || age > 80) return send(id, 'سن باید بین ۱۵ تا ۸۰ سال باشد.'); try { await profileChange(sClient, id, 'age', age); } catch (error) { return send(id, profileChangeError('age', error)); } await updateAction(sClient, id, 'profile:setup:country_code'); return editAudienceCallback(callbackQuery, id, s.profile_country_label || 'کشورت را انتخاب کن.', profileCountryKeyboard(s)); }
-    if (data.startsWith('profile:province:')) { const code = data.split(':')[2]; if (!provinceByCode(code)) return send(id, 'استان انتخاب‌شده معتبر نیست.'); try { await profileChange(sClient, id, 'province_code', code); } catch (error) { return send(id, profileChangeError('province_code', error)); } await updateAction(sClient, id, 'profile:setup:county_code'); return editAudienceCallback(callbackQuery, id, s.profile_county_prompt || 'شهرستانت را انتخاب کن.', profileCountyKeyboard(code)); }
-    if (data.startsWith('profile:county:')) { const [, , province, index] = data.split(':'); const label = countyLabels(province)[Number(index)]; if (!label) return send(id, 'شهرستان انتخاب‌شده معتبر نیست.'); try { await profileChange(sClient, id, 'county_code', label); } catch (error) { return send(id, profileChangeError('county_code', error)); } await updateAction(sClient, id, 'profile:setup:gender'); return editAudienceCallback(callbackQuery, id, s.profile_gender_prompt || 'جنسیتت را انتخاب کن؛ این گزینه بعداً قابل تغییر نیست.', profileGenderKeyboard()); }
-    if (data.startsWith('profile:gender:')) { const gender = data.split(':')[2]; if (!['male', 'female'].includes(gender)) return send(id, 'جنسیت معتبر نیست.'); try { await profileChange(sClient, id, 'gender', gender); } catch (error) { return send(id, profileChangeError('gender', error)); } await updateAction(sClient, id, null); return send(id, s.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(s)); }
-    if (data.startsWith('profile:edit:')) { const field = data.slice('profile:edit:'.length); if (!PROFILE_FIELDS.includes(field) || field === 'gender') return send(id, 'این گزینه قابل ویرایش نیست.'); return beginProfileSetup(sClient, id, s, { field, force: true }); }
+    if (data === 'profile:province_menu') return await beginProfileSetup(sClient, id, s, { field: 'province_code', force: true });
+    if (/^profile:(country|age|province|county|gender):/.test(data)) {
+      const parts = data.split(':'); const choice = parts[1];
+      const field = { country: 'country_code', age: 'age', province: 'province_code', county: 'county_code', gender: 'gender' }[choice];
+      let value = parts[2]; let nonce = parts[3]; let province = null;
+      if (field === 'country_code' && value !== 'IR') return send(id, 'کشور انتخاب‌شده معتبر نیست.');
+      if (field === 'age') { value = Number(value); if (!Number.isInteger(value) || value < 15 || value > 80) return send(id, 'سن باید بین ۱۵ تا ۸۰ سال باشد.'); }
+      if (field === 'province_code' && !provinceByCode(value)) return send(id, 'استان انتخاب‌شده معتبر نیست.');
+      if (field === 'county_code') {
+        province = parts[2]; const index = parts[3]; nonce = parts[4];
+        if (!/^\d+$/.test(index || '') || String(me.province_code) !== province) return send(id, 'شهرستان انتخاب‌شده معتبر نیست.');
+        value = countyLabels(province)[Number(index)];
+        if (!value) return send(id, 'شهرستان انتخاب‌شده معتبر نیست.');
+      }
+      if (field === 'gender' && !['male', 'female'].includes(value)) return send(id, 'جنسیت معتبر نیست.');
+      const edit = profileEditingState(me.action_state);
+      if (edit) {
+        if (edit.field !== field || nonce !== edit.nonce) return send(id, 'این انتخاب قدیمی است؛ دوباره از منوی ویرایش انتخاب کن.');
+        return await saveProfileEdit(sClient, id, s, field, value, { ...edit, province });
+      }
+      if (me.action_state !== `profile:setup:${field}`) return send(id, 'این انتخاب قدیمی است؛ دوباره از منوی پروفایل انتخاب کن.');
+      try { await profileChange(sClient, id, field, value, { initial: true }); } catch (error) { return send(id, profileChangeError(field, error)); }
+      return await advanceProfileSetup(sClient, id, s, field);
+    }
+    if (data.startsWith('profile:edit:')) { const field = data.slice('profile:edit:'.length); if (!PROFILE_FIELDS.includes(field) || field === 'gender') return send(id, 'این گزینه قابل ویرایش نیست.'); return await beginProfileSetup(sClient, id, s, { field, force: true, editing: true }); }
     if (data === 'profile:emoji') {
       const me = await user(sClient, id);
       const role = premiumRole(me, id);
@@ -3049,12 +3101,51 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
   return delivered;
 }
 
-async function handleText(id, text, meta = {}) {
+export async function handleText(id, text, meta = {}) {
   const client = await pool.connect();
   let released = false;
   try {
     const me = await ensureUser(client, id); const s = await settings(client);
     const value = text.trim();
+    // A profile navigation button must not be mistaken for a name or another field.
+    // Other chat/admin input states retain their existing precedence.
+    if (String(me.action_state || '').startsWith('profile:') && (value === 'پروفایل من' || value === s.profile_button || dynamicPublicAction(value, s) === 'profile')) {
+      await updateAction(client, id, null); return sendProfile(id, s);
+    }
+    const edit = profileEditingState(me.action_state);
+    if (edit) {
+      const field = edit.field;
+      if (value === 'بازگشت' || value === (s.back_button || 'بازگشت')) { await updateAction(client, id, 'profile:editing'); return await sendProfileEdit(client, id); }
+      if (field === 'display_name') {
+        if (!value || value.length > 60) return send(id, 'نام باید بین ۱ تا ۶۰ نویسه باشد.', profileSkipKeyboard());
+        return await saveProfileEdit(client, id, s, field, value, edit);
+      }
+      if (field === 'profile_photo_file_id') {
+        const fileId = meta.message?.photo?.at(-1)?.file_id;
+        if (!fileId) return send(id, 'یک عکس بفرست یا دکمهٔ بازگشت را بزن.', profileSkipKeyboard());
+        return await saveProfileEdit(client, id, s, field, fileId, edit);
+      }
+      if (field === 'age') {
+        const age = Number(value);
+        if (!Number.isInteger(age) || age < 15 || age > 80) return send(id, 'سن را از گزینه‌های موجود انتخاب کن.', profileAgeKeyboard({ nonce: edit.nonce }));
+        return await saveProfileEdit(client, id, s, field, age, edit);
+      }
+      if (field === 'country_code') {
+        if (value !== (s.profile_country_label || 'ایران')) return send(id, 'کشور را از گزینهٔ موجود انتخاب کن.', profileCountryKeyboard(s, { nonce: edit.nonce }));
+        return await saveProfileEdit(client, id, s, field, 'IR', edit);
+      }
+      if (field === 'province_code') {
+        const province = IRAN_PROVINCES.find(([, label]) => label === value);
+        if (!province) return send(id, 'استان را از گزینه‌های موجود انتخاب کن.', profileProvinceKeyboard({ nonce: edit.nonce }));
+        return await saveProfileEdit(client, id, s, field, province[0], edit);
+      }
+      if (field === 'county_code') {
+        if (!countyLabels(me.province_code).includes(value)) return send(id, 'شهرستان را از گزینه‌های موجود انتخاب کن.', profileCountyKeyboard(me.province_code, { editing: true, nonce: edit.nonce }));
+        return await saveProfileEdit(client, id, s, field, value, { ...edit, province: String(me.province_code) });
+      }
+      return send(id, 'از دکمه‌های همین مرحله استفاده کن.');
+    }
+    if (me.action_state === 'profile:editing' && (value === 'بازگشت' || value === (s.back_button || 'بازگشت'))) { await updateAction(client, id, null); return sendProfile(id, s); }
     if (me.action_state?.startsWith('profile:setup:')) {
       const field = me.action_state.slice('profile:setup:'.length);
       if (value === 'بازگشت' || value === (s.back_button || 'بازگشت')) { await updateAction(client, id, null); return sendProfile(id, s); }
@@ -3064,52 +3155,47 @@ async function handleText(id, text, meta = {}) {
       if (field === 'age') {
         const age = Number(value);
         if (!Number.isInteger(age) || age < 15 || age > 80) return send(id, 'سن را از گزینه‌های موجود انتخاب کن.', profileAgeKeyboard());
-        try { await profileChange(client, id, 'age', age); } catch (error) { return send(id, profileChangeError('age', error), profileAgeKeyboard()); }
-        return beginProfileSetup(client, id, s, { field: 'country_code', force: true });
+        try { await profileChange(client, id, 'age', age, { initial: true }); } catch (error) { return send(id, profileChangeError('age', error), profileAgeKeyboard()); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'country_code') {
         if (value !== (s.profile_country_label || 'ایران')) return send(id, 'کشور را از گزینهٔ موجود انتخاب کن.', profileCountryKeyboard(s));
-        try { await profileChange(client, id, 'country_code', 'IR'); } catch (error) { return send(id, profileChangeError('country_code', error), profileCountryKeyboard(s)); }
-        return beginProfileSetup(client, id, s, { field: 'province_code', force: true });
+        try { await profileChange(client, id, 'country_code', 'IR', { initial: true }); } catch (error) { return send(id, profileChangeError('country_code', error), profileCountryKeyboard(s)); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'province_code') {
         const province = IRAN_PROVINCES.find(([, label]) => label === value);
         if (!province) return send(id, 'استان را از گزینه‌های موجود انتخاب کن.', profileProvinceKeyboard());
-        try { await profileChange(client, id, 'province_code', province[0]); } catch (error) { return send(id, profileChangeError('province_code', error), profileProvinceKeyboard()); }
-        return beginProfileSetup(client, id, s, { field: 'county_code', force: true });
+        try { await profileChange(client, id, 'province_code', province[0], { initial: true }); } catch (error) { return send(id, profileChangeError('province_code', error), profileProvinceKeyboard()); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'county_code') {
         const province = provinceByCode(me.province_code);
         if (!province || !countyLabels(me.province_code).includes(value)) return send(id, 'شهرستان را از گزینه‌های موجود انتخاب کن.', profileCountyKeyboard(me.province_code));
-        try { await profileChange(client, id, 'county_code', value); } catch (error) { return send(id, profileChangeError('county_code', error), profileCountyKeyboard(me.province_code)); }
-        return beginProfileSetup(client, id, s, { field: 'gender', force: true });
+        try { await profileChange(client, id, 'county_code', value, { initial: true }); } catch (error) { return send(id, profileChangeError('county_code', error), profileCountyKeyboard(me.province_code)); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'gender') {
         const gender = value === 'پسرم' ? 'male' : value === 'دخترم' ? 'female' : null;
         if (!gender) return send(id, 'جنسیت را از گزینه‌های موجود انتخاب کن.', profileGenderKeyboard());
-        try { await profileChange(client, id, 'gender', gender); } catch (error) { return send(id, profileChangeError('gender', error), profileGenderKeyboard()); }
-        await updateAction(client, id, null);
-        return send(id, s.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(s));
+        try { await profileChange(client, id, 'gender', gender, { initial: true }); } catch (error) { return send(id, profileChangeError('gender', error), profileGenderKeyboard()); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'profile_photo_file_id') {
         const fileId = meta.message?.photo?.at(-1)?.file_id;
         if (!fileId) return send(id, s.profile_photo_prompt || 'یک عکس بفرست یا گزینه رد کردن را بزن.', profileSkipKeyboard());
-        try { await profileChange(client, id, field, fileId); } catch (error) { return send(id, profileChangeError(field, error)); }
-        const updated = await user(client, id); const next = profileMissingFields(updated)[0] || null;
-        if (next && profileMode(s, updated, id) !== 'off') return beginProfileSetup(client, id, s, { field: next, force: true });
-        await updateAction(client, id, null); return send(id, s.profile_saved_message || 'عکس پروفایل ذخیره شد.', mainKeyboard(s));
+        try { await profileChange(client, id, field, fileId, { initial: true }); } catch (error) { return send(id, profileChangeError(field, error)); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       if (field === 'display_name') {
         if (!value || value.length > 60) return send(id, 'نام باید بین ۱ تا ۶۰ نویسه باشد.', profileSkipKeyboard());
-        try { await profileChange(client, id, field, value); } catch (error) { return send(id, profileChangeError(field, error)); }
-        const updated = await user(client, id); const next = profileMissingFields(updated).find(item => item !== 'profile_photo_file_id') || null;
-        if (next && profileMode(s, updated, id) !== 'off') return beginProfileSetup(client, id, s, { field: next, force: true });
-        await updateAction(client, id, null); return send(id, s.profile_saved_message || 'نام ذخیره شد.', mainKeyboard(s));
+        try { await profileChange(client, id, field, value, { initial: true }); } catch (error) { return send(id, profileChangeError(field, error)); }
+        return await advanceProfileSetup(client, id, s, field);
       }
       return send(id, 'از دکمه‌های همین مرحله استفاده کن.');
     }
     if (isAdmin(id) && me.action_state === 'admin:profile:cost') {
-      if (!/^\d+$/.test(value)) return send(id, 'هزینه باید عدد صحیح صفر یا بیشتر باشد.');
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > 2147483647) return send(id, 'هزینه باید عدد صحیح بین صفر و ۲۱۴۷۴۸۳۶۴۷ باشد.');
       await saveBotSetting(client, 'profile_edit_cost', String(Number(value))); await updateAction(client, id, null); const updated = await settings(client);
       return send(id, profileAdminText(updated), profileAdminKeyboard(updated));
     }

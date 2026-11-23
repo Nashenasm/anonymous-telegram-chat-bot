@@ -9,6 +9,7 @@ export const FINANCE_LEDGER_KINDS = Object.freeze({
   purchase: 'purchase',
   admin: 'admin',
   refund: 'refund',
+  profile_edit: 'profile_edit',
 });
 
 export function newFinanceIdempotencyKey(prefix = 'finance') {
