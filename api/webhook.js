@@ -290,11 +290,22 @@ function profileEditKeyboard(me) {
   rows.push([{ text: 'بازگشت به پروفایل', callback_data: 'profile:back_view' }]);
   return { reply_markup: { inline_keyboard: rows } };
 }
-function profileSkipKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'فعلاً رد می‌کنم', callback_data: 'profile:skip' }]] } }; }
-function profileAgeKeyboard() { const rows = []; for (let age = 15; age <= 80; age += 1) { if (!rows.length || rows.at(-1).length >= 5) rows.push([]); rows.at(-1).push({ text: String(age), callback_data: `profile:age:${age}` }); } rows.push([{ text: 'بازگشت', callback_data: 'profile:edit' }]); return { reply_markup: { inline_keyboard: rows } }; }
-function profileProvinceKeyboard() { const rows = IRAN_PROVINCES.map(([code, label]) => [{ text: label, callback_data: `profile:province:${code}` }]); rows.push([{ text: 'بازگشت', callback_data: 'profile:edit' }]); return { reply_markup: { inline_keyboard: rows } }; }
-function profileCountyKeyboard(provinceCode) { const rows = countyLabels(provinceCode).map((label, index) => [{ text: label, callback_data: `profile:county:${provinceCode}:${index}` }]); rows.push([{ text: 'بازگشت', callback_data: 'profile:province_menu' }]); return { reply_markup: { inline_keyboard: rows } }; }
-function profileGenderKeyboard() { return { reply_markup: { inline_keyboard: [[{ text: 'پسرم', callback_data: 'profile:gender:male' }, { text: 'دخترم', callback_data: 'profile:gender:female' }]] } }; }
+function profileBackKeyboard() { return replyKeyboard([['بازگشت']], true); }
+function profileChoiceRows(items, columns = 4) { const rows = []; for (const item of items) { if (!rows.length || rows.at(-1).length >= columns) rows.push([]); rows.at(-1).push(item); } return rows; }
+function profileSkipKeyboard() { return profileBackKeyboard(); }
+function profileAgeKeyboard() {
+  const choices = Array.from({ length: 66 }, (_, index) => String(index + 15));
+  return replyKeyboard([...profileChoiceRows(choices), ['بازگشت']], true);
+}
+function profileProvinceKeyboard() {
+  const choices = IRAN_PROVINCES.map(([, label]) => label);
+  return replyKeyboard([...profileChoiceRows(choices), ['بازگشت']], true);
+}
+function profileCountyKeyboard(provinceCode) {
+  return replyKeyboard([...profileChoiceRows(countyLabels(provinceCode)), ['بازگشت']], true);
+}
+function profileCountryKeyboard(settings) { return replyKeyboard([[settings.profile_country_label || 'ایران'], ['بازگشت']], true); }
+function profileGenderKeyboard() { return replyKeyboard([['پسرم', 'دخترم'], ['بازگشت']], true); }
 function increaseCoinsKeyboard(settings) { const rows = [[{ text: 'مانو کوین روزانه👍', callback_data: 'coins:daily' }], [{ text: 'کد هدیه🎁', callback_data: 'coins:gift' }], [{ text: 'خرید مانوکوین🛍', callback_data: 'coins:buy' }]]; if (settings?.referral_power_enabled !== 'false') rows.splice(1, 0, [{ text: 'زیرمجموعه‌گیری🔗', callback_data: 'coins:free' }]); rows.push([{ text: 'برگشت', callback_data: 'coins:back' }]); return { reply_markup: { inline_keyboard: rows } }; }
 function emojiKeyboard(settings) { return replyKeyboard([['ریست ایموجی'], [settings.back_button || 'بازگشت']], true); }
 function plusKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'plus', [[settings.back_button]]), true); }
@@ -1267,7 +1278,7 @@ async function beginProfileSetup(client, id, settings, { field = null, force = f
   if (target === 'profile_photo_file_id') return send(id, settings.profile_photo_prompt || 'عکس پروفایلت را بفرست یا دکمه رد کردن را بزن.', profileSkipKeyboard());
   if (target === 'display_name') return send(id, settings.profile_name_prompt || 'نامت را بفرست.', profileSkipKeyboard());
   if (target === 'age') return send(id, settings.profile_age_prompt || 'سنت را انتخاب کن.', profileAgeKeyboard());
-  if (target === 'country_code') return editAudienceCallback(null, id, 'کشورت را انتخاب کن.', { reply_markup: { inline_keyboard: [[{ text: settings.profile_country_label || 'ایران', callback_data: 'profile:country:IR' }]] } });
+  if (target === 'country_code') return send(id, 'کشورت را انتخاب کن.', profileCountryKeyboard(settings));
   if (target === 'province_code') return send(id, settings.profile_province_prompt || 'استانت را انتخاب کن.', profileProvinceKeyboard());
   if (target === 'county_code') return send(id, settings.profile_county_prompt || 'شهرستانت را انتخاب کن.', profileCountyKeyboard(me.province_code));
   if (target === 'gender') return send(id, settings.profile_gender_prompt || 'جنسیتت را انتخاب کن؛ این گزینه بعداً قابل تغییر نیست.', profileGenderKeyboard());
@@ -3029,8 +3040,37 @@ async function handleText(id, text, meta = {}) {
       const field = me.action_state.slice('profile:setup:'.length);
       if (value === 'بازگشت' || value === (s.back_button || 'بازگشت')) { await updateAction(client, id, null); return sendProfile(id, s); }
       if (value === 'فعلاً رد می‌کنم') {
-        if (profileMode(s, me, id) === 'required') return send(id, 'تکمیل پروفایل برای شما اجباری است؛ این مرحله را رد نکن.', profileSkipKeyboard());
-        await updateAction(client, id, null); return send(id, 'ثبت پروفایل فعلاً رد شد.', mainKeyboard(s));
+        return send(id, 'برای ادامه، دکمهٔ بازگشت را بزن.', profileBackKeyboard());
+      }
+      if (field === 'age') {
+        const age = Number(value);
+        if (!Number.isInteger(age) || age < 15 || age > 80) return send(id, 'سن را از گزینه‌های موجود انتخاب کن.', profileAgeKeyboard());
+        try { await profileChange(client, id, 'age', age); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی برای تغییر سن کافی نیست.' : 'ذخیره سن انجام نشد.', profileAgeKeyboard()); }
+        return beginProfileSetup(client, id, s, { field: 'country_code', force: true });
+      }
+      if (field === 'country_code') {
+        if (value !== (s.profile_country_label || 'ایران')) return send(id, 'کشور را از گزینهٔ موجود انتخاب کن.', profileCountryKeyboard(s));
+        try { await profileChange(client, id, 'country_code', 'IR'); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی برای تغییر کشور کافی نیست.' : 'ذخیره کشور انجام نشد.', profileCountryKeyboard(s)); }
+        return beginProfileSetup(client, id, s, { field: 'province_code', force: true });
+      }
+      if (field === 'province_code') {
+        const province = IRAN_PROVINCES.find(([, label]) => label === value);
+        if (!province) return send(id, 'استان را از گزینه‌های موجود انتخاب کن.', profileProvinceKeyboard());
+        try { await profileChange(client, id, 'province_code', province[0]); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی برای تغییر استان کافی نیست.' : 'ذخیره استان انجام نشد.', profileProvinceKeyboard()); }
+        return beginProfileSetup(client, id, s, { field: 'county_code', force: true });
+      }
+      if (field === 'county_code') {
+        const province = provinceByCode(me.province_code);
+        if (!province || !countyLabels(me.province_code).includes(value)) return send(id, 'شهرستان را از گزینه‌های موجود انتخاب کن.', profileCountyKeyboard(me.province_code));
+        try { await profileChange(client, id, 'county_code', value); } catch (error) { return send(id, error.message === 'insufficient_coins' ? 'موجودی برای تغییر شهرستان کافی نیست.' : 'ذخیره شهرستان انجام نشد.', profileCountyKeyboard(me.province_code)); }
+        return beginProfileSetup(client, id, s, { field: 'gender', force: true });
+      }
+      if (field === 'gender') {
+        const gender = value === 'پسرم' ? 'male' : value === 'دخترم' ? 'female' : null;
+        if (!gender) return send(id, 'جنسیت را از گزینه‌های موجود انتخاب کن.', profileGenderKeyboard());
+        try { await profileChange(client, id, 'gender', gender); } catch (error) { return send(id, error.message === 'profile_field_locked' ? 'جنسیت قبلاً ثبت شده و قابل تغییر نیست.' : error.message === 'insufficient_coins' ? 'موجودی برای تغییر جنسیت کافی نیست.' : 'ذخیره جنسیت انجام نشد.', profileGenderKeyboard()); }
+        await updateAction(client, id, null);
+        return send(id, s.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(s));
       }
       if (field === 'profile_photo_file_id') {
         const fileId = meta.message?.photo?.at(-1)?.file_id;
