@@ -273,7 +273,13 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
-function mainKeyboard(settings) { const a = publicAppearance(settings); return replyKeyboard(appearanceKeyboard(a)); }
+function mainKeyboard(settings) {
+  const a = publicAppearance(settings);
+  const rows = appearanceKeyboard(a);
+  const profileLabel = settings.profile_button || 'پروفایل من';
+  if (!rows.some(row => Array.isArray(row) && row.includes(profileLabel))) rows.push([profileLabel]);
+  return replyKeyboard(rows);
+}
 function profileKeyboard(settings, me) {
   const numericId = String(me?.telegram_id || '');
   const rows = [[{ text: numericId, copy_text: { text: numericId } }]];
@@ -3694,6 +3700,9 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, feedbackMessagePayload(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard(s)); }
     if (privateAction === 'admins') return send(id, joinTextPayloads([feedbackMessagePayload(privateAppearance(s), 'admins', 'مدیران فعلی'), [...adminIds()].join('\n') || 'ثبت نشده'], '\n\n'), adminMainKeyboard(s,id));
     if (privateAction === 'exit') { await updateAction(client, id, null); return send(id, feedbackMessagePayload(privateAppearance(s), 'exit', 'از پنل مدیریت خارج شدی.'), mainKeyboard(s)); }
+    // Always keep the user's own profile independent from editable appearance mappings.
+    // This must never be confused with the partner-profile action used inside a chat.
+    if (value === (s.profile_button || 'پروفایل من') || value === 'پروفایل من') return sendProfile(id, s);
     const publicAction = dynamicPublicAction(value, s);
     if (publicAction === 'connect') { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
     if (publicAction === 'anonymous_link') { client.release(); released = true; return flowFor(s).handleLinkButton(id); }
