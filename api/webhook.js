@@ -478,16 +478,20 @@ async function sendChatGift(client, senderId, recipientId, type, amount) {
       }
       throw error;
     }
+    const gift = (await client.query(
+      'INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4) RETURNING id',
+      [senderId, recipientId, type, amount],
+    )).rows[0];
     if (type === 'coins') {
       await applyCoinDelta(client, {
         userId: recipientId,
         delta: coinCost,
         kind: 'gift',
-        idempotencyKey: `chat-gift-credit:${senderId}:${recipientId}:${type}:${amount}`,
-        metadata: { senderId, amount: coinCost, source: 'chat_gift', fee, feePercent },
+        idempotencyKey: `chat-gift-credit:${gift.id}`,
+        metadata: { senderId, giftId: gift.id, amount: coinCost, source: 'chat_gift', fee, feePercent },
       });
     } else await client.query("UPDATE users SET plus_expires_at=CASE WHEN $2::int > 0 THEN GREATEST(COALESCE(plus_expires_at,NOW()),NOW()) + ($2 || ' months')::interval ELSE plus_expires_at END,updated_at=NOW() WHERE telegram_id=$1", [recipientId, amount]);
-    await client.query('INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4)', [senderId, recipientId, type, amount]); await client.query('COMMIT');
+    await client.query('COMMIT');
     const label = type === 'coins' ? `${amount} مانو کوین🐝` : `${amount === 12 ? '۱ سال' : `${amount} ماه`} مانو پلاس`;
     try {
       await send(recipientId, `🎁 طرف مکالمه‌ات برایت ${label} هدیه فرستاد. مبارکت باشد!`);

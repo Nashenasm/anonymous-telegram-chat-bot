@@ -125,7 +125,8 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -totalCost, kind: 'gift'");
     expect(source).toContain("userId: recipientId,");
     expect(source).toContain("delta: coinCost,");
-    expect(source).toContain("idempotencyKey: `chat-gift-credit:${senderId}:${recipientId}:${type}:${amount}`");
+    expect(source).toContain("INSERT INTO chat_gifts(sender_id,recipient_id,gift_type,amount) VALUES ($1,$2,$3,$4) RETURNING id");
+    expect(source).toContain("idempotencyKey: `chat-gift-credit:${gift.id}`");
     expect(source).toContain("plus_expires_at=CASE WHEN $2::int > 0");
     expect(source).toContain('error.requiredCoins = totalCost;');
     expect(source).toContain('error.currentCoins = Number(sender.coins || 0);');
