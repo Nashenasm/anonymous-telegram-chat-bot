@@ -123,6 +123,10 @@ describe('anonymous chat public contract', () => {
     expect(source).toContain("const feePercent = Number(await botSettingValue(client, 'chat_gift_fee_percent', '2'));");
     expect(source).toContain("const totalCost = coinCost + fee;");
     expect(source).toContain("applyCoinDelta(client, { userId: senderId, delta: -totalCost, kind: 'gift'");
+    expect(source).toContain("userId: recipientId,");
+    expect(source).toContain("delta: coinCost,");
+    expect(source).toContain("idempotencyKey: `chat-gift-credit:${senderId}:${recipientId}:${type}:${amount}`");
+    expect(source).toContain("plus_expires_at=CASE WHEN $2::int > 0");
     expect(source).toContain('error.requiredCoins = totalCost;');
     expect(source).toContain('error.currentCoins = Number(sender.coins || 0);');
     expect(source).toContain('مجموع لازم:');
