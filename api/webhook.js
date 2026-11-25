@@ -226,6 +226,7 @@ const DEFAULTS = {
   mandatory_verify_button_label: 'بررسی عضویت',
   mandatory_join_button_layout: 'single',
   mandatory_join_show_source_tags: 'true',
+  mini_app_enabled: 'true',
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
@@ -273,6 +274,10 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
+const MINI_APP_BUTTON_LABEL = '🚀 باز کردن Mini App';
+const MINI_APP_TOGGLE_LABEL = 'Mini App: فعال/غیرفعال کردن';
+function miniAppUrl() { return String(process.env.MINI_APP_URL || 'https://bot.manochat.xyz/miniapp').replace(/\/$/, ''); }
+function miniAppButton() { return { text: MINI_APP_BUTTON_LABEL, web_app: { url: miniAppUrl() } }; }
 function mainKeyboard(settings) {
   const a = publicAppearance(settings);
   let profileSeen = false;
@@ -282,7 +287,9 @@ function mainKeyboard(settings) {
     profileSeen = true;
     return true;
   }));
-  return replyKeyboard(appearanceKeyboard({ ...a, buttons }));
+  const rows = appearanceKeyboard({ ...a, buttons });
+  if (settings?.mini_app_enabled === true || settings?.mini_app_enabled === 'true') rows.push([miniAppButton()]);
+  return replyKeyboard(rows);
 }
 function profileKeyboard(settings, me) {
   const numericId = String(me?.telegram_id || '');
@@ -326,7 +333,7 @@ function adminMainKeyboard(settings = {}, adminId = null) { const a = privateApp
 function reportsKeyboard() { return replyKeyboard([['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']], true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
 function adsKeyboard(settings = {}) { return replyKeyboard([['📢 پیام همگانی', '📌 جویین اجباری'], ['👋 پیام خوش‌آمد', '🔗 تبلیغ اتصال'], ['💬 تبلیغ میان مکالمه', '↩️ بازگشت پنل']], true); }
-function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
+function controlKeyboard(settings = {}) { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], [MINI_APP_TOGGLE_LABEL], ['بازگشت پنل']], true); }
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
@@ -821,6 +828,7 @@ async function settings(client) {
   out.appearance_private = normalizeAppearance('private', out.appearance_private);
   out.appearance_public_enabled = out.appearance_public_enabled !== 'false';
   out.appearance_private_enabled = out.appearance_private_enabled !== 'false';
+  out.mini_app_enabled = out.mini_app_enabled !== 'false';
   return { ...out, bot_enabled: out.bot_enabled !== 'false' };
 }
 function publicAppearance(s) { return s?.appearance_public_enabled === false ? normalizeAppearance('public', null) : normalizeAppearance('public', s?.appearance_public); }
@@ -3033,7 +3041,7 @@ function visiblePublicAction(value, s) {
   return legacy[text] || null;
 }
 function botKeyboardLabels(s = {}) {
-  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'Mini App: فعال/غیرفعال کردن', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of (Array.isArray(appearance?.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) {
@@ -3278,7 +3286,7 @@ export async function handleText(id, text, meta = {}) {
     if (value === ANONYMOUS_LINK_BUTTON || firstPublicAction === 'anonymous_link') { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
     // Once a user is actively replying in anonymous mode, the reply text must not be mistaken for a public-menu button.
     if (me.action_state?.startsWith('anon_') && firstPublicAction !== 'connect') { const flow = flowFor(s); client.release(); released = true; return flow.handleText(id, value, me.action_state); }
-    const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
+    const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی','Mini App: فعال/غیرفعال کردن']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
     if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
@@ -3560,6 +3568,13 @@ export async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state === 'admin:control') {
       if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+      if (value === MINI_APP_TOGGLE_LABEL) {
+        if (!isOwner(id)) return send(id, 'این تنظیم فقط برای مالک اصلی ربات فعال است.', controlKeyboard(s));
+        const next = !(s.mini_app_enabled === true || s.mini_app_enabled === 'true');
+        await saveBotSetting(client, 'mini_app_enabled', String(next));
+        const updated = await settings(client);
+        return send(id, `Mini App ${next ? 'فعال' : 'غیرفعال'} شد.\n\n${next ? 'دکمهٔ Mini App برای کاربران نمایش داده می‌شود.' : 'دکمهٔ Mini App برای کاربران نمایش داده نمی‌شود؛ اطلاعات کاربران و موجودی‌ها حذف نشده‌اند.'}`, controlKeyboard(updated));
+      }
       if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'کنترل ربات', controlKeyboard());
     }
@@ -4313,6 +4328,38 @@ export async function duelApi(req, res) {
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
+function miniAppJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  return res.end(JSON.stringify(payload));
+}
+
+function validateMiniAppInitData(initData) {
+  const raw = String(initData || '');
+  const params = new URLSearchParams(raw);
+  const receivedHash = params.get('hash');
+  if (!receivedHash || !process.env.TELEGRAM_BOT_TOKEN) return null;
+  const pairs = [...params.entries()].filter(([key]) => key !== 'hash').sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`);
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(process.env.TELEGRAM_BOT_TOKEN).digest();
+  const calculated = crypto.createHmac('sha256', secret).update(pairs.join('\n')).digest('hex');
+  if (receivedHash.length !== calculated.length || !crypto.timingSafeEqual(Buffer.from(receivedHash), Buffer.from(calculated))) return null;
+  const authDate = Number(params.get('auth_date'));
+  if (!Number.isSafeInteger(authDate) || Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
+  try { return JSON.parse(params.get('user') || '{}'); } catch { return null; }
+}
+
+export async function miniAppApi(req, res) {
+  if (req.method !== 'POST') return miniAppJson(res, 405, { ok: false, error: 'method_not_allowed' });
+  const telegramUser = validateMiniAppInitData(req.body?.initData);
+  const telegramId = Number(telegramUser?.id);
+  if (!telegramUser || !Number.isSafeInteger(telegramId) || telegramId <= 0) return miniAppJson(res, 401, { ok: false, error: 'invalid_init_data' });
+  await ensureRuntimeSchema();
+  const enabled = await botSettingValue(pool, 'mini_app_enabled', 'true') === 'true';
+  if (!enabled && !isOwner(telegramId)) return miniAppJson(res, 403, { ok: false, error: 'mini_app_disabled' });
+  const row = (await pool.query('SELECT telegram_id,username,display_name,profile_photo_file_id,age,country_code,province_code,county_code,coins,plus_expires_at,role FROM users WHERE telegram_id=$1', [telegramId])).rows[0];
+  if (!row) return miniAppJson(res, 404, { ok: false, error: 'user_not_found' });
+  return miniAppJson(res, 200, { ok: true, enabled, user: { ...row, telegram_id: Number(row.telegram_id), coins: Number(row.coins || 0), is_owner: isOwner(telegramId) } });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET; const supplied = req.headers['x-telegram-bot-api-secret-token'];
@@ -4381,4 +4428,4 @@ export async function runMandatoryLifecycle() {
 
 export async function prepareBotDatabase() { return ensureRuntimeSchema(); }
 
-export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, publicAppearance, privateAppearance, appearanceItems, chatGiftFee };
+export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, publicAppearance, privateAppearance, appearanceItems, chatGiftFee, mainKeyboard, controlKeyboard, miniAppUrl };

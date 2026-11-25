@@ -31,8 +31,19 @@ describe('anonymous chat public contract', () => {
       mandatory_verify_button_label: 'بررسی عضویت',
       mandatory_join_button_layout: 'single',
       mandatory_join_show_source_tags: 'true',
+      mini_app_enabled: 'true',
     });
     expect(Object.values(BLOCK_REASONS)).toHaveLength(4);
+  });
+
+  it('exposes a gated Telegram Mini App without mutating existing user balances', () => {
+    expect(source).toContain("const MINI_APP_TOGGLE_LABEL = 'Mini App: فعال/غیرفعال کردن';");
+    expect(source).toContain("if (settings?.mini_app_enabled === true || settings?.mini_app_enabled === 'true') rows.push([miniAppButton()]);");
+    expect(source).toContain("if (!isOwner(id)) return send(id, 'این تنظیم فقط برای مالک اصلی ربات فعال است.'");
+    expect(source).toContain('validateMiniAppInitData');
+    expect(source).toContain("error: 'mini_app_disabled'");
+    expect(serverSource).toContain("requestUrl.pathname === '/miniapp'");
+    expect(serverSource).toContain("requestUrl.pathname === '/api/miniapp'");
   });
 
   it('includes plus, referral, and role persistence in the schema', () => {
