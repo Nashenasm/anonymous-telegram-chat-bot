@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import webhook, { coinRushApi, ensureCoinRushRuntimeSchema, duelApi, ensureDuelRuntimeSchema, gameVoiceApi, miniAppApi } from './api/webhook.js';
+import webhook, { coinRushApi, ensureCoinRushRuntimeSchema, duelApi, ensureDuelRuntimeSchema, gameVoiceApi } from './api/webhook.js';
 import mandatoryJobs from './api/mandatory-jobs.js';
 import cryptoJobs from './api/crypto-jobs.js';
 import mandatoryTrack from './api/mandatory-track.js';
@@ -15,22 +15,6 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && requestUrl.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, service: 'anonymous-telegram-chat' }));
-  }
-  if (req.method === 'GET' && requestUrl.pathname === '/miniapp') {
-    try {
-      const html = await fs.readFile(path.join(process.cwd(), 'miniapp.html'));
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0' });
-      return res.end(html);
-    } catch { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('miniapp_not_found'); }
-  }
-  if (requestUrl.pathname === '/api/miniapp') {
-    let body = {};
-    if (req.method === 'POST') {
-      let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > maxBody) break; }
-      try { body = JSON.parse(raw || '{}'); } catch { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'invalid_json' })); }
-    }
-    try { return await miniAppApi({ method: req.method, body }, res); }
-    catch (error) { console.error('miniapp_api_error', error?.message || error); res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, error: 'miniapp_error' })); }
   }
   const ludoAudio = requestUrl.pathname.match(/^\/game\/assets\/ludo-(background|dice|move|safe|capture|return|finish)\.mp3$/);
   if (req.method === 'GET' && ludoAudio) {

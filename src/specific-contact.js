@@ -116,20 +116,20 @@ export async function handleSpecificTextRoute(ctx) {
     const bid = btnId(s, 'specific_confirm', value, { 'بله': 'yes', 'خیر': 'no', 'بازگشت': 'back' });
     if (bid === 'no' || bid === 'back' || value === 'خیر' || value === 'بازگشت') {
       await updateAction(client, id, null);
-      return send(id, scrFb(s, 'specific_waiting', 'to_main', 'به منوی اصلی برگشتی.'), mainKeyboard(s, id));
+      return send(id, scrFb(s, 'specific_waiting', 'to_main', 'به منوی اصلی برگشتی.'), mainKeyboard(s));
     }
     if (bid !== 'yes' && value !== 'بله') return send(id, scrMsg(s, 'specific_confirm', SPECIFIC_FOUND_CONFIRM), confirmKb);
     const target = (await client.query('SELECT telegram_id, status FROM users WHERE telegram_id=$1', [targetId])).rows[0];
-    if (!target) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'not_found', SPECIFIC_NOT_FOUND), mainKeyboard(s, id)); }
-    if (Number(targetId) === Number(id)) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'self', 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.'), mainKeyboard(s, id)); }
+    if (!target) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'not_found', SPECIFIC_NOT_FOUND), mainKeyboard(s)); }
+    if (Number(targetId) === Number(id)) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'self', 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.'), mainKeyboard(s)); }
     const freshMe = (await client.query('SELECT status FROM users WHERE telegram_id=$1', [id])).rows[0];
     if (freshMe && freshMe.status === 'chatting') { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'busy', 'هنوز در یک مکالمه هستی.'), chatKeyboard(s, isAdmin(id))); }
     const blocked = await client.query('SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1::bigint,$2::bigint) AND user_high=GREATEST($1::bigint,$2::bigint) AND expires_at > NOW()', [id, targetId]);
-    if (blocked.rowCount) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'blocked', 'این گفتگو دیگر در دسترس نیست.'), mainKeyboard(s, id)); }
+    if (blocked.rowCount) { await updateAction(client, id, null); return send(id, scrFb(s, 'specific_target', 'blocked', 'این گفتگو دیگر در دسترس نیست.'), mainKeyboard(s)); }
     const reqId = await createSpecificRequest(client, id, targetId);
     await updateAction(client, id, `contact:waiting:${reqId}`);
     try { await send(targetId, scrMsg(s, 'specific_request', SPECIFIC_RECEIVER_PROMPT), specificRequestInlineKeyboard(reqId, s)); }
-    catch (e) { await setSpecificStatus(client, reqId, 'expired'); await updateAction(client, id, null); return send(id, scrFb(s, 'specific_confirm', 'send_fail', 'ارسال درخواست ممکن نشد؛ مخاطب احتمالا ربات را بلاک کرده است.'), mainKeyboard(s, id)); }
+    catch (e) { await setSpecificStatus(client, reqId, 'expired'); await updateAction(client, id, null); return send(id, scrFb(s, 'specific_confirm', 'send_fail', 'ارسال درخواست ممکن نشد؛ مخاطب احتمالا ربات را بلاک کرده است.'), mainKeyboard(s)); }
     return send(id, scrMsg(s, 'specific_waiting', SPECIFIC_SENDER_WAITING), waitingKb);
   }
   if (state.startsWith('contact:waiting:')) {
@@ -142,12 +142,12 @@ export async function handleSpecificTextRoute(ctx) {
         try { await send(Number(req.recipient_id), scrFb(s, 'specific_request', 'expired_sender', SPECIFIC_RECEIVER_EXPIRED)); } catch {}
       }
       await updateAction(client, id, null);
-      return send(id, scrFb(s, 'specific_waiting', 'to_main', 'به منوی اصلی برگشتی.'), mainKeyboard(s, id));
+      return send(id, scrFb(s, 'specific_waiting', 'to_main', 'به منوی اصلی برگشتی.'), mainKeyboard(s));
     }
     const req = await getSpecificRequest(client, reqId);
     if (!req || isSpecificExpired(req)) {
       await updateAction(client, id, null);
-      return send(id, scrFb(s, 'specific_waiting', 'expired', 'این درخواست منقضی شده است.'), mainKeyboard(s, id));
+      return send(id, scrFb(s, 'specific_waiting', 'expired', 'این درخواست منقضی شده است.'), mainKeyboard(s));
     }
     return send(id, scrMsg(s, 'specific_waiting', SPECIFIC_SENDER_WAITING), waitingKb);
   }
@@ -161,7 +161,7 @@ export async function handleSpecificCallbackRoute(ctx) {
   if (!req || req.status !== 'pending' || isSpecificExpired(req)) {
     if (req && req.status === 'pending') await setSpecificStatus(sClient, reqId, 'expired');
     await updateAction(sClient, id, null);
-    return send(id, scrFb(s, 'specific_waiting', 'expired', 'این درخواست منقضی شده است.'), mainKeyboard(s, id));
+    return send(id, scrFb(s, 'specific_waiting', 'expired', 'این درخواست منقضی شده است.'), mainKeyboard(s));
   }
   if (Number(req.recipient_id) !== Number(id)) return send(id, scrFb(s, 'specific_request', 'not_for_you', 'این درخواست برای شما نیست.'));
   const senderId = Number(req.sender_id);
@@ -171,7 +171,7 @@ export async function handleSpecificCallbackRoute(ctx) {
     const senderState = (await sClient.query('SELECT action_state FROM users WHERE telegram_id=$1', [senderId])).rows[0]?.action_state;
     if (senderState === `contact:waiting:${reqId}`) {
       await sClient.query("UPDATE users SET action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [senderId]);
-      try { await send(senderId, scrFb(s, 'specific_request', 'declined_sender', SPECIFIC_SENDER_DECLINED), mainKeyboard(s, senderId)); } catch {}
+      try { await send(senderId, scrFb(s, 'specific_request', 'declined_sender', SPECIFIC_SENDER_DECLINED), mainKeyboard(s)); } catch {}
     }
     await updateAction(sClient, id, null);
     return true;
@@ -187,7 +187,7 @@ export async function handleSpecificCallbackRoute(ctx) {
   if (senderRow.status === 'chatting' || receiverRow?.status === 'chatting') {
     await setSpecificStatus(sClient, reqId, 'expired');
     await sClient.query("UPDATE users SET action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [senderId]);
-    try { await send(senderId, scrFb(s, 'specific_request', 'busy_other', 'درخواست منقضی شد چون یکی از شما در مکالمه دیگری است.'), mainKeyboard(s, senderId)); } catch {}
+    try { await send(senderId, scrFb(s, 'specific_request', 'busy_other', 'درخواست منقضی شد چون یکی از شما در مکالمه دیگری است.'), mainKeyboard(s)); } catch {}
     await updateAction(sClient, id, null);
     try { await editAudienceCallback(callbackQuery, id, 'این مکالمه دیگر فعال نیست.', { reply_markup: { inline_keyboard: [] } }); } catch {}
     return true;
@@ -197,7 +197,7 @@ export async function handleSpecificCallbackRoute(ctx) {
     await setSpecificStatus(sClient, reqId, 'expired');
     await sClient.query("UPDATE users SET action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [senderId]);
     await updateAction(sClient, id, null);
-    return send(id, scrFb(s, 'specific_target', 'blocked', 'این گفتگو دیگر در دسترس نیست.'), mainKeyboard(s, id));
+    return send(id, scrFb(s, 'specific_target', 'blocked', 'این گفتگو دیگر در دسترس نیست.'), mainKeyboard(s));
   }
   await setSpecificStatus(sClient, reqId, 'accepted');
   await sClient.query("UPDATE users SET status='chatting', partner_id=$2, conversation_started_at=NOW(), action_state=NULL, updated_at=NOW() WHERE telegram_id=$1", [senderId, id]);
