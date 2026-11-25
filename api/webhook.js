@@ -226,6 +226,7 @@ const DEFAULTS = {
   mandatory_verify_button_label: 'بررسی عضویت',
   mandatory_join_button_layout: 'single',
   mandatory_join_show_source_tags: 'true',
+  mini_app_enabled: 'false',
 };
 const GENDER_LABELS = { male: 'پسرم', female: 'دخترم' };
 const PREF_LABELS = { female: 'دختر', male: 'پسر', any: 'مهم نیست' };
@@ -273,7 +274,11 @@ function button(text, data) { return { text, callback_data: data }; }
 function replyKeyboard(rows, oneTime = false) { return { keyboard: rows, resize_keyboard: true, one_time_keyboard: oneTime, selective: true }; }
 const ANONYMOUS_LINK_BUTTON = 'لینک ناشناس من';
 const PLUS_PRICES = { 1: 100, 3: 250, 6: 450, 12: 800 };
-function mainKeyboard(settings) {
+const MINI_APP_BUTTON_LABEL = 'Open';
+const MINI_APP_TOGGLE_LABEL = 'Mini App: فعال/غیرفعال کردن';
+function miniAppUrl() { return String(process.env.MINI_APP_URL || 'https://bot.manochat.xyz/miniapp').replace(/\/$/, ''); }
+function miniAppButton() { return { text: MINI_APP_BUTTON_LABEL, web_app: { url: miniAppUrl() } }; }
+function mainKeyboard(settings, userId = null) {
   const a = publicAppearance(settings);
   let profileSeen = false;
   const buttons = (a.buttons || []).map(row => (Array.isArray(row) ? row : []).filter(item => {
@@ -282,7 +287,9 @@ function mainKeyboard(settings) {
     profileSeen = true;
     return true;
   }));
-  return replyKeyboard(appearanceKeyboard({ ...a, buttons }));
+  const rows = appearanceKeyboard({ ...a, buttons });
+  if (isOwner(userId) || settings?.mini_app_enabled === true || settings?.mini_app_enabled === 'true') rows.push([miniAppButton()]);
+  return replyKeyboard(rows);
 }
 function profileKeyboard(settings, me) {
   const numericId = String(me?.telegram_id || '');
@@ -326,7 +333,7 @@ function adminMainKeyboard(settings = {}, adminId = null) { const a = privateApp
 function reportsKeyboard() { return replyKeyboard([['گزارش‌های کاربران', 'کانال های گزارش دهی'], ['بخش فنی'], ['بازگشت پنل']], true); }
 function reportChannelKeyboard() { return replyKeyboard([['اتصال/تغییر کانال'], ['قطع اتصال کانال گزارش‌دهی'], ['بازگشت']], true); }
 function adsKeyboard(settings = {}) { return replyKeyboard([['📢 پیام همگانی', '📌 جویین اجباری'], ['👋 پیام خوش‌آمد', '🔗 تبلیغ اتصال'], ['💬 تبلیغ میان مکالمه', '↩️ بازگشت پنل']], true); }
-function controlKeyboard() { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], ['بازگشت پنل']], true); }
+function controlKeyboard(settings = {}) { return replyKeyboard([['امور [آرایش زیبایی]'], ['امور مالی'], ['روشن/خاموش کردن ربات'], [MINI_APP_TOGGLE_LABEL], ['بازگشت پنل']], true); }
 function genderKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'gender', [[GENDER_LABELS.male, GENDER_LABELS.female]]), true); }
 export function preferenceKeyboard(settings = {}) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'preference', [[PREF_LABELS.male, PREF_LABELS.female, PREF_LABELS.any]]), true); }
 function waitingKeyboard(settings) { return replyKeyboard(screenKeyboard(publicAppearance(settings), 'waiting', [[appearanceButton(publicAppearance(settings), 'cancel', settings.cancel_button)]])); }
@@ -699,7 +706,7 @@ function flowFor(settings) {
     finally { c.release(); }
   };
   const appearance = publicAppearance(settings);
-  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, editMessage: editAudienceCallback, mainKeyboard: () => mainKeyboard(settings), connectButton: appearanceButton(appearance, 'connect', settings.connect_button), disconnectButton: appearanceButton(appearance, 'disconnect', settings.disconnect_button) });
+  return createAnonymousFlow({ pool, send, sendLink, sendAsUser, editMessage: editAudienceCallback, mainKeyboard: userId => mainKeyboard(settings, userId), connectButton: appearanceButton(appearance, 'connect', settings.connect_button), disconnectButton: appearanceButton(appearance, 'disconnect', settings.disconnect_button) });
 }
 async function answerCallback(id) { try { await telegram('answerCallbackQuery', { callback_query_id: id }); } catch (e) { console.error('callback_answer_error', e.message); } }
 
@@ -821,6 +828,7 @@ async function settings(client) {
   out.appearance_private = normalizeAppearance('private', out.appearance_private);
   out.appearance_public_enabled = out.appearance_public_enabled !== 'false';
   out.appearance_private_enabled = out.appearance_private_enabled !== 'false';
+  out.mini_app_enabled = out.mini_app_enabled !== 'false';
   return { ...out, bot_enabled: out.bot_enabled !== 'false' };
 }
 function publicAppearance(s) { return s?.appearance_public_enabled === false ? normalizeAppearance('public', null) : normalizeAppearance('public', s?.appearance_public); }
@@ -1369,7 +1377,7 @@ async function advanceProfileSetup(client, id, settings, field) {
   const next = profileMissingFields(updated).find(item => PROFILE_FIELDS.indexOf(item) > currentIndex);
   if (next && profileMode(settings, updated, id) !== 'off') return beginProfileSetup(client, id, settings, { field: next, force: true });
   await updateAction(client, id, null);
-  return send(id, settings.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(settings));
+  return send(id, settings.profile_saved_message || 'اطلاعات پروفایل ذخیره شد.', mainKeyboard(settings, id));
 }
 async function sendProfile(id, settings) {
   const client = await pool.connect();
@@ -1386,7 +1394,7 @@ async function sendProfile(id, settings) {
 }
 async function sendPartnerProfile(client, id, settings) {
   const me = await user(client, id); const targetId = me?.status === 'chatting' && me.partner_id ? Number(me.partner_id) : null;
-  if (!targetId) return send(id, 'پروفایل طرف مقابل فقط در مکالمهٔ فعال در دسترس است.', mainKeyboard(settings));
+  if (!targetId) return send(id, 'پروفایل طرف مقابل فقط در مکالمهٔ فعال در دسترس است.', mainKeyboard(settings, id));
   const target = await user(client, targetId); if (!target) return send(id, 'پروفایل طرف مقابل در دسترس نیست.', chatKeyboard(settings, isAdmin(id)));
   await client.query('INSERT INTO profile_view_events(viewer_id,viewed_id,context) VALUES ($1,$2,$3)', [id, targetId, 'chat']);
   await client.query('UPDATE users SET profile_viewed_at=NOW() WHERE telegram_id=$1', [targetId]);
@@ -1448,7 +1456,7 @@ async function adminBanUser(client, targetId, seconds) {
     if (partnerId) await client.query("UPDATE users SET status='idle',partner_id=NULL,conversation_started_at=NULL,action_state=NULL,updated_at=NOW() WHERE telegram_id=$1", [partnerId]);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; }
-  if (partnerId) { try { await send(partnerId, 'مکالمه به دلیل تغییر وضعیت طرف مقابل پایان یافت.', mainKeyboard(await settings(client))); } catch {} }
+  if (partnerId) { try { await send(partnerId, 'مکالمه به دلیل تغییر وضعیت طرف مقابل پایان یافت.', mainKeyboard(await settings(client), partnerId)); } catch {} }
   return partnerId;
 }
 function bannedListKeyboard() { return replyKeyboard([['بازگشت کنترل کاربران'], ['بازگشت پنل']], true); }
@@ -1809,7 +1817,7 @@ async function searchByPreference(id, preference, s) {
     return send(id, screenMessagePayload(publicAppearance(s), 'gender', OWN_GENDER_PROMPT), genderKeyboard(s));
   }
   if (result.kind === 'already_chatting') return send(id, 'هنوز در یک مکالمه هستی.', chatKeyboard(s, isAdmin(id)));
-  if (result.kind === 'insufficient_coins') return send(id, `برای این اتصال حداقل ${result.cost} مانو کوین لازم داری. ابتدا موجودی‌ات را افزایش بده.`, mainKeyboard(s));
+  if (result.kind === 'insufficient_coins') return send(id, `برای این اتصال حداقل ${result.cost} مانو کوین لازم داری. ابتدا موجودی‌ات را افزایش بده.`, mainKeyboard(s, id));
   if (result.kind === 'paired') {
     await chargeSuccessfulConnection([id, result.partnerId]);
     await sendConnectionNotice(id, s, chatKeyboard(s, isAdmin(id)));
@@ -2063,7 +2071,7 @@ async function handleStart(id, payload = null) {
     me.action_state = null;
     if (payload !== null) await recordMandatoryStart(id, payload, client, me);
     let referralOwnerId = null;
-    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
+    if (payload?.startsWith('ref_')) { const found = await client.query('SELECT telegram_id FROM users WHERE referral_code=$1', [payload.slice(4)]); if (!found.rows[0]) return send(id, 'این لینک دعوت معتبر نیست.', mainKeyboard(s, id)); referralOwnerId = Number(found.rows[0].telegram_id); if (referralOwnerId !== id) { const linked = await client.query('UPDATE users SET referred_by=$2, referral_started_at=COALESCE(referral_started_at,NOW()) WHERE telegram_id=$1 AND referred_by IS NULL RETURNING referred_by', [id, referralOwnerId]); if (linked.rowCount) { await notifyReferralEntry(referralOwnerId, id); const referralBonus = await claimBonus(client, { bonusKey: 'first_referral', userId: referralOwnerId, metadata: { source: 'referral_link' } }); await notifyBonus(referralOwnerId, 'first_referral', referralBonus); const nestedGrant = await completeReferralCondition(client, referralOwnerId, 'referral'); if (nestedGrant.granted) await notifyReferralGrant(nestedGrant, referralOwnerId); } } }
     if (!isAdmin(id)) {
       const missing = await mandatoryRequirements(id, client, { profile: me });
       if (missing.length) {
@@ -2077,19 +2085,19 @@ async function handleStart(id, payload = null) {
     if (currentMode === 'required' && !isProfileComplete(me)) return beginProfileSetup(client, id, s, { force: true });
     if (payload !== null) {
       if (me.status !== 'idle' || (me.action_state && me.action_state !== 'anon_done')) {
-        return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s));
+        return send(id, 'برای باز کردن لینک، ابتدا عملیات یا گفت‌وگوی فعلی را تمام کن.', mainKeyboard(s, id));
       }
-      if (payload.startsWith('ref_')) { const first = await rewardFirstEntry(id, referralOwnerId, 5, s, { joinReady: true }); return send(id, first ? '🎁 خوش آمدی! ۲۰ مانو کوین هدیهٔ ورود اول به حسابت اضافه شد.' : 'خوش آمدی!', mainKeyboard(s)); }
+      if (payload.startsWith('ref_')) { const first = await rewardFirstEntry(id, referralOwnerId, 5, s, { joinReady: true }); return send(id, first ? '🎁 خوش آمدی! ۲۰ مانو کوین هدیهٔ ورود اول به حسابت اضافه شد.' : 'خوش آمدی!', mainKeyboard(s, id)); }
       client.release();
       released = true;
       const started = await flowFor(s).handleStartPayload(id, payload);
-      if (!started) return send(id, 'این لینک ناشناس معتبر نیست یا دیگر در دسترس نیست.', mainKeyboard(s));
+      if (!started) return send(id, 'این لینک ناشناس معتبر نیست یا دیگر در دسترس نیست.', mainKeyboard(s, id));
       return;
     }
     if (me.status === 'waiting') return send(id, 'وضعیت فعلی: در صف انتظار هستی. به‌محض پیدا شدن فرد سازگار خبر می‌دهم.', waitingKeyboard(s));
     if (me.status === 'chatting') return send(id, 'وضعیت فعلی: به یک ناشناس وصل هستی و مکالمه برقرار است.', chatKeyboard(s, isAdmin(id)));
     const first = await rewardFirstEntry(id, null, 0, s);
-    return send(id, first ? `${publicAppearance(s).message}\n\n🎁 برای ورود اول، ۲۰ مانو کوین هدیه گرفتی.` : publicAppearance(s).message, mainKeyboard(s));
+    return send(id, first ? `${publicAppearance(s).message}\n\n🎁 برای ورود اول، ۲۰ مانو کوین هدیه گرفتی.` : publicAppearance(s).message, mainKeyboard(s, id));
   } finally { if (!released) client.release(); }
 }
 
@@ -2181,7 +2189,7 @@ export async function handleCallback(id, data, callbackQuery = null) {
           if (resumed) return;
         } catch (resumeError) { console.error('pending_anon_resume_error', String(resumeError?.message || resumeError).slice(0, 200)); }
       }
-      return send(id, `✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد.${referralNotice}\nحالا می‌توانی از ربات استفاده کنی.`, mainKeyboard(displaySettings));
+      return send(id, `✅ عضویت شما در همهٔ منابع فعالِ مربوط به پروفایلت تأیید شد.${referralNotice}\nحالا می‌توانی از ربات استفاده کنی.`, mainKeyboard(displaySettings, id));
     } finally { c.release(); }
   }
   if (data.startsWith('mandatory:details:') || data.startsWith('mandatory:activate:') || data.startsWith('mandatory:schedule:') || data.startsWith('mandatory:pause:') || data.startsWith('mandatory:cancel:') || data.startsWith('mandatory:resume:')) return handleMandatoryTrackingCallback(id, data);
@@ -2202,10 +2210,10 @@ export async function handleCallback(id, data, callbackQuery = null) {
     const me = await ensureUser(sClient, id); const s = await settings(sClient);
     if (data === 'cleanup_chat') {
       const partnerId = Number(me.last_partner_id || 0);
-      if (!partnerId) { try { await telegram('editMessageReplyMarkup', { chat_id: id, message_id: callbackQuery?.message?.message_id, reply_markup: { inline_keyboard: [] } }); } catch {} return send(id, 'مکالمهٔ بسته‌شده‌ای برای پاکسازی پیدا نشد.', mainKeyboard(s)); }
+      if (!partnerId) { try { await telegram('editMessageReplyMarkup', { chat_id: id, message_id: callbackQuery?.message?.message_id, reply_markup: { inline_keyboard: [] } }); } catch {} return send(id, 'مکالمهٔ بسته‌شده‌ای برای پاکسازی پیدا نشد.', mainKeyboard(s, id)); }
       const cleanup = await cleanupClosedChat(sClient, id, partnerId);
       try { await telegram('deleteMessage', { chat_id: id, message_id: callbackQuery?.message?.message_id }); } catch {}
-      return send(id, `پاکسازی انجام شد؛ ${cleanup.deleted ? `${cleanup.deleted} پیام از هر دو طرف حذف شد.` : 'پیام قابل حذف دیگری در این مکالمه پیدا نشد.'}`, mainKeyboard(s));
+      return send(id, `پاکسازی انجام شد؛ ${cleanup.deleted ? `${cleanup.deleted} پیام از هر دو طرف حذف شد.` : 'پیام قابل حذف دیگری در این مکالمه پیدا نشد.'}`, mainKeyboard(s, id));
     }
     if (String(data || '').startsWith('inlinecfg:')) return handleInlineAppearanceCallback(id, data, callbackQuery, sClient, me.action_state, s);
     if (isAdmin(id) && isAdminActivityCallback(data)) await audit(sClient, id, null, 'admin_button_click', { button: String(data).slice(0, 240), state: String(me.action_state || 'پنل اصلی').slice(0, 180), messageId: callbackQuery?.message?.message_id || null });
@@ -2243,7 +2251,7 @@ export async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'profile:back_view') { await updateAction(sClient, id, null); return sendProfile(id, s); }
     if (data === 'profile:skip') {
       if (profileMode(s, me, id) === 'required') return send(id, 'تکمیل پروفایل برای شما اجباری است؛ این مرحله را رد نکن.', profileSkipKeyboard());
-      await updateAction(sClient, id, null); return send(id, 'ثبت پروفایل فعلاً رد شد.', mainKeyboard(s));
+      await updateAction(sClient, id, null); return send(id, 'ثبت پروفایل فعلاً رد شد.', mainKeyboard(s, id));
     }
     if (data === 'profile:province_menu') return await beginProfileSetup(sClient, id, s, { field: 'province_code', force: true });
     if (/^profile:(country|age|province|county|gender):/.test(data)) {
@@ -2608,16 +2616,16 @@ export async function handleCallback(id, data, callbackQuery = null) {
     }
     if (data.startsWith('pref:')) {
       const preference = data.slice('pref:'.length);
-      if (!['male', 'female', 'any'].includes(preference)) return send(id, 'گزینهٔ جستجو معتبر نیست.', mainKeyboard(s));
+      if (!['male', 'female', 'any'].includes(preference)) return send(id, 'گزینهٔ جستجو معتبر نیست.', mainKeyboard(s, id));
       if (!['male', 'female'].includes(me.gender)) {
         await updateAction(sClient, id, `choose_gender_for:${preference}`);
         return send(id, screenMessagePayload(publicAppearance(s), 'gender', OWN_GENDER_PROMPT), genderKeyboard(s));
       }
       return searchByPreference(id, preference, s);
     }
-    if (data === 'cancel_wait') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
+    if (data === 'cancel_wait') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s, id)); }
     if (data === 'stop') {
-      const meNow = await user(sClient, id); if (!meNow?.partner_id) return send(id, 'در حال حاضر در مکالمه‌ای نیستی.', mainKeyboard(s));
+      const meNow = await user(sClient, id); if (!meNow?.partner_id) return send(id, 'در حال حاضر در مکالمه‌ای نیستی.', mainKeyboard(s, id));
       const started = meNow.conversation_started_at ? new Date(meNow.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000;
       if (elapsed < STOP_MIN_SECONDS) return send(id, `این مکالمه تا ${Math.ceil(STOP_MIN_SECONDS - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s, isAdmin(id)));
       await updateAction(sClient, id, 'confirm_stop'); return send(id, screenMessagePayload(publicAppearance(s), 'confirm_stop', 'مطمئنی مکالمه قطع بشه؟'), confirmStopKeyboard(s));
@@ -2626,21 +2634,21 @@ export async function handleCallback(id, data, callbackQuery = null) {
     if (data === 'stop_yes') {
       const partnerId = await disconnect(id); await updateAction(sClient, id, 'after_stop'); if (partnerId) await notifyClosedChatPartner(sClient, id, partnerId, s); const finalNotice = await send(id, 'مکالمه بسته شد.', cleanupChatKeyboard()); if (partnerId) await rememberChatDelivery(sClient, partnerId, id, finalNotice?.message_id); const next = await send(id, 'دوست داری چه کار کنی؟', afterStopKeyboard(s)); if (partnerId) await rememberChatDelivery(sClient, partnerId, id, next?.message_id); return next;
     }
-    if (data === 'later' || data === 'block:later') { await updateAction(sClient, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+    if (data === 'later' || data === 'block:later') { await updateAction(sClient, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s, id)); }
     if (data === 'block') { await updateAction(sClient, id, 'choose_block_reason'); return send(id, screenMessagePayload(publicAppearance(s), 'block_reason', 'به چه دلیلی بلاک بشه؟'), blockKeyboard(s)); }
     if (data.startsWith('block:')) {
       const reasonKey = data.split(':')[1]; const target = me.partner_id ? Number(me.partner_id) : (me.last_partner_id ? Number(me.last_partner_id) : null);
-      if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
+      if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s, id));
       await block(id, target, BLOCK_REASONS[reasonKey] || reasonKey); await disconnect(id); await updateAction(sClient, id, null);
-      const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`, cleanupChatKeyboard()); await rememberChatDelivery(sClient, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s));
-      const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(sClient, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s));
+      const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${BLOCK_REASONS[reasonKey] || reasonKey}`, cleanupChatKeyboard()); await rememberChatDelivery(sClient, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s, target));
+      const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(sClient, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s, id));
     }
     if (data.startsWith('premium:verify:')) return handlePremiumVerification(id, data, sClient);
     if (data.startsWith('plus:')) return handlePlusCallback(id, data, sClient, s);
     if (data === 'admin:toggle' && isAdmin(id)) { const enabled = !s.bot_enabled; await sClient.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', adminKeyboard(enabled)); }
     if (data === 'admin:rename' && isAdmin(id)) return send(id, 'کدام دکمه را تغییر می‌دهی؟', renameKeyboard());
     if (data.startsWith('admin:rename:') && isAdmin(id)) { const key = data.slice('admin:rename:'.length); if (!DEFAULTS[key]) return send(id, 'گزینه نامعتبر است.'); await updateAction(sClient, id, `rename:${key}`); return send(id, 'نام جدید را در یک پیام بفرست.'); }
-    return send(id, 'این گزینه دیگر معتبر نیست.', mainKeyboard(s));
+    return send(id, 'این گزینه دیگر معتبر نیست.', mainKeyboard(s, id));
   } finally { sClient.release(); }
 }
 
@@ -3033,7 +3041,7 @@ function visiblePublicAction(value, s) {
   return legacy[text] || null;
 }
 function botKeyboardLabels(s = {}) {
-  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
+  const labels = new Set(['امور [آرایش زیبایی]', 'امور آرایش زیبایی', 'امور مالی', 'روشن/خاموش کردن ربات', 'Mini App: فعال/غیرفعال کردن', 'بازگشت پنل', 'بازگشت کنترل ربات', 'کنترل ربات', 'وضعیت', 'مانوکوین', 'قیمت مانوکوین', 'کد هدیه', 'زیرمجموعه✋🏻', 'بونوس', 'بونوس🎁', 'کوین پله ای', 'کوین زیرمجموعه', 'دکمه پاور', 'امور ادمین', 'بازگشت مانوکوین', 'درگاه ها', 'ولت ها', 'مدیریت ولت', 'امور کارت', 'شماره کارت ها', 'کنترل ظاهری', 'بازگشت امور مالی', 'بازگشت']);
   const addAppearance = appearance => {
     for (const row of (Array.isArray(appearance?.buttons) ? appearance.buttons : [])) for (const item of (Array.isArray(row) ? row : [])) if (item?.label) labels.add(String(item.label).trim());
     for (const screen of Object.values(appearance?.screens || {})) {
@@ -3126,7 +3134,7 @@ async function forwardChatMessage(client, senderId, targetId, message, me, setti
     console.warn('chat_delivery_error', { senderId, targetId, targetUnavailable, error: errorText.slice(0, 180) });
     if (targetUnavailable) {
       await client.query("UPDATE users SET status='idle',partner_id=NULL,conversation_started_at=NULL,action_state=NULL,updated_at=NOW() WHERE telegram_id IN ($1,$2)", [senderId, targetId]);
-      await send(senderId, 'این مکالمه دیگر در دسترس نیست؛ طرف مقابل ربات را ترک کرده است.', mainKeyboard(settings)).catch(() => {});
+      await send(senderId, 'این مکالمه دیگر در دسترس نیست؛ طرف مقابل ربات را ترک کرده است.', mainKeyboard(settings, senderId)).catch(() => {});
     } else {
       await send(senderId, 'پیام ارسال نشد؛ لطفاً دوباره تلاش کن.', chatKeyboard(settings, isAdmin(senderId))).catch(() => {});
     }
@@ -3237,7 +3245,7 @@ export async function handleText(id, text, meta = {}) {
     }
     if (me.action_state === 'plus_emoji') {
       const role = premiumRole(me, id);
-      if (!role) { await updateAction(client, id, null); return send(id, 'این قابلیت فقط برای کاربران پلاس، ادمین و مالک فعال است.', mainKeyboard(s)); }
+      if (!role) { await updateAction(client, id, null); return send(id, 'این قابلیت فقط برای کاربران پلاس، ادمین و مالک فعال است.', mainKeyboard(s, id)); }
       if (value === 'بازگشت' || value === (s.back_button || 'بازگشت')) { await updateAction(client, id, null); return sendProfile(id, s); }
       if (value === 'ریست ایموجی') {
         const badge = defaultBadge(role);
@@ -3278,7 +3286,7 @@ export async function handleText(id, text, meta = {}) {
     if (value === ANONYMOUS_LINK_BUTTON || firstPublicAction === 'anonymous_link') { await updateAction(client, id, null); client.release(); released = true; return flowFor(s).handleLinkButton(id); }
     // Once a user is actively replying in anonymous mode, the reply text must not be mistaken for a public-menu button.
     if (me.action_state?.startsWith('anon_') && firstPublicAction !== 'connect') { const flow = flowFor(s); client.release(); released = true; return flow.handleText(id, value, me.action_state); }
-    const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
+    const adminNavigation = new Set(['بازگشت','برگشت','بازگشت پنل','بازگشت امور مالی','بازگشت کنترل ربات','بازگشت کنترل کاربران','بازگشت مانوکوین','بازگشت کنترل مکالمات','امور ادمین','افزودن ادمین','فهرست ادمین‌ها','وضعیت','مانوکوین','گزارش مالی','هزینه اتصال','کنترل کاربران','کنترل کاربر','کنترل ربات','گزارش‌ها','مدیران','تبلیغات','جویین اجباری','امور [آرایش زیبایی]','امور آرایش زیبایی','Mini App: فعال/غیرفعال کردن']); const adminTextAction = isAdmin(id) && String(me.action_state || '').startsWith('admin') && !adminNavigation.has(value);
     if (adminTextAction) await audit(client, id, null, 'admin_text_action', adminTextActivityDetails(me.action_state, value));
     if (isAdmin(id) && !isOwner(id) && !me.action_state?.startsWith('admin:admins') && !hasAdminPermission(id, adminPermissionFromContext(value, me.action_state))) return send(id, 'این بخش برای سطح دسترسی ادمین شما فعال نیست.');
     if (hasAdminPermission(id, 'admins') && me.action_state === 'admin:admins' && value === 'فهرست ادمین‌ها') return sendAdminManagement(client,id);
@@ -3380,21 +3388,21 @@ export async function handleText(id, text, meta = {}) {
     { const _specificTextRes = await handleSpecificTextRoute({ client, id, value, s, me, send, mainKeyboard, chatKeyboard, updateAction, isAdmin }); if (_specificTextRes !== false) return _specificTextRes; }
     if (value === 'بازگشت' && (me.action_state === 'contact:target' || me.action_state?.startsWith('contact:compose:') || me.action_state?.startsWith('contact:reply:'))) {
       await updateAction(client, id, null);
-      return send(id, 'به منوی اصلی برگشتی.', mainKeyboard(s));
+      return send(id, 'به منوی اصلی برگشتی.', mainKeyboard(s, id));
     }
     if (me.action_state === 'contact:target') {
       const forwardedId = meta.forwardedUserId; const numericId = value.match(/^@?(\d{3,20})$/)?.[1] ? Number(value.replace(/^@/, '')) : null; const username = value.match(/^@([A-Za-z0-9_]{3,32})$/)?.[1] || null;
       if (!forwardedId && !numericId && !username) { try { return send(id, specificTargetFeedback(s, 'invalid', 'آیدی عددی، @username معتبر یا پیام فورواردشدهٔ همان کاربر را بفرست.'), specificTargetKeyboard(s)); } catch {} return send(id, 'آیدی عددی، @username معتبر یا پیام فورواردشدهٔ همان کاربر را بفرست.', contactTargetKeyboard()); }
       const target = (await client.query('SELECT telegram_id FROM users WHERE telegram_id=$1 OR ($2::text IS NOT NULL AND lower(username)=lower($2)) LIMIT 1', [forwardedId || numericId, username])).rows[0];
       if (Number(target?.telegram_id) === id) { try { return send(id, specificTargetFeedback(s, 'self', 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.'), specificTargetKeyboard(s)); } catch {} return send(id, 'نمی‌توانی خودت را به‌عنوان مخاطب انتخاب کنی.', contactTargetKeyboard()); }
-      if (!target) { await updateAction(client, id, null); try { return send(id, specificTargetFeedback(s, 'not_found', SPECIFIC_NOT_FOUND), mainKeyboard(s)); } catch {} return send(id, SPECIFIC_NOT_FOUND, mainKeyboard(s)); }
+      if (!target) { await updateAction(client, id, null); try { return send(id, specificTargetFeedback(s, 'not_found', SPECIFIC_NOT_FOUND), mainKeyboard(s, id)); } catch {} return send(id, SPECIFIC_NOT_FOUND, mainKeyboard(s, id)); }
       await updateAction(client, id, `contact:request_confirm:${target.telegram_id}`); try { return send(id, specificConfirmMessage(s), specificConfirmKeyboardFromSettings(s)); } catch {} return send(id, SPECIFIC_FOUND_CONFIRM, specificConfirmKeyboard());
     }
     if (me.action_state?.startsWith('contact:compose:')) {
-      const targetId = Number(me.action_state.split(':')[2]); if (!value) return send(id, 'پیام نمی‌تواند خالی باشد.', contactReplyKeyboard()); const result = await client.query('INSERT INTO contact_messages(sender_id,recipient_id,body) VALUES ($1,$2,$3) RETURNING id', [id, targetId, value]); await updateAction(client, id, null); await sendContactNotice(client, targetId, result.rows[0].id); return send(id, 'پیامت به مخاطب ارسال شد. اگر او پاسخ بدهد، اعلانش را دریافت می‌کنی.', mainKeyboard(s));
+      const targetId = Number(me.action_state.split(':')[2]); if (!value) return send(id, 'پیام نمی‌تواند خالی باشد.', contactReplyKeyboard()); const result = await client.query('INSERT INTO contact_messages(sender_id,recipient_id,body) VALUES ($1,$2,$3) RETURNING id', [id, targetId, value]); await updateAction(client, id, null); await sendContactNotice(client, targetId, result.rows[0].id); return send(id, 'پیامت به مخاطب ارسال شد. اگر او پاسخ بدهد، اعلانش را دریافت می‌کنی.', mainKeyboard(s, id));
     }
     if (me.action_state?.startsWith('contact:reply:')) {
-      const messageId = Number(me.action_state.split(':')[2]); const original = (await client.query('SELECT sender_id,recipient_id FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!original || !value) return send(id, 'پاسخ نمی‌تواند خالی باشد.', contactReplyKeyboard()); const result = await client.query('INSERT INTO contact_messages(sender_id,recipient_id,body) VALUES ($1,$2,$3) RETURNING id', [id, original.sender_id, value]); await updateAction(client, id, null); await sendContactNotice(client, original.sender_id, result.rows[0].id); return send(id, 'پاسخت ارسال شد.', mainKeyboard(s));
+      const messageId = Number(me.action_state.split(':')[2]); const original = (await client.query('SELECT sender_id,recipient_id FROM contact_messages WHERE id=$1 AND recipient_id=$2', [messageId, id])).rows[0]; if (!original || !value) return send(id, 'پاسخ نمی‌تواند خالی باشد.', contactReplyKeyboard()); const result = await client.query('INSERT INTO contact_messages(sender_id,recipient_id,body) VALUES ($1,$2,$3) RETURNING id', [id, original.sender_id, value]); await updateAction(client, id, null); await sendContactNotice(client, original.sender_id, result.rows[0].id); return send(id, 'پاسخت ارسال شد.', mainKeyboard(s, id));
     }
     if (me.action_state === 'chatgift:coin_custom') { const amount = Number(value); if (!Number.isInteger(amount) || amount < 1 || amount > 100000) return send(id, 'مقدار باید عدد صحیح بین 1 تا 100000 باشد.'); const percent = Number(await botSettingValue(client, 'chat_gift_fee_percent', '2')); const fee = chatGiftFee(amount, percent); await updateAction(client, id, `chatgift:coins:${amount}`); return send(id, `مقدار انتخابی: ${amount} مانو کوین\n\n${chatGiftFeeText(amount, fee, percent)}`, chatGiftCoinKeyboard(amount, fee, percent)); }
     if (me.action_state === 'coins:custom_amount') { const amount=Number(value.replace(/[,،]/g,'')); const min=Number(await botSettingValue(client,'crypto_coin_min','100')); const max=Number(await botSettingValue(client,'crypto_coin_max','1000')); if(!Number.isInteger(amount)||amount<min||amount>max) return send(id, `مقدار باید عدد صحیح بین ${min} و ${max} باشد.`, { reply_markup: { inline_keyboard: [[{ text: 'بازگشت', callback_data: 'coins:buy' }]] } }); return paymentMethodsForAmount(client,id,amount); }
@@ -3560,6 +3568,13 @@ export async function handleText(id, text, meta = {}) {
     if (isAdmin(id) && me.action_state === 'admin:control') {
       if (value === 'امور [آرایش زیبایی]' || value === 'امور آرایش زیبایی') { await updateAction(client, id, 'admin:control'); return send(id, 'امور [آرایش زیبایی]\n\nبخش موردنظر را انتخاب کن:', beautySectionsKeyboard()); }
       if (value === 'امور مالی') { await updateAction(client, id, 'admin:finance_panel'); return send(id, 'امور مالی', botFinanceKeyboard()); }
+      if (value === MINI_APP_TOGGLE_LABEL) {
+        if (!isOwner(id)) return send(id, 'این تنظیم فقط برای مالک اصلی ربات فعال است.', controlKeyboard(s));
+        const next = !(s.mini_app_enabled === true || s.mini_app_enabled === 'true');
+        await saveBotSetting(client, 'mini_app_enabled', String(next));
+        const updated = await settings(client);
+        return send(id, `Mini App ${next ? 'فعال' : 'غیرفعال'} شد.\n\n${next ? 'دکمهٔ Mini App برای کاربران نمایش داده می‌شود.' : 'دکمهٔ Mini App برای کاربران نمایش داده نمی‌شود؛ اطلاعات کاربران و موجودی‌ها حذف نشده‌اند.'}`, controlKeyboard(updated));
+      }
       if (value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard(s,id)); }
       return send(id, 'کنترل ربات', controlKeyboard());
     }
@@ -3675,7 +3690,7 @@ export async function handleText(id, text, meta = {}) {
       return send(id, await bannedListText(client), bannedListKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:user_control_lookup') {
-      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s)); }
+      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s, id)); }
       if (publicActionId === 'connect' || value === s.connect_button) { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
       if (value === 'کنترل مکالمات') { await updateAction(client, id, 'admin:conversation_control'); return send(id, 'کنترل مکالمات کلی ربات\nاین تنظیمات روی همهٔ کاربران اعمال می‌شود.', conversationControlKeyboard()); }
       if (value === 'کنترل مالی') { await updateAction(client, id, 'admin:finance'); return send(id, 'کنترل مالی ربات', userFinanceKeyboard()); }
@@ -3688,7 +3703,7 @@ export async function handleText(id, text, meta = {}) {
     }
     if (isAdmin(id) && me.action_state?.startsWith('admin:user_control:')) {
       const targetId = me.action_state.split(':')[2];
-      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s)); }
+      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s, id)); }
       if (publicActionId === 'connect' || value === s.connect_button) { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
       if (value === 'بازگشت کنترل کاربران' || value === 'بازگشت پنل') { await updateAction(client, id, null); return send(id, 'کنترل کاربران', userControlKeyboard()); }
       if (value === 'افزایش/کسر مانو کوین') { await updateAction(client, id, `admin:coin:${targetId}`); return send(id, 'مقدار را با علامت بفرست؛ مثال: +100 یا -50'); }
@@ -3808,7 +3823,7 @@ export async function handleText(id, text, meta = {}) {
       if (parseDuration(value) === null) return send(id, 'قالب نامعتبر است؛ نمونه: 2S یا 1M.', spamAdminKeyboard()); await saveBotSetting(client, 'spam_delay', value.toUpperCase()); await updateAction(client, id, 'admin:spam'); return send(id, 'تاخیر پیام ذخیره شد.', spamAdminKeyboard());
     }
     if (isAdmin(id) && me.action_state === 'admin:user_search') {
-      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s)); }
+      if (value === 'خروج از پنل' || value === 'بازگشت پنل' || value === 'بازگشت') { await updateAction(client, id, null); return send(id, 'از پنل مدیریت خارج شدی.', mainKeyboard(s, id)); }
       if (publicActionId === 'connect' || value === s.connect_button) { await updateAction(client, id, null); client.release(); released = true; return handleConnect(id); }
       if (!/^\d{3,20}$/.test(value)) return send(id, 'آیدی عددی معتبر بفرست.');
       const found = await client.query('SELECT telegram_id,status,gender,coins,created_at FROM users WHERE telegram_id=$1', [value]);
@@ -3831,7 +3846,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (privateAction === 'status') { const stats = await botStatus(client); return send(id, stats, adminMainKeyboard(s,id)); }
     if (privateAction === 'reports') { await updateAction(client, id, 'admin:reports_menu'); return send(id, feedbackMessagePayload(privateAppearance(s), 'reports', 'گزارش‌ها'), reportsKeyboard(s)); }
     if (privateAction === 'admins') return send(id, joinTextPayloads([feedbackMessagePayload(privateAppearance(s), 'admins', 'مدیران فعلی'), [...adminIds()].join('\n') || 'ثبت نشده'], '\n\n'), adminMainKeyboard(s,id));
-    if (privateAction === 'exit') { await updateAction(client, id, null); return send(id, feedbackMessagePayload(privateAppearance(s), 'exit', 'از پنل مدیریت خارج شدی.'), mainKeyboard(s)); }
+    if (privateAction === 'exit') { await updateAction(client, id, null); return send(id, feedbackMessagePayload(privateAppearance(s), 'exit', 'از پنل مدیریت خارج شدی.'), mainKeyboard(s, id)); }
     // Always keep the user's own profile independent from editable appearance mappings.
     // This must never be confused with the partner-profile action used inside a chat.
     if (value === (s.profile_button || 'پروفایل من') || value === 'پروفایل من') return sendProfile(id, s);
@@ -4002,12 +4017,12 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (isAdmin(id) && (privateActionId === 'private_appearance' || value === 'بخش ظاهری پرایویسی')) return sendAppearanceEditor(id, client, 'private');
     if (isAdmin(id) && (privateActionId === 'toggle' || value === 'روشن/خاموش کردن ربات')) { const enabled = !s.bot_enabled; await client.query("INSERT INTO bot_settings(key,value) VALUES ('bot_enabled',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()", [String(enabled)]); return send(id, enabled ? 'ربات روشن شد.' : 'ربات خاموش شد.', controlKeyboard(s)); }
     if (isAdmin(id) && (value === 'بازگشت پنل' || value === 'بازگشت')) { await updateAction(client, id, null); return send(id, 'پنل مدیریت', adminMainKeyboard({},id)); }
-    if (isAdmin(id) && (privateActionId === 'exit' || value === 'خروج از پنل')) { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s)); }
+    if (isAdmin(id) && (privateActionId === 'exit' || value === 'خروج از پنل')) { await updateAction(client, id, null); return send(id, 'از پنل خارج شدی.', mainKeyboard(s, id)); }
     if (publicActionId === 'profile' || value === 'پروفایل من') return sendProfile(id, s);
     if ((publicActionId === 'profile_view' || value === (s.profile_view_button_label || 'مشاهده پروفایل')) && me.status === 'chatting' && me.partner_id) return sendPartnerProfile(client, id, s);
     if (publicActionId === 'emoji' || value === 'ظاهر ایموجی پلاس') {
       const role = premiumRole(me, id);
-      if (!role) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', mainKeyboard(s));
+      if (!role) return send(id, 'این بخش فقط برای کاربران پلاس فعال است.', mainKeyboard(s, id));
       await updateAction(client, id, 'plus_emoji');
       const prompt = role === 'owner'
         ? 'متن کوتاه، نماد یا ایموجی دلخواهت را بفرست؛ ایموجی سفارشی تلگرام هم در صورت ارسال با entity همان‌طور ذخیره و نمایش داده می‌شود.'
@@ -4017,7 +4032,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     }
     if (publicActionId === 'reset' || value === 'ریست ایموجی') {
       const role = premiumRole(me, id);
-      if (!role) return send(id, 'کاربر معمولی نشان پلاس ندارد.', mainKeyboard(s));
+      if (!role) return send(id, 'کاربر معمولی نشان پلاس ندارد.', mainKeyboard(s, id));
       const badge = defaultBadge(role);
       await client.query("UPDATE users SET plus_emoji=$2, plus_emoji_entities='[]'::jsonb, updated_at=NOW() WHERE telegram_id=$1", [id, badge]);
       me.plus_emoji = badge; me.plus_emoji_entities = [];
@@ -4027,7 +4042,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     if (publicActionId === 'coins' || value === s.increase_coins_button) return sendIncreaseCoins(id, s);
     if (publicActionId === 'free_coins' || value === s.free_coins_button) return sendFreeCoins(id, s);
     if (publicActionId === 'plus' || value === s.plus_button) return sendPlus(id, s);
-    if (publicActionId === 'back' || value === s.back_button || value === 'بازگشت') return send(id, publicAppearance(s).message, mainKeyboard(s));
+    if (publicActionId === 'back' || value === s.back_button || value === 'بازگشت') return send(id, publicAppearance(s).message, mainKeyboard(s, id));
     // A stale anonymous-link state must never swallow the normal connect button.
     if (publicActionId === 'connect' || value === s.connect_button) {
       await updateAction(client, id, null);
@@ -4085,7 +4100,7 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
       }
       return searchByPreference(id, resolvedPreferenceText, s);
     }
-    if ((publicActionId === 'cancel' || value === s.cancel_button) && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s)); }
+    if ((publicActionId === 'cancel' || value === s.cancel_button) && me.status === 'waiting') { await leaveWaiting(id); return send(id, 'از صف انتظار خارج شدی.', mainKeyboard(s, id)); }
     if ((publicActionId === 'disconnect' || value === s.disconnect_button) && me.status === 'chatting') {
       const started = me.conversation_started_at ? new Date(me.conversation_started_at).getTime() : Date.now(); const elapsed = (Date.now() - started) / 1000; const minSeconds = Number(parseDuration(await botSettingValue(client, 'min_chat_duration', '15S')) ?? STOP_MIN_SECONDS);
       if (elapsed < minSeconds) return send(id, `این مکالمه تا ${Math.ceil(minSeconds - elapsed)} ثانیه دیگر قابل قطع نیست.`, chatKeyboard(s, isAdmin(id)));
@@ -4099,17 +4114,17 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', confirmStopKeyboard(s));
     }
     if (me.action_state === 'after_stop') {
-      if (publicActionId === 'later' || value === 'بعدا وصلش کن') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      if (publicActionId === 'later' || value === 'بعدا وصلش کن') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s, id)); }
       if (publicActionId === 'block' || value === 'بلاکش کن') { await updateAction(client, id, 'choose_block_reason'); return send(id, screenMessagePayload(publicAppearance(s), 'block_reason', 'به چه دلیلی بلاک بشه؟'), blockKeyboard(s)); }
       return send(id, 'یکی از گزینه‌ها را انتخاب کن.', afterStopKeyboard(s));
     }
     if (me.action_state === 'choose_block_reason') {
       const entries = Object.entries(BLOCK_REASONS); const found = Object.hasOwn(BLOCK_REASONS, publicActionId) ? [publicActionId, BLOCK_REASONS[publicActionId]] : entries.find(([, label]) => label === value);
-      if (publicActionId === 'later' || value === 'بذار بعدا هم وصل بشم') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s)); }
+      if (publicActionId === 'later' || value === 'بذار بعدا هم وصل بشم') { await updateAction(client, id, null); return send(id, 'باشه؛ هر زمان خواستی دوباره وصل شو.', mainKeyboard(s, id)); }
       if (!found) return send(id, 'یکی از دلایل را انتخاب کن.', blockKeyboard(s));
       const target = me.last_partner_id ? Number(me.last_partner_id) : null;
-      if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s));
-      await block(id, target, found[1]); await updateAction(client, id, null); const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`, cleanupChatKeyboard()); await rememberChatDelivery(client, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s)); const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(client, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s));
+      if (!target) return send(id, 'این مکالمه قبلاً بسته شده است.', mainKeyboard(s, id));
+      await block(id, target, found[1]); await updateAction(client, id, null); const targetNotice = await send(target, `مکالمه بسته شد و طرف مقابل شما را بلاک کرد. دلیل: ${found[1]}`, cleanupChatKeyboard()); await rememberChatDelivery(client, id, target, targetNotice?.message_id); await send(target, 'این مکالمه دیگر فعال نیست؛ برای شروع دوباره از منو استفاده کن.', mainKeyboard(s, target)); const ownNotice = await send(id, 'کاربر بلاک شد و دلیل ثبت گردید.', cleanupChatKeyboard()); await rememberChatDelivery(client, target, id, ownNotice?.message_id); return send(id, 'برای ادامه یکی از گزینه‌های منو را انتخاب کن.', mainKeyboard(s, id));
     }
     if ((value === '🎛 کنترل کاربر' || value === 'کنترل کاربران' || value === 'کنترل این کاربر') && isAdmin(id) && me.status === 'chatting' && me.partner_id) {
       // Use the exact same resolver/panel path as /<numeric-id>, so the in-chat
@@ -4127,14 +4142,14 @@ if (isAdmin(id) && (privateActionId === 'technical' || value === 'بخش فنی'
     }
     if ((publicActionId === 'games' || value === 'بازی') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_games_enabled === 'false') return send(id, 'بازی میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'بازی موردنظر را انتخاب کن:', entertainmentKeyboard('games', s)); }
     if ((publicActionId === 'ideas' || value === 'ایده صحبت') && me.status === 'chatting' && me.partner_id) { if (s.mid_chat_ideas_enabled === 'false') return send(id, 'ایدهٔ صحبت میان چت فعلاً غیرفعال است.', chatKeyboard(s, isAdmin(id))); return send(id, 'یک ایده برای ادامه مکالمه انتخاب کن:', entertainmentKeyboard('ideas')); }
-    if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s));
+    if (me.status !== 'chatting' || !me.partner_id) return send(id, 'برای شروع، دکمه اتصال را بزن.', mainKeyboard(s, id));
     const target = Number(me.partner_id);
     try {
       const blocked = await client.query(
         'SELECT 1 FROM anonymous_blocks WHERE user_low=LEAST($1::bigint,$2::bigint) AND user_high=GREATEST($1::bigint,$2::bigint) AND expires_at > NOW()',
         [target, id]
       );
-      if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s));
+      if (blocked.rowCount) return send(id, 'این گفتگو دیگر در دسترس نیست.', mainKeyboard(s, id));
       await forwardChatMessage(client, id, target, messageMeta(meta), me, s, text);
       await client.query('UPDATE users SET last_action_at=NOW(), updated_at=NOW() WHERE telegram_id=$1', [id]);
     } catch (error) {
@@ -4238,7 +4253,7 @@ async function processUpdate(update) {
       if (command === '/start') return handleStart(id, payload || null);
       if (command === '/help') return handleStart(id);
     if (command === '/manpin' && isAdmin(id)) { const c = await pool.connect(); try { await updateAction(c, id, null); const s = await settings(c); return send(id, `${privateAppearance(s).message}\n\nوضعیت ربات: ${s.bot_enabled ? 'روشن' : 'خاموش'}`, adminMainKeyboard(s,id)); } finally { c.release(); } }
-    return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool)));
+    return send(id, 'از دکمه‌های ربات استفاده کن.', mainKeyboard(await settings(pool), id));
   }
   return handleText(id, text, { forwardedUserId, message });
 }
@@ -4313,6 +4328,38 @@ export async function duelApi(req, res) {
   return coinRushApiJson(res, 405, { ok: false, error: 'method_not_allowed' });
 }
 
+function miniAppJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  return res.end(JSON.stringify(payload));
+}
+
+function validateMiniAppInitData(initData) {
+  const raw = String(initData || '');
+  const params = new URLSearchParams(raw);
+  const receivedHash = params.get('hash');
+  if (!receivedHash || !process.env.TELEGRAM_BOT_TOKEN) return null;
+  const pairs = [...params.entries()].filter(([key]) => key !== 'hash').sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`);
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(process.env.TELEGRAM_BOT_TOKEN).digest();
+  const calculated = crypto.createHmac('sha256', secret).update(pairs.join('\n')).digest('hex');
+  if (receivedHash.length !== calculated.length || !crypto.timingSafeEqual(Buffer.from(receivedHash), Buffer.from(calculated))) return null;
+  const authDate = Number(params.get('auth_date'));
+  if (!Number.isSafeInteger(authDate) || Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
+  try { return JSON.parse(params.get('user') || '{}'); } catch { return null; }
+}
+
+export async function miniAppApi(req, res) {
+  if (req.method !== 'POST') return miniAppJson(res, 405, { ok: false, error: 'method_not_allowed' });
+  const telegramUser = validateMiniAppInitData(req.body?.initData);
+  const telegramId = Number(telegramUser?.id);
+  if (!telegramUser || !Number.isSafeInteger(telegramId) || telegramId <= 0) return miniAppJson(res, 401, { ok: false, error: 'invalid_init_data' });
+  await ensureRuntimeSchema();
+  const enabled = await botSettingValue(pool, 'mini_app_enabled', 'true') === 'true';
+  if (!enabled && !isOwner(telegramId)) return miniAppJson(res, 403, { ok: false, error: 'mini_app_disabled' });
+  const row = (await pool.query('SELECT telegram_id,username,display_name,profile_photo_file_id,age,country_code,province_code,county_code,coins,plus_expires_at,role FROM users WHERE telegram_id=$1', [telegramId])).rows[0];
+  if (!row) return miniAppJson(res, 404, { ok: false, error: 'user_not_found' });
+  return miniAppJson(res, 200, { ok: true, enabled, user: { ...row, telegram_id: Number(row.telegram_id), coins: Number(row.coins || 0), is_owner: isOwner(telegramId) } });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET; const supplied = req.headers['x-telegram-bot-api-secret-token'];
@@ -4381,4 +4428,4 @@ export async function runMandatoryLifecycle() {
 
 export async function prepareBotDatabase() { return ensureRuntimeSchema(); }
 
-export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, publicAppearance, privateAppearance, appearanceItems, chatGiftFee };
+export { DEFAULTS, BLOCK_REASONS, STOP_MIN_SECONDS, normalizeFa, preferenceFromText, publicAppearance, privateAppearance, appearanceItems, chatGiftFee, mainKeyboard, controlKeyboard, miniAppUrl };
